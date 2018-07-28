@@ -66,12 +66,6 @@ void LibraryCategory::serialize(SExpression& root) const
     root.appendChild("parent", mParentUuid, true);
 }
 
-bool LibraryCategory::checkAttributesValidity() const noexcept
-{
-    if (mParentUuid == mUuid)   {return false;}
-    return true;
-}
-
 /*****************************************************************************************
  *  End of File
  ****************************************************************************************/
