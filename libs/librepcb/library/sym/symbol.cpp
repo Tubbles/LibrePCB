@@ -168,7 +168,7 @@ bool Symbol::checkAttributesValidity() const noexcept
     QList<QString> names;
     for (const SymbolPin& pin : mPins) {
         Uuid uuid = pin.getUuid();
-        QString name = pin.getName();
+        QString name = *pin.getName();
         if (uuids.contains(uuid) || names.contains(name)) {
             return false;
         } else {

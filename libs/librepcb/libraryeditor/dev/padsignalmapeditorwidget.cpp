@@ -199,7 +199,7 @@ void PadSignalMapEditorWidget::updateTable() noexcept
 }
 
 void PadSignalMapEditorWidget::setTableRowContent(int row, const Uuid& padUuid,
-    const QString& padName, const tl::optional<Uuid>& signalUuid) noexcept
+    const ElementName& padName, const tl::optional<Uuid>& signalUuid) noexcept
 {
     // header
     QTableWidgetItem* headerItem = new QTableWidgetItem(padUuid.toStr());
@@ -212,7 +212,7 @@ void PadSignalMapEditorWidget::setTableRowContent(int row, const Uuid& padUuid,
     // pad
     QTableWidgetItem* padItem = new QTableWidgetItem();
     padItem->setFlags(padItem->flags() & ~Qt::ItemFlags(Qt::ItemIsEditable));
-    padItem->setData(Qt::DisplayRole, Toolbox::stringOrNumberToQVariant(padName));
+    padItem->setData(Qt::DisplayRole, Toolbox::stringOrNumberToQVariant(*padName));
     padItem->setData(Qt::UserRole, padUuid.toStr());
     mTable->setItem(row, COLUMN_PAD, padItem);
 

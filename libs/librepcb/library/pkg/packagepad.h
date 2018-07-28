@@ -28,6 +28,7 @@
 #include <librepcb/common/fileio/cmd/cmdlistelementinsert.h>
 #include <librepcb/common/fileio/cmd/cmdlistelementremove.h>
 #include <librepcb/common/fileio/cmd/cmdlistelementsswap.h>
+#include <librepcb/common/elementname.h>
 
 /*****************************************************************************************
  *  Namespace / Forward Declarations
@@ -55,16 +56,16 @@ class PackagePad final : public SerializableObject
         // Constructors / Destructor
         PackagePad() = delete;
         PackagePad(const PackagePad& other) noexcept;
-        PackagePad(const Uuid& uuid, const QString& name) noexcept;
+        PackagePad(const Uuid& uuid, const ElementName& name) noexcept;
         explicit PackagePad(const SExpression& node);
         ~PackagePad() noexcept;
 
         // Getters
         const Uuid& getUuid() const noexcept {return mUuid;}
-        QString getName() const noexcept {return mName;}
+        ElementName getName() const noexcept {return mName;}
 
         // Setters
-        void setName(const QString& name) noexcept;
+        void setName(const ElementName& name) noexcept;
 
         // General Methods
 
@@ -77,13 +78,9 @@ class PackagePad final : public SerializableObject
         PackagePad& operator=(const PackagePad& rhs) noexcept;
 
 
-    private: // Methods
-        bool checkAttributesValidity() const noexcept;
-
-
     private: // Data
         Uuid mUuid;
-        QString mName;
+        ElementName mName;
 };
 
 /*****************************************************************************************

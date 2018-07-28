@@ -51,7 +51,7 @@ SGI_SymbolPin::SGI_SymbolPin(SI_SymbolPin& pin) noexcept :
     SGI_Base(), mPin(pin), mLibPin(pin.getLibPin())
 {
     setZValue(Schematic::ZValue_Symbols);
-    setToolTip(mLibPin.getName());
+    setToolTip(*mLibPin.getName());
 
     mStaticText.setTextFormat(Qt::PlainText);
     mStaticText.setPerformanceHint(QStaticText::AggressiveCaching);

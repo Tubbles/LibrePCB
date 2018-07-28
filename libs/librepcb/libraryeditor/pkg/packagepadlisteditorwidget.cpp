@@ -107,7 +107,7 @@ void PackagePadListEditorWidget::tableCellChanged(int row, int column) noexcept
         }
     } else if (isExistingPadRow(row) && uuid) {
         if (column == COLUMN_NAME) {
-            item->setText(setName(*uuid, cleanName(item->text())));
+            item->setText(*setName(*uuid, cleanName(item->text())));
         }
     }
 }
@@ -145,7 +145,7 @@ void PackagePadListEditorWidget::updateTable(const tl::optional<Uuid>& selected)
     // existing signals
     for (int i = 0; i < mPadList->count(); ++i) {
         const PackagePad& pad = *mPadList->at(i);
-        setTableRowContent(indexToRow(i), pad.getUuid(), pad.getName());
+        setTableRowContent(indexToRow(i), pad.getUuid(), *pad.getName());
         if (pad.getUuid() == selected) {
             selectedRow = indexToRow(i);
         }
@@ -201,8 +201,9 @@ void PackagePadListEditorWidget::addPad(const QString& name) noexcept
 {
     try {
         throwIfNameEmptyOrExists(name);
+        ElementName elementName(name); // can throw
         executeCommand(new CmdPackagePadInsert(*mPadList,
-            std::make_shared<PackagePad>(Uuid::createRandom(), name))); // can throw
+            std::make_shared<PackagePad>(Uuid::createRandom(), elementName))); // can throw
         //updateTable();
     } catch (const Exception& e) {
         QMessageBox::critical(this, tr("Could not add pad"), e.getMsg());
@@ -220,7 +221,7 @@ void PackagePadListEditorWidget::removePad(const Uuid& uuid) noexcept
     }
 }
 
-QString PackagePadListEditorWidget::setName(const Uuid& uuid, const QString& name) noexcept
+ElementName PackagePadListEditorWidget::setName(const Uuid& uuid, const QString& name) noexcept
 {
     PackagePad* pad = mPadList->find(uuid).get(); Q_ASSERT(pad);
     if (pad->getName() == name) {
@@ -230,9 +231,10 @@ QString PackagePadListEditorWidget::setName(const Uuid& uuid, const QString& nam
     try {
         throwIfNameEmptyOrExists(name);
         QScopedPointer<CmdPackagePadEdit> cmd(new CmdPackagePadEdit(*pad));
-        cmd->setName(name);
+        ElementName elementName(name); // can throw
+        cmd->setName(elementName);
         executeCommand(cmd.take());
-        return name;
+        return elementName;
     } catch (const Exception& e) {
         QMessageBox::critical(this, tr("Invalid name"), e.getMsg());
         return pad->getName();

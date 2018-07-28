@@ -161,7 +161,8 @@ bool SymbolEditorState_AddPins::addNextPin(const Point& pos, const Angle& rot) n
     try {
         mNameLineEdit->setText(determineNextPinName());
         mContext.undoStack.beginCmdGroup(tr("Add symbol pin"));
-        mCurrentPin = new SymbolPin(Uuid::createRandom(), mNameLineEdit->text(),
+        mCurrentPin = new SymbolPin(Uuid::createRandom(),
+                                    ElementName(mNameLineEdit->text()), // can throw
                                     pos, mLastLength, rot);
 
         mContext.undoStack.appendToCmdGroup(new CmdSymbolPinInsert(
@@ -183,7 +184,11 @@ bool SymbolEditorState_AddPins::addNextPin(const Point& pos, const Angle& rot) n
 void SymbolEditorState_AddPins::nameLineEditTextChanged(const QString& text) noexcept
 {
     if (mEditCmd && (!text.trimmed().isEmpty())) {
-        mEditCmd->setName(text.trimmed(), true);
+        try {
+            mEditCmd->setName(ElementName(text.trimmed()), true); // can throw
+        } catch (const Exception&) {
+            // invalid name
+        }
     }
 }
 

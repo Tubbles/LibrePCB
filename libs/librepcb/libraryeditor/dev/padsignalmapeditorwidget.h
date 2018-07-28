@@ -97,7 +97,7 @@ class PadSignalMapEditorWidget final : public QWidget, private DevicePadSignalMa
 
     private: // Methods
         void updateTable() noexcept;
-        void setTableRowContent(int row, const Uuid& padUuid, const QString& padName,
+        void setTableRowContent(int row, const Uuid& padUuid, const ElementName& padName,
                                 const tl::optional<Uuid>& signalUuid) noexcept;
         void setComponentSignal(const Uuid& pad, const tl::optional<Uuid>& signal) noexcept;
         tl::optional<Uuid> getPadUuidOfTableCellWidget(QObject* obj) const noexcept;

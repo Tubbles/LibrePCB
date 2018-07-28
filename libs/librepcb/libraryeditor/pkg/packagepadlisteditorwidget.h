@@ -84,7 +84,7 @@ class PackagePadListEditorWidget final : public QWidget, private PackagePadList:
         void setTableRowContent(int row, const tl::optional<Uuid>& uuid, const QString& name) noexcept;
         void addPad(const QString& name) noexcept;
         void removePad(const Uuid& uuid) noexcept;
-        QString setName(const Uuid& uuid, const QString& name) noexcept;
+        ElementName setName(const Uuid& uuid, const QString& name) noexcept;
         int getRowOfTableCellWidget(QObject* obj) const noexcept;
         tl::optional<Uuid> getUuidOfRow(int row) const noexcept;
         void throwIfNameEmptyOrExists(const QString& name) const;
