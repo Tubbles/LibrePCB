@@ -205,7 +205,7 @@ static bool isFileFormatStableOrAcceptUnstable() noexcept {
  ******************************************************************************/
 
 static FilePath determineWorkspacePath() noexcept {
-  static const QString FORCE_VAR_NAME("LIBREPCB_FORCE_WORKSPACE");
+  static const QString FORCE_VAR_NAME("LIBREPCB_WORKSPACE");
   FilePath wsPath;
   QString wsForceStr = qgetenv(FORCE_VAR_NAME.toStdString().c_str());
 

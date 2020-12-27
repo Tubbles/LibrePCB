@@ -17,7 +17,7 @@ So it's highly recommended to use a dedicated workspace for testing purposes,
 then the files in your productive workspace are safe. When working with real
 projects or libraries, make a backup first or at least use a version control
 system so any modifications can be reverted afterwards. This can also be achieved
-by setting the environment variable `LIBREPCB_FORCE_WORKSPACE` to the workspace
+by setting the environment variable `LIBREPCB_WORKSPACE` to the workspace
 you want to use. If you use QtCreator, this variable can be set in the run
 configuration, so that this workspace is only used when starting LibrePCB from
 within QtCreator.
