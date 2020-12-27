@@ -23,7 +23,7 @@ configuration, so that this workspace is only used when starting LibrePCB from
 within QtCreator.
 
 Unstable application versions show a warning message box on every startup to
-protect users from (accidentylly) beaking their files (for example if they are
+protect users from (accidentally) beaking their files (for example if they are
 trying out a nightly build). For developers this message box is very annoying,
 so you can set the environment variable `LIBREPCB_DISABLE_UNSTABLE_WARNING=1` to
 disable it. This variable can also be set in the run configuration, so the
