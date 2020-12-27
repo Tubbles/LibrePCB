@@ -205,7 +205,22 @@ static bool isFileFormatStableOrAcceptUnstable() noexcept {
  ******************************************************************************/
 
 static FilePath determineWorkspacePath() noexcept {
-  FilePath wsPath(Workspace::getMostRecentlyUsedWorkspacePath());
+  static const QString FORCE_VAR_NAME("LIBREPCB_FORCE_WORKSPACE");
+  FilePath wsPath;
+  QString wsForceStr = qgetenv(FORCE_VAR_NAME.toStdString().c_str());
+
+  if (wsForceStr != "") {
+    wsPath = FilePath(wsForceStr);
+    if (!Workspace::isValidWorkspacePath(wsPath)) {
+      qWarning() << FORCE_VAR_NAME << "set to invalid workspace:" << wsForceStr;
+      wsPath = FilePath("");
+    }
+  }
+
+  if (!wsPath.isValid()) {
+    wsPath = Workspace::getMostRecentlyUsedWorkspacePath();
+  }
+
   if (!Workspace::isValidWorkspacePath(wsPath)) {
     FirstRunWizard wizard;
     if (wizard.exec() == QDialog::Accepted) {
