@@ -49,7 +49,7 @@ static void setApplicationMetadata() noexcept;
 static void configureApplicationSettings() noexcept;
 static void writeLogHeader() noexcept;
 static bool isFileFormatStableOrAcceptUnstable() noexcept;
-static FilePath determineWorkspacePath() noexcept;
+static FilePath determineWorkspacePath(const QString& wsEnvStr) noexcept;
 static int openWorkspace(const FilePath& path) noexcept;
 static int appExec() noexcept;
 
@@ -97,11 +97,21 @@ int main(int argc, char* argv[]) {
   // overwritten with unstable content!
   if (isFileFormatStableOrAcceptUnstable()) {
     // Get the path of the workspace to open (may show the first run wizard)
-    FilePath wsPath = determineWorkspacePath();
+    const char* WS_VAR_NAME("LIBREPCB_WORKSPACE");
+    FilePath wsPath = determineWorkspacePath(qgetenv(WS_VAR_NAME));
 
     // Open the workspace and catch the return value
     if (wsPath.isValid()) {
       retval = openWorkspace(wsPath);
+    } else {
+      QMessageBox::critical(
+          0, Application::translate("Workspace", "Cannot open the workspace"),
+          QString(Application::translate("Workspace",
+                                         "The workspace \"%1\" cannot be "
+                                         "opened: Not a valid workspace.\n\n"
+                                         "Consider updating or clearing the "
+                                         "\"%2\" environment variable."))
+              .arg(QString(qgetenv(WS_VAR_NAME)), WS_VAR_NAME));
     }
   }
 
@@ -204,20 +214,15 @@ static bool isFileFormatStableOrAcceptUnstable() noexcept {
  *  determineWorkspacePath()
  ******************************************************************************/
 
-static FilePath determineWorkspacePath() noexcept {
-  static const QString FORCE_VAR_NAME("LIBREPCB_WORKSPACE");
+static FilePath determineWorkspacePath(const QString& wsEnvStr) noexcept {
   FilePath wsPath;
-  QString wsForceStr = qgetenv(FORCE_VAR_NAME.toStdString().c_str());
 
-  if (wsForceStr != "") {
-    wsPath = FilePath(wsForceStr);
+  if (wsEnvStr != "") {
+    wsPath = FilePath(wsEnvStr);
     if (!Workspace::isValidWorkspacePath(wsPath)) {
-      qWarning() << FORCE_VAR_NAME << "set to invalid workspace:" << wsForceStr;
-      wsPath = FilePath("");
+      return FilePath();
     }
-  }
-
-  if (!wsPath.isValid()) {
+  } else {
     wsPath = Workspace::getMostRecentlyUsedWorkspacePath();
   }
 
