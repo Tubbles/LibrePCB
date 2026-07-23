@@ -73,7 +73,7 @@ protected:
     mLayers = GraphicsLayerList::boardLayers(nullptr);
     auto context = std::make_shared<BoardGraphicsScene::Context>();
     context->crossProbe = std::make_shared<ProjectCrossProbe>();
-    mScene.reset(new BoardGraphicsScene(*mBoard, *mLayers, context));
+    mScene = std::make_unique<BoardGraphicsScene>(*mBoard, *mLayers, context);
   }
 
   void selectAllDevices() {
