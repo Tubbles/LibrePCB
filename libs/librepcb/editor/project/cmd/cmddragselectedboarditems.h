@@ -97,6 +97,8 @@ private:
   /// @copydoc ::librepcb::editor::UndoCommand::performExecute()
   bool performExecute() override;
 
+  void deleteAllCommands() noexcept;
+
   // Private Member Variables
   BoardGraphicsScene& mScene;
   int mItemCount;

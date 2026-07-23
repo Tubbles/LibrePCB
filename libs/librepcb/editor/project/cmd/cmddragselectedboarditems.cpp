@@ -190,6 +190,9 @@ CmdDragSelectedBoardItems::CmdDragSelectedBoardItems(
 }
 
 CmdDragSelectedBoardItems::~CmdDragSelectedBoardItems() noexcept {
+  // If the command was not executed, delete all child commands to revert
+  // any already applied (immediate) modifications.
+  deleteAllCommands();
 }
 
 /*******************************************************************************
@@ -400,28 +403,7 @@ bool CmdDragSelectedBoardItems::performExecute() {
       (!mSnappedToGrid) && (!mTextsReset) && (!mLockedChanged) &&
       (!mLineWidthChanged)) {
     // no movement required --> discard all commands
-    qDeleteAll(mDeviceEditCmds);
-    mDeviceEditCmds.clear();
-    qDeleteAll(mDeviceStrokeTextsResetCmds);
-    mDeviceStrokeTextsResetCmds.clear();
-    qDeleteAll(mPadEditCmds);
-    mPadEditCmds.clear();
-    qDeleteAll(mViaEditCmds);
-    mViaEditCmds.clear();
-    qDeleteAll(mNetPointEditCmds);
-    mNetPointEditCmds.clear();
-    qDeleteAll(mNetLineEditCmds);
-    mNetLineEditCmds.clear();
-    qDeleteAll(mPlaneEditCmds);
-    mPlaneEditCmds.clear();
-    qDeleteAll(mZoneEditCmds);
-    mZoneEditCmds.clear();
-    qDeleteAll(mPolygonEditCmds);
-    mPolygonEditCmds.clear();
-    qDeleteAll(mStrokeTextEditCmds);
-    mStrokeTextEditCmds.clear();
-    qDeleteAll(mHoleEditCmds);
-    mHoleEditCmds.clear();
+    deleteAllCommands();
     return false;
   }
 
@@ -430,42 +412,74 @@ bool CmdDragSelectedBoardItems::performExecute() {
     mDeviceStrokeTextsResetCmds.clear();
   }
 
-  foreach (CmdDeviceInstanceEdit* cmd, mDeviceEditCmds) {
-    appendChild(cmd);  // can throw
+  // Move all child commands to parent class. Take them out of the member
+  // lists immediately since appendChild() takes ownership, so they must not
+  // be deleted by deleteAllCommands() anymore.
+  while (!mDeviceEditCmds.isEmpty()) {
+    appendChild(mDeviceEditCmds.takeFirst());  // can throw
   }
-  foreach (CmdDeviceStrokeTextsReset* cmd, mDeviceStrokeTextsResetCmds) {
-    appendChild(cmd);  // can throw
+  while (!mDeviceStrokeTextsResetCmds.isEmpty()) {
+    appendChild(mDeviceStrokeTextsResetCmds.takeFirst());  // can throw
   }
-  foreach (CmdBoardPadEdit* cmd, mPadEditCmds) {
-    appendChild(cmd);  // can throw
+  while (!mPadEditCmds.isEmpty()) {
+    appendChild(mPadEditCmds.takeFirst());  // can throw
   }
-  foreach (CmdBoardViaEdit* cmd, mViaEditCmds) {
-    appendChild(cmd);  // can throw
+  while (!mViaEditCmds.isEmpty()) {
+    appendChild(mViaEditCmds.takeFirst());  // can throw
   }
-  foreach (CmdBoardNetPointEdit* cmd, mNetPointEditCmds) {
-    appendChild(cmd);  // can throw
+  while (!mNetPointEditCmds.isEmpty()) {
+    appendChild(mNetPointEditCmds.takeFirst());  // can throw
   }
-  foreach (CmdBoardNetLineEdit* cmd, mNetLineEditCmds) {
-    appendChild(cmd);  // can throw
+  while (!mNetLineEditCmds.isEmpty()) {
+    appendChild(mNetLineEditCmds.takeFirst());  // can throw
   }
-  foreach (CmdBoardPlaneEdit* cmd, mPlaneEditCmds) {
-    appendChild(cmd);  // can throw
+  while (!mPlaneEditCmds.isEmpty()) {
+    appendChild(mPlaneEditCmds.takeFirst());  // can throw
   }
-  foreach (CmdBoardZoneEdit* cmd, mZoneEditCmds) {
-    appendChild(cmd);  // can throw
+  while (!mZoneEditCmds.isEmpty()) {
+    appendChild(mZoneEditCmds.takeFirst());  // can throw
   }
-  foreach (CmdBoardPolygonEdit* cmd, mPolygonEditCmds) {
-    appendChild(cmd);  // can throw
+  while (!mPolygonEditCmds.isEmpty()) {
+    appendChild(mPolygonEditCmds.takeFirst());  // can throw
   }
-  foreach (CmdBoardStrokeTextEdit* cmd, mStrokeTextEditCmds) {
-    appendChild(cmd);  // can throw
+  while (!mStrokeTextEditCmds.isEmpty()) {
+    appendChild(mStrokeTextEditCmds.takeFirst());  // can throw
   }
-  foreach (CmdBoardHoleEdit* cmd, mHoleEditCmds) {
-    appendChild(cmd);  // can throw
+  while (!mHoleEditCmds.isEmpty()) {
+    appendChild(mHoleEditCmds.takeFirst());  // can throw
   }
 
   // execute all child commands
   return UndoCommandGroup::performExecute();  // can throw
+}
+
+/*******************************************************************************
+ *  Private Methods
+ ******************************************************************************/
+
+void CmdDragSelectedBoardItems::deleteAllCommands() noexcept {
+  qDeleteAll(mDeviceEditCmds);
+  mDeviceEditCmds.clear();
+  qDeleteAll(mDeviceStrokeTextsResetCmds);
+  mDeviceStrokeTextsResetCmds.clear();
+  qDeleteAll(mPadEditCmds);
+  mPadEditCmds.clear();
+  qDeleteAll(mViaEditCmds);
+  mViaEditCmds.clear();
+  qDeleteAll(mNetPointEditCmds);
+  mNetPointEditCmds.clear();
+  qDeleteAll(mNetLineEditCmds);
+  mNetLineEditCmds.clear();
+  qDeleteAll(mPlaneEditCmds);
+  mPlaneEditCmds.clear();
+  qDeleteAll(mZoneEditCmds);
+  mZoneEditCmds.clear();
+  qDeleteAll(mPolygonEditCmds);
+  mPolygonEditCmds.clear();
+  qDeleteAll(mStrokeTextEditCmds);
+  mStrokeTextEditCmds.clear();
+  qDeleteAll(mHoleEditCmds);
+  mHoleEditCmds.clear();
 }
 
 /*******************************************************************************
