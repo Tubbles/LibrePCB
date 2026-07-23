@@ -61,6 +61,13 @@ void CmdBoardHoleEdit::setPath(const NonEmptyPath& path,
   }
 }
 
+void CmdBoardHoleEdit::setPositionOfFirstVertex(const Point& pos,
+                                                bool immediate) noexcept {
+  Q_ASSERT(!wasEverExecuted());
+  translate(pos - mNewData.getPath()->getVertices().first().getPos(),
+            immediate);
+}
+
 void CmdBoardHoleEdit::translate(const Point& deltaPos,
                                  bool immediate) noexcept {
   Q_ASSERT(!wasEverExecuted());
