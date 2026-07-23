@@ -79,6 +79,7 @@ public:
   bool hasStrokeTextsSelected() const noexcept {
     return !mStrokeTextEditCmds.isEmpty();
   }
+  const QList<Point>& getPositions() const noexcept { return mPositions; }
   bool selectDevicesOfPads() noexcept;
   UnsignedLength getMedianLineWidth() const noexcept;
 
@@ -87,6 +88,7 @@ public:
   void setLocked(bool locked) noexcept;
   void setLineWidth(const UnsignedLength& width) noexcept;
   void resetAllTexts() noexcept;
+  void setNewPositions(QList<Point> positions);
   void setCurrentPosition(const Point& pos,
                           const bool gridIncrement = true) noexcept;
   void rotate(const Angle& angle, bool aroundCurrentPosition) noexcept;
@@ -110,6 +112,22 @@ private:
   bool mLockedChanged;
   bool mLineWidthChanged;
   bool mTextsReset;
+  bool mNewPositionsSet;
+
+  /// Positions of all single-position items (devices, board pads, vias,
+  /// netpoints, stroke texts not moved with their device, holes), in the
+  /// same order as consumed by #setNewPositions()
+  QList<Point> mPositions;
+
+  /// Devices and their original positions, parallel to #mDeviceEditCmds
+  QList<BI_Device*> mDevices;
+  QList<Point> mDeviceOriginalPositions;
+
+  /// Original positions and devices of stroke texts, parallel to
+  /// #mStrokeTextEditCmds. The device is nullptr unless the text shall be
+  /// moved together with its device by #setNewPositions().
+  QList<Point> mStrokeTextOriginalPositions;
+  QList<BI_Device*> mStrokeTextDevices;
 
   /// Auto-selected devices used for #selectDevicesOfPads()
   QSet<BI_Device*> mAutoSelectedDevices;

@@ -37,6 +37,7 @@
 #include "cmddeviceinstanceedit.h"
 #include "cmddevicestroketextsreset.h"
 
+#include <librepcb/core/exceptions.h>
 #include <librepcb/core/project/board/board.h>
 #include <librepcb/core/project/board/items/bi_device.h>
 #include <librepcb/core/project/board/items/bi_hole.h>
@@ -74,7 +75,8 @@ CmdDragSelectedBoardItems::CmdDragSelectedBoardItems(
     mSnappedToGrid(false),
     mLockedChanged(false),
     mLineWidthChanged(false),
-    mTextsReset(false) {
+    mTextsReset(false),
+    mNewPositionsSet(false) {
   // get all selected items
   BoardSelectionQuery query(mScene, includeLockedItems);
   query.addDeviceInstancesOfSelectedFootprints();
@@ -106,6 +108,9 @@ CmdDragSelectedBoardItems::CmdDragSelectedBoardItems(
     CmdDeviceInstanceEdit* cmd = new CmdDeviceInstanceEdit(*device);
     mDeviceEditCmds.append(cmd);
     mDeviceStrokeTextsResetCmds.append(new CmdDeviceStrokeTextsReset(*device));
+    mPositions.append(device->getPosition());
+    mDevices.append(device);
+    mDeviceOriginalPositions.append(device->getPosition());
   }
   foreach (BI_Pad* pad, query.getPads()) {
     Q_ASSERT(pad);
@@ -113,6 +118,7 @@ CmdDragSelectedBoardItems::CmdDragSelectedBoardItems(
     ++mItemCount;
     CmdBoardPadEdit* cmd = new CmdBoardPadEdit(*pad);
     mPadEditCmds.append(cmd);
+    mPositions.append(pad->getPosition());
   }
   foreach (BI_Via* via, query.getVias()) {
     Q_ASSERT(via);
@@ -120,6 +126,7 @@ CmdDragSelectedBoardItems::CmdDragSelectedBoardItems(
     ++mItemCount;
     CmdBoardViaEdit* cmd = new CmdBoardViaEdit(*via);
     mViaEditCmds.append(cmd);
+    mPositions.append(via->getPosition());
   }
   foreach (BI_NetPoint* netpoint, query.getNetPoints()) {
     Q_ASSERT(netpoint);
@@ -127,6 +134,7 @@ CmdDragSelectedBoardItems::CmdDragSelectedBoardItems(
     ++mItemCount;
     CmdBoardNetPointEdit* cmd = new CmdBoardNetPointEdit(*netpoint);
     mNetPointEditCmds.append(cmd);
+    mPositions.append(netpoint->getPosition());
   }
   foreach (BI_NetLine* netline, query.getNetLines()) {
     Q_ASSERT(netline);
@@ -165,14 +173,20 @@ CmdDragSelectedBoardItems::CmdDragSelectedBoardItems(
   }
   foreach (BI_StrokeText* text, query.getStrokeTexts()) {
     Q_ASSERT(text);
+    // Texts of selected devices are moved together with their device by
+    // setNewPositions(), thus they don't get their own position slot.
+    const bool moveWithDevice = text->getDevice() &&
+        query.getDeviceInstances().contains(text->getDevice());
     // do not count texts of devices if the device is selected too
-    if ((!text->getDevice()) ||
-        (!query.getDeviceInstances().contains(text->getDevice()))) {
+    if (!moveWithDevice) {
       mCenterPos += text->getData().getPosition();
       ++mItemCount;
+      mPositions.append(text->getData().getPosition());
     }
     CmdBoardStrokeTextEdit* cmd = new CmdBoardStrokeTextEdit(*text);
     mStrokeTextEditCmds.append(cmd);
+    mStrokeTextOriginalPositions.append(text->getData().getPosition());
+    mStrokeTextDevices.append(moveWithDevice ? text->getDevice() : nullptr);
   }
   foreach (BI_Hole* hole, query.getHoles()) {
     Q_ASSERT(hole);
@@ -180,6 +194,8 @@ CmdDragSelectedBoardItems::CmdDragSelectedBoardItems(
     ++mItemCount;
     CmdBoardHoleEdit* cmd = new CmdBoardHoleEdit(*hole);
     mHoleEditCmds.append(cmd);
+    mPositions.append(
+        hole->getData().getPath()->getVertices().first().getPos());
   }
 
   // Note: If only 1 item is selected, use its exact position as center.
@@ -308,6 +324,54 @@ void CmdDragSelectedBoardItems::resetAllTexts() noexcept {
   mTextsReset = true;
 }
 
+void CmdDragSelectedBoardItems::setNewPositions(QList<Point> positions) {
+  auto takeNext = [&]() {
+    if (positions.isEmpty()) {
+      throw LogicError(__FILE__, __LINE__);
+    }
+    return positions.takeFirst();
+  };
+
+  QHash<BI_Device*, Point> deviceDeltas;
+  for (int i = 0; i < mDeviceEditCmds.count(); ++i) {
+    const Point newPos = takeNext();
+    deviceDeltas.insert(mDevices.at(i),
+                        newPos - mDeviceOriginalPositions.at(i));
+    mDeviceEditCmds.at(i)->setPosition(newPos, true);
+  }
+  foreach (CmdBoardPadEdit* cmd, mPadEditCmds) {
+    cmd->setPosition(takeNext(), true);
+  }
+  foreach (CmdBoardViaEdit* cmd, mViaEditCmds) {
+    cmd->setPosition(takeNext(), true);
+  }
+  foreach (CmdBoardNetPointEdit* cmd, mNetPointEditCmds) {
+    cmd->setPosition(takeNext(), true);
+  }
+  for (int i = 0; i < mStrokeTextEditCmds.count(); ++i) {
+    if (BI_Device* device = mStrokeTextDevices.at(i)) {
+      // Move the text together with its device to keep their relative
+      // position.
+      mStrokeTextEditCmds.at(i)->setPosition(
+          mStrokeTextOriginalPositions.at(i) + deviceDeltas.value(device),
+          true);
+    } else {
+      mStrokeTextEditCmds.at(i)->setPosition(takeNext(), true);
+    }
+  }
+  foreach (CmdBoardHoleEdit* cmd, mHoleEditCmds) {
+    cmd->setPositionOfFirstVertex(takeNext(), true);
+  }
+  if (!positions.isEmpty()) {
+    throw LogicError(__FILE__, __LINE__);
+  }
+  mNewPositionsSet = true;
+
+  // Force updating airwires immediately as they are important while moving
+  // items.
+  mScene.getBoard().triggerAirWiresRebuild();
+}
+
 void CmdDragSelectedBoardItems::setCurrentPosition(
     const Point& pos, const bool gridIncrement) noexcept {
   Point delta = pos - mStartPos;
@@ -401,7 +465,7 @@ void CmdDragSelectedBoardItems::rotate(const Angle& angle,
 bool CmdDragSelectedBoardItems::performExecute() {
   if (mDeltaPos.isOrigin() && (mDeltaAngle == Angle::deg0()) &&
       (!mSnappedToGrid) && (!mTextsReset) && (!mLockedChanged) &&
-      (!mLineWidthChanged)) {
+      (!mLineWidthChanged) && (!mNewPositionsSet)) {
     // no movement required --> discard all commands
     deleteAllCommands();
     return false;
