@@ -336,6 +336,7 @@ ui::TabData Board2dTab::getUiData() const noexcept {
   features.remove = toFs(mToolFeatures.testFlag(Feature::Remove));
   features.rotate = toFs(mToolFeatures.testFlag(Feature::Rotate));
   features.flip = toFs(mToolFeatures.testFlag(Feature::Flip));
+  features.move_align = toFs(mToolFeatures.testFlag(Feature::MoveAlign));
   features.snap_to_grid = toFs(mToolFeatures.testFlag(Feature::SnapToGrid));
   features.reset_texts = toFs(mToolFeatures.testFlag(Feature::ResetTexts));
   features.lock = toFs(mToolFeatures.testFlag(Feature::Lock));
@@ -824,6 +825,10 @@ void Board2dTab::trigger(ui::TabAction a) noexcept {
       if (!mFsm->processMove(Point(0, -mBoard.getGridInterval()))) {
         mView->scrollDown();
       }
+      break;
+    }
+    case ui::TabAction::MoveAlign: {
+      mFsm->processMoveAlign();
       break;
     }
     case ui::TabAction::SnapToGrid: {

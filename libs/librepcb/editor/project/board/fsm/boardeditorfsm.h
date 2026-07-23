@@ -138,6 +138,7 @@ public:
   bool processMove(const Point& delta) noexcept;
   bool processRotate(const Angle& rotation) noexcept;
   bool processFlip(Qt::Orientation orientation) noexcept;
+  bool processMoveAlign() noexcept;
   bool processSnapToGrid() noexcept;
   bool processSetLocked(bool locked) noexcept;
   bool processChangeLineWidth(int step) noexcept;

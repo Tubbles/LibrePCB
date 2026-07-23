@@ -96,6 +96,7 @@ public:
   bool processMove(const Point& delta) noexcept override;
   bool processRotate(const Angle& rotation) noexcept override;
   bool processFlip(Qt::Orientation orientation) noexcept override;
+  bool processMoveAlign() noexcept override;
   bool processSnapToGrid() noexcept override;
   bool processSetLocked(bool locked) noexcept override;
   bool processChangeLineWidth(int step) noexcept override;
@@ -125,6 +126,7 @@ private:  // Methods
   bool moveSelectedItems(const Point& delta) noexcept;
   bool rotateSelectedItems(const Angle& angle) noexcept;
   bool flipSelectedItems(Qt::Orientation orientation) noexcept;
+  bool moveAlignSelectedItems() noexcept;
   bool snapSelectedItemsToGrid() noexcept;
   bool lockSelectedItems(bool locked) noexcept;
   bool changeWidthOfSelectedItems(int step) noexcept;

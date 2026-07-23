@@ -276,6 +276,15 @@ bool BoardEditorFsm::processFlip(Qt::Orientation orientation) noexcept {
   return false;
 }
 
+bool BoardEditorFsm::processMoveAlign() noexcept {
+  if (BoardEditorState* state = getCurrentStateObj()) {
+    if (state->processMoveAlign()) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool BoardEditorFsm::processSnapToGrid() noexcept {
   if (BoardEditorState* state = getCurrentStateObj()) {
     if (state->processSnapToGrid()) {

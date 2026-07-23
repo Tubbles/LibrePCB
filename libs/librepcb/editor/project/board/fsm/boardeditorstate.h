@@ -129,6 +129,7 @@ public:
     Q_UNUSED(orientation);
     return false;
   }
+  virtual bool processMoveAlign() noexcept { return false; }
   virtual bool processSnapToGrid() noexcept { return false; }
   virtual bool processSetLocked(bool locked) noexcept {
     Q_UNUSED(locked);

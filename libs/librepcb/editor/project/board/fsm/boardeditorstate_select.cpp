@@ -24,6 +24,7 @@
 
 #include "../../../dialogs/dxfimportdialog.h"
 #include "../../../dialogs/holepropertiesdialog.h"
+#include "../../../dialogs/movealigndialog.h"
 #include "../../../dialogs/polygonpropertiesdialog.h"
 #include "../../../dialogs/stroketextpropertiesdialog.h"
 #include "../../../dialogs/zonepropertiesdialog.h"
@@ -401,6 +402,17 @@ bool BoardEditorState_Select::processFlip(
     return false;
   }
   return flipSelectedItems(orientation);
+}
+
+bool BoardEditorState_Select::processMoveAlign() noexcept {
+  // Discard any temporary changes and release undo stack.
+  abortBlockingToolsInOtherEditors();
+
+  if (mIsUndoCmdActive || mSelectedItemsDragCommand || mCmdPolygonEdit ||
+      mCmdPlaneEdit || mCmdZoneEdit) {
+    return false;
+  }
+  return moveAlignSelectedItems();
 }
 
 bool BoardEditorState_Select::processSnapToGrid() noexcept {
@@ -830,6 +842,8 @@ bool BoardEditorState_Select::processGraphicsSceneRightMouseButtonReleased(
       mb.addAction(cmd.remove.createAction(
           &menu, this, [this]() { removeSelectedItems(); }));
       mb.addSeparator();
+      mb.addAction(cmd.moveAlign.createAction(
+          &menu, this, [this]() { moveAlignSelectedItems(); }));
       QAction* aSnap = cmd.snapToGrid.createAction(
           &menu, this, [this]() { snapSelectedItemsToGrid(); });
       aSnap->setEnabled(!pos.isOnGrid(getGridInterval()));
@@ -964,6 +978,8 @@ bool BoardEditorState_Select::processGraphicsSceneRightMouseButtonReleased(
             scene->selectNetSegment(netpoint->getNetPoint().getNetSegment());
           }));
       mb.addSeparator();
+      mb.addAction(cmd.moveAlign.createAction(
+          &menu, this, [this]() { moveAlignSelectedItems(); }));
       QAction* aSnap = cmd.snapToGrid.createAction(
           &menu, this, [this]() { snapSelectedItemsToGrid(); });
       aSnap->setEnabled(!pos.isOnGrid(getGridInterval()));
@@ -1006,6 +1022,8 @@ bool BoardEditorState_Select::processGraphicsSceneRightMouseButtonReleased(
             scene->selectNetSegment(via->getVia().getNetSegment());
           }));
       mb.addSeparator();
+      mb.addAction(cmd.moveAlign.createAction(
+          &menu, this, [this]() { moveAlignSelectedItems(); }));
       QAction* aSnap = cmd.snapToGrid.createAction(
           &menu, this, [this]() { snapSelectedItemsToGrid(); });
       aSnap->setEnabled(!pos.isOnGrid(getGridInterval()));
@@ -1211,6 +1229,8 @@ bool BoardEditorState_Select::processGraphicsSceneRightMouseButtonReleased(
       mb.addAction(cmd.flipVertical.createAction(
           &menu, this, [this]() { flipSelectedItems(Qt::Vertical); }));
       mb.addSeparator();
+      mb.addAction(cmd.moveAlign.createAction(
+          &menu, this, [this]() { moveAlignSelectedItems(); }));
       QAction* aSnap = cmd.snapToGrid.createAction(
           &menu, this, [this]() { snapSelectedItemsToGrid(); });
       aSnap->setEnabled(!pos.isOnGrid(getGridInterval()));
@@ -1238,6 +1258,8 @@ bool BoardEditorState_Select::processGraphicsSceneRightMouseButtonReleased(
       mb.addAction(cmd.remove.createAction(
           &menu, this, [this]() { removeSelectedItems(); }));
       mb.addSeparator();
+      mb.addAction(cmd.moveAlign.createAction(
+          &menu, this, [this]() { moveAlignSelectedItems(); }));
       QAction* aSnap = cmd.snapToGrid.createAction(
           &menu, this, [this]() { snapSelectedItemsToGrid(); });
       aSnap->setEnabled(!pos.isOnGrid(getGridInterval()));
@@ -1334,6 +1356,38 @@ bool BoardEditorState_Select::flipSelectedItems(
     QMessageBox::critical(parentWidget(), tr("Error"), e.getMsg());
     return false;
   }
+}
+
+bool BoardEditorState_Select::moveAlignSelectedItems() noexcept {
+  BoardGraphicsScene* scene = getActiveBoardScene();
+  if (!scene) return false;
+
+  try {
+    std::unique_ptr<CmdDragSelectedBoardItems> cmdMove(
+        new CmdDragSelectedBoardItems(*scene, getIgnoreLocks()));
+    if (cmdMove->getPositions().isEmpty()) {
+      return false;
+    }
+    MoveAlignDialog dlg(cmdMove->getPositions(),
+                        "board_editor/move_align_dialog", parentWidget());
+    connect(&dlg, &MoveAlignDialog::positionsChanged, this,
+            [&](const QList<Point>& positions) {
+              try {
+                cmdMove->setNewPositions(positions);  // can throw
+              } catch (const Exception& e) {
+                QMessageBox::critical(&dlg, tr("Error"), e.getMsg());
+              }
+            });
+    if (dlg.exec() != QDialog::Accepted) {
+      // The destructor of cmdMove reverts the live preview.
+      return false;
+    }
+    cmdMove->setNewPositions(dlg.getNewPositions());  // can throw
+    mContext.undoStack.execCmd(cmdMove.release());
+  } catch (const Exception& e) {
+    QMessageBox::critical(parentWidget(), tr("Error"), e.getMsg());
+  }
+  return true;
 }
 
 bool BoardEditorState_Select::snapSelectedItemsToGrid() noexcept {
@@ -2048,6 +2102,12 @@ void BoardEditorState_Select::updateAvailableFeatures(
     }
     if (!query.getNetLines().isEmpty()) {
       *features |= BoardEditorFsmAdapter::Feature::ModifyLineWidth;
+    }
+    if ((!query.getDeviceInstances().isEmpty()) ||
+        (!query.getPads().isEmpty()) || (!query.getVias().isEmpty()) ||
+        (!query.getNetPoints().isEmpty()) ||
+        (!query.getStrokeTexts().isEmpty()) || (!query.getHoles().isEmpty())) {
+      *features |= BoardEditorFsmAdapter::Feature::MoveAlign;
     }
     const BoardEditorFsmAdapter::Features conditionalFeatures =
         BoardEditorFsmAdapter::Feature::SnapToGrid |

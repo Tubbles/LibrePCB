@@ -75,7 +75,7 @@ public:
     Remove = (1 << 4),
     Rotate = (1 << 5),
     Flip = (1 << 6),
-    // MoveAlign = (1 << 7),
+    MoveAlign = (1 << 7),
     SnapToGrid = (1 << 8),
     ResetTexts = (1 << 9),
     Lock = (1 << 10),
