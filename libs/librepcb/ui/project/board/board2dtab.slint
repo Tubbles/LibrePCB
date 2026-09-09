@@ -421,10 +421,30 @@ export component Board2dTab inherits Tab {
 
             tool-trace-btn := ToolButton {
                 cmd: Cmd.tool-trace;
+                has-menu: true;
                 checked: tabs[index].tool == EditorTool.wire;
 
                 clicked => {
                     tool-triggered(TabAction.tool-wire);
+                }
+
+                right-clicked => {
+                    trace-popup.show();
+                }
+
+                trace-popup := MenuPopup {
+                    x: parent.width + 5px;
+                    y: 0;
+
+                    tool-route-trace-item := MenuItem {
+                        icon: @image-url("../../../../../img/draw-trace.svg");
+                        text: @tr("Route Trace (Push & Shove)");
+                        status-tip: @tr("Draw copper traces with the push & shove router");
+
+                        clicked => {
+                            Backend.trigger-tab(section-index, index, TabAction.tool-route-trace);
+                        }
+                    }
                 }
             }
 

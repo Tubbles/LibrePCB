@@ -174,6 +174,7 @@ public:
   void fsmToolLeave() noexcept override;
   void fsmToolEnter(BoardEditorState_Select& state) noexcept override;
   void fsmToolEnter(BoardEditorState_DrawTrace& state) noexcept override;
+  void fsmToolEnter(BoardEditorState_RouteTrace& state) noexcept override;
   void fsmToolEnter(BoardEditorState_AddVia& state) noexcept override;
   void fsmToolEnter(BoardEditorState_AddPad& state) noexcept override;
   void fsmToolEnter(BoardEditorState_DrawPolygon& state) noexcept override;

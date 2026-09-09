@@ -53,6 +53,7 @@
 #include "fsm/boardeditorstate_drawpolygon.h"
 #include "fsm/boardeditorstate_drawtrace.h"
 #include "fsm/boardeditorstate_drawzone.h"
+#include "fsm/boardeditorstate_routetrace.h"
 #include "graphicsitems/bgi_device.h"
 #include "graphicsitems/bgi_netline.h"
 #include "graphicsitems/bgi_pad.h"
@@ -958,6 +959,10 @@ void Board2dTab::trigger(ui::TabAction a) noexcept {
       mFsm->processDrawTrace();
       break;
     }
+    case ui::TabAction::ToolRouteTrace: {
+      mFsm->processRouteTrace();
+      break;
+    }
     case ui::TabAction::ToolVia: {
       mFsm->processAddVia();
       break;
@@ -1381,6 +1386,79 @@ void Board2dTab::fsmToolEnter(BoardEditorState_DrawTrace& state) noexcept {
   mFsmStateConnections.append(connect(this, &Board2dTab::viaSizeRequested,
                                       &state,
                                       &BoardEditorState_DrawTrace::setViaSize));
+
+  onDerivedUiDataChanged.notify();
+}
+
+void Board2dTab::fsmToolEnter(BoardEditorState_RouteTrace& state) noexcept {
+  // The push & shove router has no toolbar of its own yet, so it borrows the
+  // draw trace one. Its wire mode selector, its automatic trace width switch
+  // and the "set as default" menu items have no counterpart in this state and
+  // are therefore not connected to anything.
+  mTool = ui::EditorTool::Wire;
+  mToolNetClassName = QString();
+  mToolFilled = false;
+
+  // Trace width
+  mToolLineWidth.configure(state.getWidth(),
+                           LengthEditContext::Steps::generic(),
+                           "board_editor/draw_trace/width");
+  mFsmStateConnections.append(
+      connect(&state, &BoardEditorState_RouteTrace::widthChanged,
+              &mToolLineWidth, &LengthEditContext::setValuePositive));
+  mFsmStateConnections.append(
+      connect(&mToolLineWidth, &LengthEditContext::valueChangedPositive, &state,
+              &BoardEditorState_RouteTrace::setWidth));
+
+  // Layers
+  mToolLayersQt = Layer::sorted(state.getAvailableLayers());
+  mToolLayers->clear();
+  for (const Layer* layer : std::as_const(mToolLayersQt)) {
+    mToolLayers->push_back(q2s(layer->getNameTr()));
+  }
+
+  // Layer
+  auto setLayer = [this](const Layer& layer) {
+    mToolLayer = &layer;
+    onDerivedUiDataChanged.notify();
+  };
+  setLayer(state.getLayer());
+  mFsmStateConnections.append(connect(
+      &state, &BoardEditorState_RouteTrace::layerChanged, this, setLayer));
+  mFsmStateConnections.append(connect(this, &Board2dTab::layerRequested, &state,
+                                      &BoardEditorState_RouteTrace::setLayer));
+
+  // Via drill
+  mToolDrill.configure(state.getViaDrillDiameter(),
+                       LengthEditContext::Steps::drillDiameter(),
+                       "board_editor/add_via/drill");  // From via tool.
+  auto setViaDrill = [this](bool autoDrill, const PositiveLength& drill) {
+    mToolDrill.setValuePositive(drill);
+    mToolPressFit = autoDrill;
+    onDerivedUiDataChanged.notify();
+  };
+  setViaDrill(state.getViaAutoDrillDiameter(), state.getViaDrillDiameter());
+  mFsmStateConnections.append(
+      connect(&state, &BoardEditorState_RouteTrace::viaDrillDiameterChanged,
+              this, setViaDrill));
+  mFsmStateConnections.append(
+      connect(this, &Board2dTab::viaDrillRequested, &state,
+              &BoardEditorState_RouteTrace::setViaDrillDiameter));
+
+  // Via size
+  mToolSize.configure(state.getViaSize(), LengthEditContext::Steps::generic(),
+                      "board_editor/add_via/size");  // From via tool.
+  auto setViaSize = [this](bool autoSize, const PositiveLength& size) {
+    mToolSize.setValuePositive(size);
+    mToolMirrored = autoSize;
+    onDerivedUiDataChanged.notify();
+  };
+  setViaSize(state.getAutoViaSize(), state.getViaSize());
+  mFsmStateConnections.append(connect(
+      &state, &BoardEditorState_RouteTrace::viaSizeChanged, this, setViaSize));
+  mFsmStateConnections.append(
+      connect(this, &Board2dTab::viaSizeRequested, &state,
+              &BoardEditorState_RouteTrace::setViaSize));
 
   onDerivedUiDataChanged.notify();
 }

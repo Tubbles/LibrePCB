@@ -55,6 +55,7 @@ class BoardEditorState_DrawPolygon;
 class BoardEditorState_DrawTrace;
 class BoardEditorState_DrawZone;
 class BoardEditorState_Measure;
+class BoardEditorState_RouteTrace;
 class BoardEditorState_Select;
 class BoardGraphicsScene;
 
@@ -115,6 +116,7 @@ public:
   virtual void fsmToolLeave() noexcept = 0;
   virtual void fsmToolEnter(BoardEditorState_Select& state) noexcept = 0;
   virtual void fsmToolEnter(BoardEditorState_DrawTrace& state) noexcept = 0;
+  virtual void fsmToolEnter(BoardEditorState_RouteTrace& state) noexcept = 0;
   virtual void fsmToolEnter(BoardEditorState_AddVia& state) noexcept = 0;
   virtual void fsmToolEnter(BoardEditorState_AddPad& state) noexcept = 0;
   virtual void fsmToolEnter(BoardEditorState_DrawPolygon& state) noexcept = 0;

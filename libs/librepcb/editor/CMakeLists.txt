@@ -491,6 +491,8 @@ add_library(
   project/board/fsm/boardeditorstate_drawzone.h
   project/board/fsm/boardeditorstate_measure.cpp
   project/board/fsm/boardeditorstate_measure.h
+  project/board/fsm/boardeditorstate_routetrace.cpp
+  project/board/fsm/boardeditorstate_routetrace.h
   project/board/fsm/boardeditorstate_select.cpp
   project/board/fsm/boardeditorstate_select.h
   project/board/graphicsitems/bgi_airwire.cpp
