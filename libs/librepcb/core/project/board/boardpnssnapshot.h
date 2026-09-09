@@ -139,6 +139,19 @@ public:
    */
   quint32 getNetNumber(const NetSignal* net) const noexcept;
 
+  /**
+   * @brief Get the net signal of an FFI net number
+   *
+   * The inverse of #getNetNumber(), which the routing session needs to turn
+   * the nets the router answers with back into circuit objects.
+   *
+   * @return The net signal, or `nullptr` for net number 0 and for a number
+   *         this snapshot never handed out. The router's internal orphan
+   *         net, which a route placed in free space gets, is one of the
+   *         latter.
+   */
+  const NetSignal* getNetSignal(quint32 netNumber) const noexcept;
+
   // General Methods
 
   /**
@@ -241,6 +254,7 @@ private:  // Data
   QVector<BoardPnsHostRef> mHostRefs;
   QHash<const void*, quint64> mHostIds;
   QHash<const NetSignal*, quint32> mNetNumbers;
+  QVector<const NetSignal*> mNetSignals;
 };
 
 /*******************************************************************************

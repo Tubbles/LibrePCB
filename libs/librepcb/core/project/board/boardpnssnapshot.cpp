@@ -178,7 +178,8 @@ BoardPnsSnapshot::BoardPnsSnapshot(const Board& board)
     mHandle(construct(board.getInnerLayerCount() + 2)),
     mHostRefs{BoardPnsHostRef()},  // Host ID 0 is reserved as a null value.
     mHostIds(),
-    mNetNumbers() {
+    mNetNumbers(),
+    mNetSignals() {
   addRules(board);
   addNets(board);
   addTracesAndVias(board);
@@ -212,6 +213,15 @@ quint64 BoardPnsSnapshot::getHostId(const BI_Hole& hole) const noexcept {
 
 quint32 BoardPnsSnapshot::getNetNumber(const NetSignal* net) const noexcept {
   return net ? mNetNumbers.value(net, 0) : 0;
+}
+
+const NetSignal* BoardPnsSnapshot::getNetSignal(
+    quint32 netNumber) const noexcept {
+  if ((netNumber == 0) ||
+      (netNumber > static_cast<quint32>(mNetSignals.count()))) {
+    return nullptr;
+  }
+  return mNetSignals.at(static_cast<int>(netNumber - 1));
 }
 
 /*******************************************************************************
@@ -310,8 +320,12 @@ void BoardPnsSnapshot::addNets(const Board& board) {
 
   foreach (const NetSignal* net, circuit.getNetSignals()) {
     const std::size_t index = netClassIndex.value(&net->getNetClass(), 0);
-    mNetNumbers.insert(net,
-                       rs::ffi_pnsrouter_snapshot_add_net(*mHandle, index));
+    const quint32 number = rs::ffi_pnsrouter_snapshot_add_net(*mHandle, index);
+    mNetNumbers.insert(net, number);
+    // The numbers are handed out densely from 1, so appending in the same
+    // order makes the vector the reverse lookup.
+    Q_ASSERT(number == static_cast<quint32>(mNetSignals.count() + 1));
+    mNetSignals.append(net);
   }
 }
 

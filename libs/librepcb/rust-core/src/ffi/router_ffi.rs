@@ -24,7 +24,10 @@ use pnsrouter::geometry::shape::Shape;
 use pnsrouter::geometry::vec2::Vec2;
 use pnsrouter::item::{HostId, LayerRange, NetId, ViaType};
 use pnsrouter::node::World;
-use pnsrouter::router::Router;
+use pnsrouter::router::{
+  CommitDiff, FixOutcome, NewGeometry, NewItem, PreviewFrame, PreviewStyle,
+  PreviewVia, Router, StartError,
+};
 use pnsrouter::rules::{
   Constraint, ConstraintType, ItemRef, Keepout, RuleResolver,
 };
@@ -1291,28 +1294,286 @@ fn resolve_item<'a>(
 }
 
 // ---------------------------------------------------------------------
-// The session handle
+// The session
 // ---------------------------------------------------------------------
+
+/// How a host should draw one element of a preview frame.
+///
+/// Mirrors `pnsrouter::router::PreviewStyle` value for value.
+#[repr(C)]
+#[allow(dead_code)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum PnsPreviewStyle {
+  /// `PreviewStyle::Head`, the track being placed right now.
+  Head = 0,
+  /// `PreviewStyle::Tail`, geometry this session has already fixed.
+  Tail = 1,
+  /// `PreviewStyle::Hover`, the item under the cursor. Set by a host and
+  /// never by the engine.
+  Hover = 2,
+  /// `PreviewStyle::SemiSolid`, one primitive of a rule area. Nothing
+  /// emits it yet, because zones are not synced.
+  SemiSolid = 3,
+  /// `PreviewStyle::Collision`, something a violation was found on.
+  Collision = 4,
+}
+
+/// Which fields of a [`PnsNewItem`] are meaningful.
+///
+/// Mirrors the two variants of `pnsrouter::router::NewGeometry`, which is
+/// all a single track placer emits.
+#[repr(C)]
+#[allow(dead_code)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum PnsNewGeometryKind {
+  /// `NewGeometry::Segment`: [`PnsNewItem::p1`], [`PnsNewItem::p2`] and
+  /// [`PnsNewItem::width`].
+  Segment = 0,
+  /// `NewGeometry::Via`: [`PnsNewItem::pos`], [`PnsNewItem::diameter`],
+  /// [`PnsNewItem::drill`] and [`PnsNewItem::via_type`].
+  Via = 1,
+}
+
+/// Why a routing session refused to start.
+///
+/// Mirrors `Result<(), pnsrouter::router::StartError>`, flattened into one
+/// enum with success as its first value. The host id and the item id the
+/// two naming variants carry are dropped: the host already knows which
+/// object it asked about, and the engine's item id means nothing to it.
+#[repr(C)]
+#[allow(dead_code)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum PnsStartResult {
+  /// The point may be routed from.
+  Ok = 0,
+  /// `StartError::AlreadyRouting`.
+  AlreadyRouting = 1,
+  /// `StartError::UnknownStartItem`.
+  UnknownStartItem = 2,
+  /// `StartError::NotRoutable`.
+  NotRoutable = 3,
+  /// `StartError::StartPointViolatesRules`.
+  StartPointViolatesRules = 4,
+  /// `StartError::PlacerRefused`.
+  PlacerRefused = 5,
+}
+
+/// What happened to a fix.
+///
+/// Mirrors `pnsrouter::router::FixOutcome` plus the "nothing was being
+/// routed" case, which the crate spells as `Option::None` on
+/// `Router::finish`.
+#[repr(C)]
+#[allow(dead_code)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum PnsFixOutcome {
+  /// `FixOutcome::Continue`: the placement carries on, and the session
+  /// holds the frame after the fix.
+  Continue = 0,
+  /// `FixOutcome::Finished`: the route reached its target and was
+  /// committed, so the session holds the commit and no frame.
+  Finished = 1,
+  /// Nothing was being routed, so nothing was committed either.
+  NotRouting = 2,
+}
+
+/// One polyline of the session's latest preview frame.
+///
+/// Mirrors `pnsrouter::router::PreviewItem`. The centre line is read point
+/// by point with [`ffi_pnsrouter_preview_item_point`], because a variable
+/// length list cannot ride in a `#[repr(C)]` struct the host did not
+/// allocate.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct PnsPreviewItem {
+  /// How many points the centre line has.
+  pub point_count: usize,
+  /// The full width in nanometres.
+  pub width: i64,
+  /// The dense copper layer index to draw on.
+  pub layer: i32,
+  /// The net, counted from one, or zero for no net.
+  pub net: u32,
+  /// How to draw it.
+  pub style: PnsPreviewStyle,
+  /// The clearance outline to draw around it in nanometres, or a negative
+  /// value when no rule applies.
+  pub clearance: i64,
+}
+
+/// One via of the session's latest preview frame.
+///
+/// Mirrors `pnsrouter::router::PreviewVia`.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct PnsPreviewVia {
+  /// The centre.
+  pub pos: PnsPoint,
+  /// The copper diameter in nanometres.
+  pub diameter: i64,
+  /// The drill diameter in nanometres.
+  pub drill: i64,
+  /// The first dense copper layer index it spans.
+  pub layer_start: i32,
+  /// The last dense copper layer index it spans, inclusive.
+  pub layer_end: i32,
+  /// The net, counted from one, or zero for no net.
+  pub net: u32,
+  /// How to draw it.
+  pub style: PnsPreviewStyle,
+  /// The clearance outline to draw around it in nanometres, or a negative
+  /// value when no rule applies.
+  pub clearance: i64,
+}
+
+/// One obstacle the route being placed runs into.
+///
+/// Mirrors `pnsrouter::router::ViolationMarker`, minus the engine item id,
+/// which means nothing to the host.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct PnsViolationMarker {
+  /// The obstacle as the host knows it, or zero for something this
+  /// session created and the host has no id for yet.
+  pub host_id: u64,
+  /// The clearance that was asked for and not met, in nanometres.
+  pub clearance: i64,
+  /// The dense copper layer index to draw the obstacle on instead of its
+  /// own, or a negative value to draw it on its own layers.
+  pub forced_layer: i32,
+  /// Whether the host should hide the obstacle's normal rendering while
+  /// this marker is drawn.
+  pub hide_original: bool,
+}
+
+/// One item a host has to create or rewrite after a commit.
+///
+/// Mirrors `pnsrouter::router::NewItem` with its
+/// `pnsrouter::router::NewGeometry` flattened into the fields
+/// [`PnsNewItem::kind`] names, the same way [`PnsShape`] flattens a shape.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct PnsNewItem {
+  /// Which of the fields below are meaningful.
+  pub kind: PnsNewGeometryKind,
+  /// The net, counted from one, or zero for no net. The engine's orphan
+  /// net, which a route started in free space is placed on, also reads
+  /// back as zero because the host has no net for it.
+  pub net: u32,
+  /// The first dense copper layer index the item occupies.
+  pub layer_start: i32,
+  /// The last dense copper layer index the item occupies, inclusive.
+  pub layer_end: i32,
+  /// The host object the item descends from, or zero for a freshly routed
+  /// one.
+  pub source: u64,
+  /// One end of a segment's centre line.
+  pub p1: PnsPoint,
+  /// The other end of a segment's centre line.
+  pub p2: PnsPoint,
+  /// The full width of a segment in nanometres.
+  pub width: i64,
+  /// The centre of a via.
+  pub pos: PnsPoint,
+  /// The copper diameter of a via in nanometres.
+  pub diameter: i64,
+  /// The drill diameter of a via in nanometres.
+  pub drill: i64,
+  /// How far through the copper stack a via reaches.
+  pub via_type: PnsViaType,
+}
 
 /// A routing session over one board snapshot.
 ///
 /// Owned by C++ through a `RustHandle` and deleted by
 /// [`ffi_pnsrouter_delete`].
+///
+/// The session keeps the latest preview frame and the latest commit inside
+/// itself, and C++ reads them back through the accessors below right after
+/// the call that produced them. That keeps the boundary to one opaque
+/// handle: a `PreviewFrame` and a `CommitDiff` both hold variable length
+/// lists, so handing either out by value would need a second handle type
+/// and a second deleter for a value that is read once and dropped.
 pub struct PnsRouter {
   /// The session itself.
   router: Router,
+  /// The rule table, kept so that [`ffi_pnsrouter_set_settings`] can
+  /// derive the sizes again the way [`ffi_pnsrouter_new`] did.
+  rules: LibrePcbRules,
   /// How many copper layers the snapshot described.
   copper_layer_count: u8,
+  /// The frame of the last event that produced one.
+  frame: PreviewFrame,
+  /// The commit of the last `stop_routing` or terminal fix.
+  diff: CommitDiff,
+  /// The answer of the last [`ffi_pnsrouter_hover`].
+  hover: Vec<HostId>,
+}
+
+impl PnsRouter {
+  /// Store one preview frame as the session's latest.
+  fn set_frame(&mut self, frame: PreviewFrame) {
+    self.frame = frame;
+  }
+
+  /// Store one commit as the session's latest, which also ends the frame
+  /// the commit grew out of.
+  fn set_diff(&mut self, diff: CommitDiff) {
+    self.diff = diff;
+    self.frame = PreviewFrame::default();
+  }
+}
+
+/// Derive the engine's settings and sizes from the host's four values.
+///
+/// Shared by [`ffi_pnsrouter_new`] and [`ffi_pnsrouter_set_settings`], so
+/// that a session created with one set of values and a session updated to
+/// it are the same session.
+///
+/// `base` is the settings to change, which is
+/// `RoutingSettings::default()` for a fresh session and the session's own
+/// settings for an update, so that a corner mode the user cycled survives
+/// a width change.
+fn derive_settings(
+  base: RoutingSettings,
+  rules: &LibrePcbRules,
+  copper_layer_count: u8,
+  settings: &PnsRouterSettings,
+) -> (RoutingSettings, Sizes) {
+  let routing_settings = RoutingSettings {
+    mode: match settings.mode {
+      0 => RouterMode::MarkObstacles,
+      1 => RouterMode::Shove,
+      _ => RouterMode::Walkaround,
+    },
+    ..base
+  };
+
+  let mut sizes = Sizes {
+    clearance: rules.max_clearance,
+    min_clearance: rules.board.min_copper_copper_clearance,
+    board_min_track_width: rules.board.min_copper_width,
+    track_width: to_length(settings.track_width).unwrap_or(0),
+    via_diameter: to_length(settings.via_diameter).unwrap_or(0),
+    via_drill: to_length(settings.via_drill).unwrap_or(0),
+    // The router only ever places through vias for now, so the via layer
+    // pair covers the whole copper stack; see the integration design
+    // note, section 1.8.
+    via_type: ViaType::Through,
+    hole_to_hole: rules.board.min_drill_drill_clearance,
+    ..Sizes::default()
+  };
+
+  sizes.clear_layer_pairs();
+  sizes.add_layer_pair(0, i32::from(copper_layer_count).max(1) - 1);
+
+  (routing_settings, sizes)
 }
 
 /// Create a routing session, consuming the snapshot.
 ///
 /// Wraps `pnsrouter::router::Router::new`. The snapshot pointer is invalid
 /// afterwards and must not be deleted again.
-///
-/// The via layer pair covers the whole copper stack, because the router
-/// only ever places through vias for now; see the integration design note,
-/// section 1.8.
 #[no_mangle]
 extern "C" fn ffi_pnsrouter_new(
   snapshot: *mut PnsSnapshot,
@@ -1325,26 +1586,12 @@ extern "C" fn ffi_pnsrouter_new(
   snapshot.rules.recompute_max_clearance();
   snapshot.snapshot.max_clearance = snapshot.rules.max_clearance;
 
-  let mut routing_settings = RoutingSettings::default();
-  routing_settings.mode = match settings.mode {
-    0 => RouterMode::MarkObstacles,
-    1 => RouterMode::Shove,
-    _ => RouterMode::Walkaround,
-  };
-
-  let mut sizes = Sizes::default();
-  sizes.clearance = snapshot.rules.max_clearance;
-  sizes.min_clearance = snapshot.rules.board.min_copper_copper_clearance;
-  sizes.board_min_track_width = snapshot.rules.board.min_copper_width;
-  sizes.track_width = to_length(settings.track_width).unwrap_or(0);
-  sizes.via_diameter = to_length(settings.via_diameter).unwrap_or(0);
-  sizes.via_drill = to_length(settings.via_drill).unwrap_or(0);
-  sizes.via_type = ViaType::Through;
-  sizes.hole_to_hole = snapshot.rules.board.min_drill_drill_clearance;
-  sizes.clear_layer_pairs();
-  sizes.add_layer_pair(
-    0,
-    i32::from(snapshot.snapshot.copper_layer_count).max(1) - 1,
+  let copper_layer_count = snapshot.snapshot.copper_layer_count;
+  let (routing_settings, sizes) = derive_settings(
+    RoutingSettings::default(),
+    &snapshot.rules,
+    copper_layer_count,
+    settings,
   );
 
   let router = Router::new(
@@ -1356,7 +1603,11 @@ extern "C" fn ffi_pnsrouter_new(
 
   Box::into_raw(Box::new(PnsRouter {
     router,
-    copper_layer_count: snapshot.snapshot.copper_layer_count,
+    rules: snapshot.rules.clone(),
+    copper_layer_count,
+    frame: PreviewFrame::default(),
+    diff: CommitDiff::default(),
+    hover: Vec::new(),
   }))
 }
 
@@ -1378,9 +1629,676 @@ extern "C" fn ffi_pnsrouter_copper_layer_count(obj: &PnsRouter) -> u8 {
 
 /// Whether a route is currently being placed.
 ///
-/// Wraps `pnsrouter::router::Router::routing_in_progress`. A freshly
-/// created session answers false, which is what the step 1 test asserts.
+/// Wraps `pnsrouter::router::Router::routing_in_progress`.
 #[no_mangle]
 extern "C" fn ffi_pnsrouter_routing_in_progress(obj: &PnsRouter) -> bool {
   obj.router.routing_in_progress()
+}
+
+/// Replace the routing mode and the sizes of a session.
+///
+/// Wraps `pnsrouter::router::Router::set_settings` and
+/// `pnsrouter::router::Router::set_sizes`. A running placement keeps the
+/// sizes it started with, because the crate's placer has no mid route
+/// entry point for them yet; see the port note on `Router::set_sizes`.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_set_settings(
+  obj: &mut PnsRouter,
+  settings: &PnsRouterSettings,
+) {
+  let (routing_settings, sizes) = derive_settings(
+    *obj.router.settings(),
+    &obj.rules,
+    obj.copper_layer_count,
+    settings,
+  );
+
+  obj.router.set_settings(routing_settings);
+  obj.router.set_sizes(sizes);
+}
+
+/// The copper layer the route is being placed on, or a negative value when
+/// nothing is being routed.
+///
+/// Wraps `pnsrouter::router::Router::current_layer`.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_current_layer(obj: &PnsRouter) -> i32 {
+  obj.router.current_layer().unwrap_or(-1)
+}
+
+/// Whether the next fix would place a via.
+///
+/// Wraps `pnsrouter::router::Router::placing_via`.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_placing_via(obj: &PnsRouter) -> bool {
+  obj.router.placing_via()
+}
+
+// ---------------------------------------------------------------------
+// Session events
+// ---------------------------------------------------------------------
+
+/// Find every host object under a point and return how many there are.
+///
+/// Wraps `pnsrouter::router::Router::hover`. `layer` is the dense copper
+/// layer index to filter by, or a negative value for "any layer". The
+/// answer is kept in the session and read back with
+/// [`ffi_pnsrouter_hover_at`], for the same reason the preview is; see
+/// [`PnsRouter`].
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_hover(
+  obj: &mut PnsRouter,
+  at: PnsPoint,
+  layer: i32,
+) -> usize {
+  let filter = if layer < 0 { None } else { Some(layer) };
+
+  obj.hover = obj.router.hover(to_cursor(at), filter);
+
+  obj.hover.len()
+}
+
+/// One host id of the last [`ffi_pnsrouter_hover`].
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_hover_at(obj: &PnsRouter, index: usize) -> u64 {
+  let Some(host) = obj.hover.get(index) else {
+    debug_assert!(false, "hover index {index} is out of range");
+
+    return 0;
+  };
+
+  host.0
+}
+
+/// Whether a route may be started at a point.
+///
+/// Wraps `pnsrouter::router::Router::is_starting_point_routable`. `start`
+/// is the host object under the cursor, or zero for free space.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_is_starting_point_routable(
+  obj: &PnsRouter,
+  at: PnsPoint,
+  start: u64,
+  layer: i32,
+) -> PnsStartResult {
+  to_start_result(obj.router.is_starting_point_routable(
+    to_cursor(at),
+    to_host_id(start),
+    layer,
+  ))
+}
+
+/// Begin routing a track.
+///
+/// Wraps `pnsrouter::router::Router::start_routing`. `start` is the host
+/// object under the cursor, or zero for free space. On success the
+/// session holds the frame of a placement that has not been moved yet,
+/// and on failure it holds an empty one.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_start_routing(
+  obj: &mut PnsRouter,
+  at: PnsPoint,
+  start: u64,
+  layer: i32,
+) -> PnsStartResult {
+  match obj
+    .router
+    .start_routing(to_cursor(at), to_host_id(start), layer)
+  {
+    Ok(frame) => {
+      obj.set_frame(frame);
+
+      PnsStartResult::Ok
+    }
+    Err(error) => {
+      obj.set_frame(PreviewFrame::default());
+
+      to_start_result(Err(error))
+    }
+  }
+}
+
+/// Move the end of the route, and store the frame it produced.
+///
+/// Wraps `pnsrouter::router::Router::move_to`. `at` is already snapped:
+/// snapping is host work. `end` is the host object under the cursor, or
+/// zero for free space.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_move_to(
+  obj: &mut PnsRouter,
+  at: PnsPoint,
+  end: u64,
+) {
+  let frame = obj.router.move_to(to_cursor(at), to_host_id(end));
+
+  obj.set_frame(frame);
+}
+
+/// Pin the route down to where the cursor is.
+///
+/// Wraps `pnsrouter::router::Router::fix_route`. A
+/// [`PnsFixOutcome::Continue`] leaves the frame after the fix in the
+/// session; a [`PnsFixOutcome::Finished`] leaves the commit there instead
+/// and clears the frame.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_fix_route(
+  obj: &mut PnsRouter,
+  at: PnsPoint,
+  end: u64,
+  force_finish: bool,
+) -> PnsFixOutcome {
+  match obj
+    .router
+    .fix_route(to_cursor(at), to_host_id(end), force_finish)
+  {
+    FixOutcome::Continue(frame) => {
+      obj.set_frame(frame);
+
+      PnsFixOutcome::Continue
+    }
+    FixOutcome::Finished(diff) => {
+      obj.set_diff(diff);
+
+      PnsFixOutcome::Finished
+    }
+  }
+}
+
+/// Route the rest of the way to the nearest unconnected anchor and finish.
+///
+/// Wraps `pnsrouter::router::Router::finish`, whose `None` becomes
+/// [`PnsFixOutcome::NotRouting`]: nothing was being routed, nothing
+/// unconnected was left to reach, or the route did not settle on the
+/// anchor. Nothing was committed in that case and the session is left
+/// exactly as it was.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_finish(obj: &mut PnsRouter) -> PnsFixOutcome {
+  match obj.router.finish() {
+    Some(FixOutcome::Continue(frame)) => {
+      obj.set_frame(frame);
+
+      PnsFixOutcome::Continue
+    }
+    Some(FixOutcome::Finished(diff)) => {
+      obj.set_diff(diff);
+
+      PnsFixOutcome::Finished
+    }
+    None => PnsFixOutcome::NotRouting,
+  }
+}
+
+/// Undo the last fix and answer where the undone leg began.
+///
+/// Wraps `pnsrouter::router::Router::undo_last_segment`, whose answer a
+/// host uses to warp the cursor back there. False when nothing was being
+/// routed or when there was nothing to undo, in which case `out` is not
+/// written.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_undo_last_segment(
+  obj: &mut PnsRouter,
+  out: &mut PnsPoint,
+) -> bool {
+  match obj.router.undo_last_segment() {
+    Some(at) => {
+      *out = to_ffi_point(at);
+
+      true
+    }
+    None => false,
+  }
+}
+
+/// Move the route to another copper layer.
+///
+/// Wraps `pnsrouter::router::Router::switch_layer`, which refuses once a
+/// fix has ended a leg without leaving a via behind.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_switch_layer(
+  obj: &mut PnsRouter,
+  layer: i32,
+) -> bool {
+  obj.router.switch_layer(layer)
+}
+
+/// Arm or disarm the via the next fix would place.
+///
+/// Wraps `pnsrouter::router::Router::toggle_via_placement`. The answer is
+/// whether the request was honoured, not the new state; read that back
+/// with [`ffi_pnsrouter_placing_via`]. The via is only materialised on the
+/// next move, so a host has to move before the preview shows it.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_toggle_via_placement(obj: &mut PnsRouter) -> bool {
+  obj.router.toggle_via_placement()
+}
+
+/// Turn the route's first corner the other way.
+///
+/// Wraps `pnsrouter::router::Router::flip_posture`.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_flip_posture(obj: &mut PnsRouter) {
+  obj.router.flip_posture();
+}
+
+/// Cycle between the 45 and the 90 degree corner mode.
+///
+/// Wraps `pnsrouter::router::Router::toggle_corner_mode`.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_toggle_corner_mode(obj: &mut PnsRouter) {
+  obj.router.toggle_corner_mode();
+}
+
+/// Commit what was routed and end the session.
+///
+/// Wraps `pnsrouter::router::Router::stop_routing`. The commit is left in
+/// the session and read back with the accessors below. An idle session
+/// answers with an empty commit.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_stop_routing(obj: &mut PnsRouter) {
+  let diff = obj.router.stop_routing();
+
+  obj.set_diff(diff);
+}
+
+/// Throw the session away without committing anything.
+///
+/// Wraps `pnsrouter::router::Router::abort_routing`. Both the frame and
+/// the commit are cleared, so a host that reads them afterwards sees
+/// nothing rather than the state the aborted route left behind.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_abort_routing(obj: &mut PnsRouter) {
+  obj.router.abort_routing();
+  obj.set_diff(CommitDiff::default());
+}
+
+// ---------------------------------------------------------------------
+// Reading the latest preview frame
+// ---------------------------------------------------------------------
+
+/// How many polylines the latest frame holds.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_item_count(obj: &PnsRouter) -> usize {
+  obj.frame.items.len()
+}
+
+/// One polyline of the latest frame, minus its points.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_item(
+  obj: &PnsRouter,
+  index: usize,
+  out: &mut PnsPreviewItem,
+) {
+  let Some(item) = obj.frame.items.get(index) else {
+    debug_assert!(false, "preview item index {index} is out of range");
+
+    return;
+  };
+
+  *out = PnsPreviewItem {
+    point_count: item.chain.point_count(),
+    width: i64::from(item.width),
+    layer: item.layer,
+    net: to_net_number(item.net),
+    style: to_ffi_style(item.style),
+    clearance: to_ffi_clearance(item.clearance),
+  };
+}
+
+/// One point of one polyline of the latest frame.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_item_point(
+  obj: &PnsRouter,
+  item_index: usize,
+  point_index: usize,
+) -> PnsPoint {
+  let Some(item) = obj.frame.items.get(item_index) else {
+    debug_assert!(false, "preview item index {item_index} is out of range");
+
+    return PnsPoint { x: 0, y: 0 };
+  };
+
+  if point_index >= item.chain.point_count() {
+    debug_assert!(false, "preview point index {point_index} is out of range");
+
+    return PnsPoint { x: 0, y: 0 };
+  }
+
+  to_ffi_point(item.chain.point(point_index))
+}
+
+/// Whether the latest frame holds the via the next fix would place.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_has_via(obj: &PnsRouter) -> bool {
+  obj.frame.via.is_some()
+}
+
+/// The via the next fix would place, when
+/// [`ffi_pnsrouter_preview_has_via`] answers true.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_via(
+  obj: &PnsRouter,
+  out: &mut PnsPreviewVia,
+) {
+  let Some(via) = obj.frame.via.as_ref() else {
+    debug_assert!(false, "the frame holds no head via");
+
+    return;
+  };
+
+  *out = to_ffi_via(via);
+}
+
+/// How many vias this session has already fixed.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_fixed_via_count(obj: &PnsRouter) -> usize {
+  obj.frame.fixed_vias.len()
+}
+
+/// One via this session has already fixed.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_fixed_via(
+  obj: &PnsRouter,
+  index: usize,
+  out: &mut PnsPreviewVia,
+) {
+  let Some(via) = obj.frame.fixed_vias.get(index) else {
+    debug_assert!(false, "fixed via index {index} is out of range");
+
+    return;
+  };
+
+  *out = to_ffi_via(via);
+}
+
+/// How many points the rat line from the end of the route holds, zero
+/// when there is none.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_ratline_point_count(
+  obj: &PnsRouter,
+) -> usize {
+  obj.frame.ratline.as_ref().map_or(0, LineChain::point_count)
+}
+
+/// One point of the rat line from the end of the route.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_ratline_point(
+  obj: &PnsRouter,
+  index: usize,
+) -> PnsPoint {
+  let Some(ratline) = obj.frame.ratline.as_ref() else {
+    debug_assert!(false, "the frame holds no rat line");
+
+    return PnsPoint { x: 0, y: 0 };
+  };
+
+  if index >= ratline.point_count() {
+    debug_assert!(false, "rat line point index {index} is out of range");
+
+    return PnsPoint { x: 0, y: 0 };
+  }
+
+  to_ffi_point(ratline.point(index))
+}
+
+/// How many obstacles the route being placed runs into.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_violation_count(obj: &PnsRouter) -> usize {
+  obj.frame.violations.len()
+}
+
+/// One obstacle the route being placed runs into.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_violation(
+  obj: &PnsRouter,
+  index: usize,
+  out: &mut PnsViolationMarker,
+) {
+  let Some(marker) = obj.frame.violations.get(index) else {
+    debug_assert!(false, "violation index {index} is out of range");
+
+    return;
+  };
+
+  *out = PnsViolationMarker {
+    host_id: marker.host.map_or(0, |host| host.0),
+    clearance: i64::from(marker.clearance),
+    forced_layer: marker.forced_layer.unwrap_or(-1),
+    hide_original: marker.hide_original,
+  };
+}
+
+/// How many board objects the host must stop drawing.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_hidden_count(obj: &PnsRouter) -> usize {
+  obj.frame.hidden.len()
+}
+
+/// One board object the host must stop drawing.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_hidden_at(
+  obj: &PnsRouter,
+  index: usize,
+) -> u64 {
+  let Some(host) = obj.frame.hidden.get(index) else {
+    debug_assert!(false, "hidden index {index} is out of range");
+
+    return 0;
+  };
+
+  host.0
+}
+
+// ---------------------------------------------------------------------
+// Reading the latest commit
+// ---------------------------------------------------------------------
+
+/// How many board objects the latest commit deletes.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_commit_removed_count(obj: &PnsRouter) -> usize {
+  obj.diff.removed.len()
+}
+
+/// One board object the latest commit deletes.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_commit_removed_at(
+  obj: &PnsRouter,
+  index: usize,
+) -> u64 {
+  let Some(host) = obj.diff.removed.get(index) else {
+    debug_assert!(false, "removed index {index} is out of range");
+
+    return 0;
+  };
+
+  host.0
+}
+
+/// How many board objects the latest commit creates.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_commit_added_count(obj: &PnsRouter) -> usize {
+  obj.diff.added.len()
+}
+
+/// One board object the latest commit creates.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_commit_added_at(
+  obj: &PnsRouter,
+  index: usize,
+  out: &mut PnsNewItem,
+) {
+  let Some(item) = obj.diff.added.get(index) else {
+    debug_assert!(false, "added index {index} is out of range");
+
+    return;
+  };
+
+  *out = to_ffi_new_item(item);
+}
+
+/// How many board objects the latest commit rewrites in place.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_commit_updated_count(obj: &PnsRouter) -> usize {
+  obj.diff.updated.len()
+}
+
+/// One board object the latest commit rewrites in place, and the host id
+/// whose identity it keeps.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_commit_updated_at(
+  obj: &PnsRouter,
+  index: usize,
+  out_host: &mut u64,
+  out_item: &mut PnsNewItem,
+) {
+  let Some((host, item)) = obj.diff.updated.get(index) else {
+    debug_assert!(false, "updated index {index} is out of range");
+
+    return;
+  };
+
+  *out_host = host.0;
+  *out_item = to_ffi_new_item(item);
+}
+
+// ---------------------------------------------------------------------
+// Session conversion helpers
+// ---------------------------------------------------------------------
+
+/// Narrow one cursor point to the engine's `i32` nanometres.
+///
+/// Unlike the snapshot builder, which rejects an out of range coordinate
+/// so that the host can name the board item, a cursor is clamped: it is
+/// not a board object, there is nothing to name, and clamping to the range
+/// the engine works in cannot wrap.
+fn to_cursor(point: PnsPoint) -> Vec2 {
+  let clamp = |value: i64| {
+    value.clamp(-MAX_COORDINATE, MAX_COORDINATE) as i32 // Never truncates.
+  };
+
+  Vec2::new(clamp(point.x), clamp(point.y))
+}
+
+/// Widen one engine point back to host nanometres.
+fn to_ffi_point(at: Vec2) -> PnsPoint {
+  PnsPoint {
+    x: i64::from(at.x),
+    y: i64::from(at.y),
+  }
+}
+
+/// Turn a host id of zero into "no object".
+fn to_host_id(host: u64) -> Option<HostId> {
+  (host > 0).then_some(HostId(host))
+}
+
+/// Turn an engine net back into the host's net number.
+///
+/// The inverse of `to_item`'s net handling: no net is zero and net `n` is
+/// `n + 1`. The engine's orphan net, `NetId(u32::MAX)`, is the one net a
+/// host never sent and has no signal for, so it reads back as "no net"
+/// too; the C++ side turns both into a null `NetSignal`.
+fn to_net_number(net: Option<NetId>) -> u32 {
+  match net {
+    Some(net) if net.0 < u32::MAX => net.0 + 1,
+    _ => 0,
+  }
+}
+
+/// Turn an optional clearance into the negative-for-none convention.
+fn to_ffi_clearance(clearance: Option<i32>) -> i64 {
+  clearance.map_or(-1, i64::from)
+}
+
+/// Turn one engine preview style into its FFI value.
+fn to_ffi_style(style: PreviewStyle) -> PnsPreviewStyle {
+  match style {
+    PreviewStyle::Head => PnsPreviewStyle::Head,
+    PreviewStyle::Tail => PnsPreviewStyle::Tail,
+    PreviewStyle::Hover => PnsPreviewStyle::Hover,
+    PreviewStyle::SemiSolid => PnsPreviewStyle::SemiSolid,
+    PreviewStyle::Collision => PnsPreviewStyle::Collision,
+  }
+}
+
+/// Turn one engine via type into its FFI value.
+///
+/// The engine has five values where LibrePCB has three. A micro via is a
+/// blind via between an outer layer and its neighbour, so it reports as
+/// blind, and the unset value reports as a through via, which is the only
+/// kind this router places.
+fn to_ffi_via_type(via_type: ViaType) -> PnsViaType {
+  match via_type {
+    ViaType::Blind | ViaType::MicroVia => PnsViaType::Blind,
+    ViaType::Buried => PnsViaType::Buried,
+    ViaType::Through | ViaType::NotDefined => PnsViaType::Through,
+  }
+}
+
+/// Turn one engine preview via into its FFI struct.
+fn to_ffi_via(via: &PreviewVia) -> PnsPreviewVia {
+  PnsPreviewVia {
+    pos: to_ffi_point(via.pos),
+    diameter: i64::from(via.diameter),
+    drill: i64::from(via.drill),
+    layer_start: via.layers.start(),
+    layer_end: via.layers.end(),
+    net: to_net_number(via.net),
+    style: to_ffi_style(via.style),
+    clearance: to_ffi_clearance(via.clearance),
+  }
+}
+
+/// Turn one engine commit item into its FFI struct.
+fn to_ffi_new_item(item: &NewItem) -> PnsNewItem {
+  let mut out = PnsNewItem {
+    kind: PnsNewGeometryKind::Segment,
+    net: to_net_number(item.net),
+    layer_start: item.layers.start(),
+    layer_end: item.layers.end(),
+    source: item.source.map_or(0, |host| host.0),
+    p1: PnsPoint { x: 0, y: 0 },
+    p2: PnsPoint { x: 0, y: 0 },
+    width: 0,
+    pos: PnsPoint { x: 0, y: 0 },
+    diameter: 0,
+    drill: 0,
+    via_type: PnsViaType::Through,
+  };
+
+  match item.geometry {
+    NewGeometry::Segment { seg, width } => {
+      out.kind = PnsNewGeometryKind::Segment;
+      out.p1 = to_ffi_point(seg.a);
+      out.p2 = to_ffi_point(seg.b);
+      out.width = i64::from(width);
+    }
+    NewGeometry::Via {
+      pos,
+      diameter,
+      drill,
+      via_type,
+    } => {
+      out.kind = PnsNewGeometryKind::Via;
+      out.pos = to_ffi_point(pos);
+      out.diameter = i64::from(diameter);
+      out.drill = i64::from(drill);
+      out.via_type = to_ffi_via_type(via_type);
+    }
+  }
+
+  out
+}
+
+/// Flatten a start result into its FFI enum.
+fn to_start_result(result: Result<(), StartError>) -> PnsStartResult {
+  match result {
+    Ok(()) => PnsStartResult::Ok,
+    Err(StartError::AlreadyRouting) => PnsStartResult::AlreadyRouting,
+    Err(StartError::UnknownStartItem(_)) => PnsStartResult::UnknownStartItem,
+    Err(StartError::NotRoutable(_)) => PnsStartResult::NotRoutable,
+    Err(StartError::StartPointViolatesRules) => {
+      PnsStartResult::StartPointViolatesRules
+    }
+    Err(StartError::PlacerRefused) => PnsStartResult::PlacerRefused,
+  }
 }

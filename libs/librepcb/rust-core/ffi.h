@@ -161,6 +161,30 @@ enum class PnsConstraintKind {
 };
 
 /**
+ * What happened to a fix.
+ *
+ * Mirrors `pnsrouter::router::FixOutcome` plus the "nothing was being
+ * routed" case, which the crate spells as `Option::None` on
+ * `Router::finish`.
+ */
+enum class PnsFixOutcome {
+  /**
+   * `FixOutcome::Continue`: the placement carries on, and the session
+   * holds the frame after the fix.
+   */
+  Continue = 0,
+  /**
+   * `FixOutcome::Finished`: the route reached its target and was
+   * committed, so the session holds the commit and no frame.
+   */
+  Finished = 1,
+  /**
+   * Nothing was being routed, so nothing was committed either.
+   */
+  NotRouting = 2,
+};
+
+/**
  * Which of a host object's two engine items a debug query means.
  *
  * A drilled pad becomes a solid plus a hole that the engine creates
@@ -176,6 +200,55 @@ enum class PnsItemRole {
    * The hole the engine drilled through it.
    */
   Hole = 1,
+};
+
+/**
+ * Which fields of a [`PnsNewItem`] are meaningful.
+ *
+ * Mirrors the two variants of `pnsrouter::router::NewGeometry`, which is
+ * all a single track placer emits.
+ */
+enum class PnsNewGeometryKind {
+  /**
+   * `NewGeometry::Segment`: [`PnsNewItem::p1`], [`PnsNewItem::p2`] and
+   * [`PnsNewItem::width`].
+   */
+  Segment = 0,
+  /**
+   * `NewGeometry::Via`: [`PnsNewItem::pos`], [`PnsNewItem::diameter`],
+   * [`PnsNewItem::drill`] and [`PnsNewItem::via_type`].
+   */
+  Via = 1,
+};
+
+/**
+ * How a host should draw one element of a preview frame.
+ *
+ * Mirrors `pnsrouter::router::PreviewStyle` value for value.
+ */
+enum class PnsPreviewStyle {
+  /**
+   * `PreviewStyle::Head`, the track being placed right now.
+   */
+  Head = 0,
+  /**
+   * `PreviewStyle::Tail`, geometry this session has already fixed.
+   */
+  Tail = 1,
+  /**
+   * `PreviewStyle::Hover`, the item under the cursor. Set by a host and
+   * never by the engine.
+   */
+  Hover = 2,
+  /**
+   * `PreviewStyle::SemiSolid`, one primitive of a rule area. Nothing
+   * emits it yet, because zones are not synced.
+   */
+  SemiSolid = 3,
+  /**
+   * `PreviewStyle::Collision`, something a violation was found on.
+   */
+  Collision = 4,
 };
 
 /**
@@ -239,6 +312,41 @@ enum class PnsShapeKind {
    * A closed polygon of [`PnsShape::vertices`].
    */
   Polygon = 3,
+};
+
+/**
+ * Why a routing session refused to start.
+ *
+ * Mirrors `Result<(), pnsrouter::router::StartError>`, flattened into one
+ * enum with success as its first value. The host id and the item id the
+ * two naming variants carry are dropped: the host already knows which
+ * object it asked about, and the engine's item id means nothing to it.
+ */
+enum class PnsStartResult {
+  /**
+   * The point may be routed from.
+   */
+  Ok = 0,
+  /**
+   * `StartError::AlreadyRouting`.
+   */
+  AlreadyRouting = 1,
+  /**
+   * `StartError::UnknownStartItem`.
+   */
+  UnknownStartItem = 2,
+  /**
+   * `StartError::NotRoutable`.
+   */
+  NotRoutable = 3,
+  /**
+   * `StartError::StartPointViolatesRules`.
+   */
+  StartPointViolatesRules = 4,
+  /**
+   * `StartError::PlacerRefused`.
+   */
+  PlacerRefused = 5,
 };
 
 /**
@@ -343,6 +451,13 @@ struct InteractiveHtmlBom;
  *
  * Owned by C++ through a `RustHandle` and deleted by
  * [`ffi_pnsrouter_delete`].
+ *
+ * The session keeps the latest preview frame and the latest commit inside
+ * itself, and C++ reads them back through the accessors below right after
+ * the call that produced them. That keeps the boundary to one opaque
+ * handle: a `PreviewFrame` and a `CommitDiff` both hold variable length
+ * lists, so handing either out by value would need a second handle type
+ * and a second deleter for a value that is read once and dropped.
  */
 struct PnsRouter;
 
@@ -770,6 +885,172 @@ struct PnsRouterSettings {
   int64_t via_drill;
 };
 
+/**
+ * One polyline of the session's latest preview frame.
+ *
+ * Mirrors `pnsrouter::router::PreviewItem`. The centre line is read point
+ * by point with [`ffi_pnsrouter_preview_item_point`], because a variable
+ * length list cannot ride in a `#[repr(C)]` struct the host did not
+ * allocate.
+ */
+struct PnsPreviewItem {
+  /**
+   * How many points the centre line has.
+   */
+  size_t point_count;
+  /**
+   * The full width in nanometres.
+   */
+  int64_t width;
+  /**
+   * The dense copper layer index to draw on.
+   */
+  int32_t layer;
+  /**
+   * The net, counted from one, or zero for no net.
+   */
+  uint32_t net;
+  /**
+   * How to draw it.
+   */
+  PnsPreviewStyle style;
+  /**
+   * The clearance outline to draw around it in nanometres, or a negative
+   * value when no rule applies.
+   */
+  int64_t clearance;
+};
+
+/**
+ * One via of the session's latest preview frame.
+ *
+ * Mirrors `pnsrouter::router::PreviewVia`.
+ */
+struct PnsPreviewVia {
+  /**
+   * The centre.
+   */
+  PnsPoint pos;
+  /**
+   * The copper diameter in nanometres.
+   */
+  int64_t diameter;
+  /**
+   * The drill diameter in nanometres.
+   */
+  int64_t drill;
+  /**
+   * The first dense copper layer index it spans.
+   */
+  int32_t layer_start;
+  /**
+   * The last dense copper layer index it spans, inclusive.
+   */
+  int32_t layer_end;
+  /**
+   * The net, counted from one, or zero for no net.
+   */
+  uint32_t net;
+  /**
+   * How to draw it.
+   */
+  PnsPreviewStyle style;
+  /**
+   * The clearance outline to draw around it in nanometres, or a negative
+   * value when no rule applies.
+   */
+  int64_t clearance;
+};
+
+/**
+ * One obstacle the route being placed runs into.
+ *
+ * Mirrors `pnsrouter::router::ViolationMarker`, minus the engine item id,
+ * which means nothing to the host.
+ */
+struct PnsViolationMarker {
+  /**
+   * The obstacle as the host knows it, or zero for something this
+   * session created and the host has no id for yet.
+   */
+  uint64_t host_id;
+  /**
+   * The clearance that was asked for and not met, in nanometres.
+   */
+  int64_t clearance;
+  /**
+   * The dense copper layer index to draw the obstacle on instead of its
+   * own, or a negative value to draw it on its own layers.
+   */
+  int32_t forced_layer;
+  /**
+   * Whether the host should hide the obstacle's normal rendering while
+   * this marker is drawn.
+   */
+  bool hide_original;
+};
+
+/**
+ * One item a host has to create or rewrite after a commit.
+ *
+ * Mirrors `pnsrouter::router::NewItem` with its
+ * `pnsrouter::router::NewGeometry` flattened into the fields
+ * [`PnsNewItem::kind`] names, the same way [`PnsShape`] flattens a shape.
+ */
+struct PnsNewItem {
+  /**
+   * Which of the fields below are meaningful.
+   */
+  PnsNewGeometryKind kind;
+  /**
+   * The net, counted from one, or zero for no net. The engine's orphan
+   * net, which a route started in free space is placed on, also reads
+   * back as zero because the host has no net for it.
+   */
+  uint32_t net;
+  /**
+   * The first dense copper layer index the item occupies.
+   */
+  int32_t layer_start;
+  /**
+   * The last dense copper layer index the item occupies, inclusive.
+   */
+  int32_t layer_end;
+  /**
+   * The host object the item descends from, or zero for a freshly routed
+   * one.
+   */
+  uint64_t source;
+  /**
+   * One end of a segment's centre line.
+   */
+  PnsPoint p1;
+  /**
+   * The other end of a segment's centre line.
+   */
+  PnsPoint p2;
+  /**
+   * The full width of a segment in nanometres.
+   */
+  int64_t width;
+  /**
+   * The centre of a via.
+   */
+  PnsPoint pos;
+  /**
+   * The copper diameter of a via in nanometres.
+   */
+  int64_t diameter;
+  /**
+   * The drill diameter of a via in nanometres.
+   */
+  int64_t drill;
+  /**
+   * How far through the copper stack a via reaches.
+   */
+  PnsViaType via_type;
+};
+
 extern "C" {
 
 /**
@@ -1153,10 +1434,6 @@ int32_t ffi_pnsrouter_snapshot_max_clearance(PnsSnapshot * NONNULL obj);
  *
  * Wraps `pnsrouter::router::Router::new`. The snapshot pointer is invalid
  * afterwards and must not be deleted again.
- *
- * The via layer pair covers the whole copper stack, because the router
- * only ever places through vias for now; see the integration design note,
- * section 1.8.
  */
 PnsRouter *ffi_pnsrouter_new(PnsSnapshot *snapshot,
                              const PnsRouterSettings * NONNULL settings);
@@ -1177,10 +1454,284 @@ uint8_t ffi_pnsrouter_copper_layer_count(const PnsRouter * NONNULL obj);
 /**
  * Whether a route is currently being placed.
  *
- * Wraps `pnsrouter::router::Router::routing_in_progress`. A freshly
- * created session answers false, which is what the step 1 test asserts.
+ * Wraps `pnsrouter::router::Router::routing_in_progress`.
  */
 bool ffi_pnsrouter_routing_in_progress(const PnsRouter * NONNULL obj);
+
+/**
+ * Replace the routing mode and the sizes of a session.
+ *
+ * Wraps `pnsrouter::router::Router::set_settings` and
+ * `pnsrouter::router::Router::set_sizes`. A running placement keeps the
+ * sizes it started with, because the crate's placer has no mid route
+ * entry point for them yet; see the port note on `Router::set_sizes`.
+ */
+void ffi_pnsrouter_set_settings(PnsRouter * NONNULL obj,
+                                const PnsRouterSettings * NONNULL settings);
+
+/**
+ * The copper layer the route is being placed on, or a negative value when
+ * nothing is being routed.
+ *
+ * Wraps `pnsrouter::router::Router::current_layer`.
+ */
+int32_t ffi_pnsrouter_current_layer(const PnsRouter * NONNULL obj);
+
+/**
+ * Whether the next fix would place a via.
+ *
+ * Wraps `pnsrouter::router::Router::placing_via`.
+ */
+bool ffi_pnsrouter_placing_via(const PnsRouter * NONNULL obj);
+
+/**
+ * Find every host object under a point and return how many there are.
+ *
+ * Wraps `pnsrouter::router::Router::hover`. `layer` is the dense copper
+ * layer index to filter by, or a negative value for "any layer". The
+ * answer is kept in the session and read back with
+ * [`ffi_pnsrouter_hover_at`], for the same reason the preview is; see
+ * [`PnsRouter`].
+ */
+size_t ffi_pnsrouter_hover(PnsRouter * NONNULL obj, PnsPoint at, int32_t layer);
+
+/**
+ * One host id of the last [`ffi_pnsrouter_hover`].
+ */
+uint64_t ffi_pnsrouter_hover_at(const PnsRouter * NONNULL obj, size_t index);
+
+/**
+ * Whether a route may be started at a point.
+ *
+ * Wraps `pnsrouter::router::Router::is_starting_point_routable`. `start`
+ * is the host object under the cursor, or zero for free space.
+ */
+PnsStartResult ffi_pnsrouter_is_starting_point_routable(const PnsRouter * NONNULL obj,
+                                                        PnsPoint at,
+                                                        uint64_t start,
+                                                        int32_t layer);
+
+/**
+ * Begin routing a track.
+ *
+ * Wraps `pnsrouter::router::Router::start_routing`. `start` is the host
+ * object under the cursor, or zero for free space. On success the
+ * session holds the frame of a placement that has not been moved yet,
+ * and on failure it holds an empty one.
+ */
+PnsStartResult ffi_pnsrouter_start_routing(PnsRouter * NONNULL obj,
+                                           PnsPoint at,
+                                           uint64_t start,
+                                           int32_t layer);
+
+/**
+ * Move the end of the route, and store the frame it produced.
+ *
+ * Wraps `pnsrouter::router::Router::move_to`. `at` is already snapped:
+ * snapping is host work. `end` is the host object under the cursor, or
+ * zero for free space.
+ */
+void ffi_pnsrouter_move_to(PnsRouter * NONNULL obj, PnsPoint at, uint64_t end);
+
+/**
+ * Pin the route down to where the cursor is.
+ *
+ * Wraps `pnsrouter::router::Router::fix_route`. A
+ * [`PnsFixOutcome::Continue`] leaves the frame after the fix in the
+ * session; a [`PnsFixOutcome::Finished`] leaves the commit there instead
+ * and clears the frame.
+ */
+PnsFixOutcome ffi_pnsrouter_fix_route(PnsRouter * NONNULL obj,
+                                      PnsPoint at,
+                                      uint64_t end,
+                                      bool force_finish);
+
+/**
+ * Route the rest of the way to the nearest unconnected anchor and finish.
+ *
+ * Wraps `pnsrouter::router::Router::finish`, whose `None` becomes
+ * [`PnsFixOutcome::NotRouting`]: nothing was being routed, nothing
+ * unconnected was left to reach, or the route did not settle on the
+ * anchor. Nothing was committed in that case and the session is left
+ * exactly as it was.
+ */
+PnsFixOutcome ffi_pnsrouter_finish(PnsRouter * NONNULL obj);
+
+/**
+ * Undo the last fix and answer where the undone leg began.
+ *
+ * Wraps `pnsrouter::router::Router::undo_last_segment`, whose answer a
+ * host uses to warp the cursor back there. False when nothing was being
+ * routed or when there was nothing to undo, in which case `out` is not
+ * written.
+ */
+bool ffi_pnsrouter_undo_last_segment(PnsRouter * NONNULL obj,
+                                     PnsPoint * NONNULL out);
+
+/**
+ * Move the route to another copper layer.
+ *
+ * Wraps `pnsrouter::router::Router::switch_layer`, which refuses once a
+ * fix has ended a leg without leaving a via behind.
+ */
+bool ffi_pnsrouter_switch_layer(PnsRouter * NONNULL obj, int32_t layer);
+
+/**
+ * Arm or disarm the via the next fix would place.
+ *
+ * Wraps `pnsrouter::router::Router::toggle_via_placement`. The answer is
+ * whether the request was honoured, not the new state; read that back
+ * with [`ffi_pnsrouter_placing_via`]. The via is only materialised on the
+ * next move, so a host has to move before the preview shows it.
+ */
+bool ffi_pnsrouter_toggle_via_placement(PnsRouter * NONNULL obj);
+
+/**
+ * Turn the route's first corner the other way.
+ *
+ * Wraps `pnsrouter::router::Router::flip_posture`.
+ */
+void ffi_pnsrouter_flip_posture(PnsRouter * NONNULL obj);
+
+/**
+ * Cycle between the 45 and the 90 degree corner mode.
+ *
+ * Wraps `pnsrouter::router::Router::toggle_corner_mode`.
+ */
+void ffi_pnsrouter_toggle_corner_mode(PnsRouter * NONNULL obj);
+
+/**
+ * Commit what was routed and end the session.
+ *
+ * Wraps `pnsrouter::router::Router::stop_routing`. The commit is left in
+ * the session and read back with the accessors below. An idle session
+ * answers with an empty commit.
+ */
+void ffi_pnsrouter_stop_routing(PnsRouter * NONNULL obj);
+
+/**
+ * Throw the session away without committing anything.
+ *
+ * Wraps `pnsrouter::router::Router::abort_routing`. Both the frame and
+ * the commit are cleared, so a host that reads them afterwards sees
+ * nothing rather than the state the aborted route left behind.
+ */
+void ffi_pnsrouter_abort_routing(PnsRouter * NONNULL obj);
+
+/**
+ * How many polylines the latest frame holds.
+ */
+size_t ffi_pnsrouter_preview_item_count(const PnsRouter * NONNULL obj);
+
+/**
+ * One polyline of the latest frame, minus its points.
+ */
+void ffi_pnsrouter_preview_item(const PnsRouter * NONNULL obj,
+                                size_t index,
+                                PnsPreviewItem * NONNULL out);
+
+/**
+ * One point of one polyline of the latest frame.
+ */
+PnsPoint ffi_pnsrouter_preview_item_point(const PnsRouter * NONNULL obj,
+                                          size_t item_index,
+                                          size_t point_index);
+
+/**
+ * Whether the latest frame holds the via the next fix would place.
+ */
+bool ffi_pnsrouter_preview_has_via(const PnsRouter * NONNULL obj);
+
+/**
+ * The via the next fix would place, when
+ * [`ffi_pnsrouter_preview_has_via`] answers true.
+ */
+void ffi_pnsrouter_preview_via(const PnsRouter * NONNULL obj,
+                               PnsPreviewVia * NONNULL out);
+
+/**
+ * How many vias this session has already fixed.
+ */
+size_t ffi_pnsrouter_preview_fixed_via_count(const PnsRouter * NONNULL obj);
+
+/**
+ * One via this session has already fixed.
+ */
+void ffi_pnsrouter_preview_fixed_via(const PnsRouter * NONNULL obj,
+                                     size_t index,
+                                     PnsPreviewVia * NONNULL out);
+
+/**
+ * How many points the rat line from the end of the route holds, zero
+ * when there is none.
+ */
+size_t ffi_pnsrouter_preview_ratline_point_count(const PnsRouter * NONNULL obj);
+
+/**
+ * One point of the rat line from the end of the route.
+ */
+PnsPoint ffi_pnsrouter_preview_ratline_point(const PnsRouter * NONNULL obj,
+                                             size_t index);
+
+/**
+ * How many obstacles the route being placed runs into.
+ */
+size_t ffi_pnsrouter_preview_violation_count(const PnsRouter * NONNULL obj);
+
+/**
+ * One obstacle the route being placed runs into.
+ */
+void ffi_pnsrouter_preview_violation(const PnsRouter * NONNULL obj,
+                                     size_t index,
+                                     PnsViolationMarker * NONNULL out);
+
+/**
+ * How many board objects the host must stop drawing.
+ */
+size_t ffi_pnsrouter_preview_hidden_count(const PnsRouter * NONNULL obj);
+
+/**
+ * One board object the host must stop drawing.
+ */
+uint64_t ffi_pnsrouter_preview_hidden_at(const PnsRouter * NONNULL obj,
+                                         size_t index);
+
+/**
+ * How many board objects the latest commit deletes.
+ */
+size_t ffi_pnsrouter_commit_removed_count(const PnsRouter * NONNULL obj);
+
+/**
+ * One board object the latest commit deletes.
+ */
+uint64_t ffi_pnsrouter_commit_removed_at(const PnsRouter * NONNULL obj,
+                                         size_t index);
+
+/**
+ * How many board objects the latest commit creates.
+ */
+size_t ffi_pnsrouter_commit_added_count(const PnsRouter * NONNULL obj);
+
+/**
+ * One board object the latest commit creates.
+ */
+void ffi_pnsrouter_commit_added_at(const PnsRouter * NONNULL obj,
+                                   size_t index,
+                                   PnsNewItem * NONNULL out);
+
+/**
+ * How many board objects the latest commit rewrites in place.
+ */
+size_t ffi_pnsrouter_commit_updated_count(const PnsRouter * NONNULL obj);
+
+/**
+ * One board object the latest commit rewrites in place, and the host id
+ * whose identity it keeps.
+ */
+void ffi_pnsrouter_commit_updated_at(const PnsRouter * NONNULL obj,
+                                     size_t index,
+                                     uint64_t * NONNULL out_host,
+                                     PnsNewItem * NONNULL out_item);
 
 /**
  * Wrapper for [increment_number_in_string]
