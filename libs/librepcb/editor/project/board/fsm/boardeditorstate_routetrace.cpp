@@ -24,6 +24,8 @@
 
 #include "../../../undostack.h"
 #include "../../cmd/cmdboardapplypnscommit.h"
+#include "../boardgraphicsscene.h"
+#include "../boardpnspreview.h"
 #include "../graphicsitems/bgi_netline.h"
 #include "../graphicsitems/bgi_netpoint.h"
 #include "../graphicsitems/bgi_pad.h"
@@ -56,6 +58,7 @@ BoardEditorState_RouteTrace::BoardEditorState_RouteTrace(
     const Context& context) noexcept
   : BoardEditorState(context),
     mRouter(),
+    mPreviewItems(),
     mCurrentLayer(&Layer::topCopper()),
     mCurrentWidth(mContext.board.getDesignRules().getDefaultTraceWidth()),
     mCurrentViaDrill(std::nullopt),
@@ -84,12 +87,20 @@ bool BoardEditorState_RouteTrace::entry() noexcept {
     return true;
   }
 
+  if (BoardGraphicsScene* scene = getActiveBoardScene()) {
+    mPreviewItems.reset(new BoardPnsPreviewItems(*scene, mContext.layers));
+  }
+
   mAdapter.fsmToolEnter(*this);
   mAdapter.fsmSetViewCursor(Qt::CrossCursor);
   return true;
 }
 
 bool BoardEditorState_RouteTrace::exit() noexcept {
+  // Stop drawing before the board is edited: the preview holds board objects
+  // hidden and the commit below can delete them.
+  mPreviewItems.reset();
+
   if (mRouter && mRouter->isRoutingInProgress()) {
     // Keep whatever was fixed, like escape does, but do not build a new
     // session for a tool which is going away.
@@ -482,7 +493,9 @@ void BoardEditorState_RouteTrace::startRouting(
   mAdapter.fsmCrossProbe({mCurrentNetSignal});
   emit layerChanged(getLayer());
 
-  // Step 7: Update the preview from mRouter->getPreview() here.
+  if (mPreviewItems) {
+    mPreviewItems->update(mRouter->getPreview());
+  }
 }
 
 void BoardEditorState_RouteTrace::moveToCursor() noexcept {
@@ -491,7 +504,9 @@ void BoardEditorState_RouteTrace::moveToCursor() noexcept {
   const SnappedCursor cursor = snapCursor();
   mRouter->moveTo(cursor.pos, cursor.item);
 
-  // Step 7: Update the preview from mRouter->getPreview() here.
+  if (mPreviewItems) {
+    mPreviewItems->update(mRouter->getPreview());
+  }
 }
 
 void BoardEditorState_RouteTrace::fixRoute(const SnappedCursor& cursor,
@@ -501,11 +516,16 @@ void BoardEditorState_RouteTrace::fixRoute(const SnappedCursor& cursor,
   const BoardPnsRouter::FixOutcome outcome =
       mRouter->fixRoute(cursor.pos, cursor.item, forceFinish);
 
-  // Step 7: Update the preview from mRouter->getPreview() here.
+  if (mPreviewItems) {
+    mPreviewItems->update(mRouter->getPreview());
+  }
 
   if (outcome == BoardPnsRouter::FixOutcome::Finished) {
     // Copy, the session which owns it is replaced below.
     const BoardPnsCommit commit = mRouter->getCommit();
+    if (mPreviewItems) {
+      mPreviewItems->clear();
+    }
     mCurrentNetSignal = nullptr;
     mAdapter.fsmCrossProbe();
     applyCommit(commit);
@@ -517,6 +537,9 @@ void BoardEditorState_RouteTrace::stopRouting() noexcept {
   if ((!mRouter) || (!mRouter->isRoutingInProgress())) return;
 
   const BoardPnsCommit commit = mRouter->stopRouting();
+  if (mPreviewItems) {
+    mPreviewItems->clear();
+  }
   mCurrentNetSignal = nullptr;
   mAdapter.fsmCrossProbe();
   applyCommit(commit);

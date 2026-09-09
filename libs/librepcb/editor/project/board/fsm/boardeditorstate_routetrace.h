@@ -43,6 +43,8 @@ class NetSignal;
 
 namespace editor {
 
+class BoardPnsPreviewItems;
+
 /*******************************************************************************
  *  Class BoardEditorState_RouteTrace
  ******************************************************************************/
@@ -235,6 +237,10 @@ private:  // Data
   /// The routing session. Null only if building it failed, in which case the
   /// tool is on its way out.
   std::unique_ptr<BoardPnsRouter> mRouter;
+
+  /// Draws what the session wants shown. Null if the tool was entered
+  /// without a graphics scene.
+  std::unique_ptr<BoardPnsPreviewItems> mPreviewItems;
 
   /// The layer a new route starts on. While routing, the router owns the
   /// current layer and #getLayer() reports its answer instead.

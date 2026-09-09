@@ -455,6 +455,8 @@ add_library(
   project/board/boardplanepropertiesdialog.cpp
   project/board/boardplanepropertiesdialog.h
   project/board/boardplanepropertiesdialog.ui
+  project/board/boardpnspreview.cpp
+  project/board/boardpnspreview.h
   project/board/boardselectionquery.cpp
   project/board/boardselectionquery.h
   project/board/boardsetupdialog.cpp
