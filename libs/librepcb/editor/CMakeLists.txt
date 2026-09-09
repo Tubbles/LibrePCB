@@ -532,6 +532,8 @@ add_library(
   project/cmd/cmdassemblyvariantremove.h
   project/cmd/cmdboardadd.cpp
   project/cmd/cmdboardadd.h
+  project/cmd/cmdboardapplypnscommit.cpp
+  project/cmd/cmdboardapplypnscommit.h
   project/cmd/cmdboardedit.cpp
   project/cmd/cmdboardedit.h
   project/cmd/cmdboardholeadd.cpp
