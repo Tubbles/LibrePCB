@@ -214,6 +214,17 @@ private:  // Methods
   void addPad(const BI_Pad& pad, int innerLayerCount);
 
   /**
+   * @brief Add one board outline or cutout, edge by edge
+   *
+   * A board edge keeps copper away from itself but is not an area: the
+   * router's polygon shape is filled, so emitting the outline as one polygon
+   * would make the whole board interior an obstacle and no route could ever
+   * start. Each edge becomes its own zero width obstacle instead, which is
+   * how KiCad syncs its own board edges.
+   */
+  void addBoardEdge(const BI_Polygon& polygon, quint64 id);
+
+  /**
    * @brief Reserve the next host ID for a board object
    */
   quint64 addHostRef(const BoardPnsHostRef& ref) noexcept;

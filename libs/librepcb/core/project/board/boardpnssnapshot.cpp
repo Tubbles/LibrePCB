@@ -545,14 +545,14 @@ void BoardPnsSnapshot::addPolygons(const Board& board) {
 
     BoardPnsHostRef ref;
     ref.polygon = polygon;
-    rs::PnsItemHeader header =
-        makeHeader(addHostRef(ref), 0, boardEdge ? 0 : denseLayer,
-                   boardEdge ? (mCopperLayerCount - 1) : denseLayer);
-    // A board edge spans every copper layer, carries no width and is not
-    // routable: its clearance comes from the copper to board rule and not
-    // from its shape.
-    header.routable = !boardEdge;
-    header.board_edge = boardEdge;
+    const quint64 hostId = addHostRef(ref);
+
+    if (boardEdge) {
+      addBoardEdge(*polygon, hostId);
+      continue;
+    }
+
+    rs::PnsItemHeader header = makeHeader(hostId, 0, denseLayer, denseLayer);
 
     std::vector<rs::PnsPoint> buffer;
     rs::PnsSolidGeometry geometry = {};
@@ -565,6 +565,38 @@ void BoardPnsSnapshot::addPolygons(const Board& board) {
     check(static_cast<int>(rs::ffi_pnsrouter_snapshot_add_solid(
               *mHandle, &header, &geometry)),
           QString("polygon %1").arg(polygon->getData().getUuid().toStr()));
+  }
+}
+
+void BoardPnsSnapshot::addBoardEdge(const BI_Polygon& polygon, quint64 id) {
+  const Path path = polygon.getData()
+                        .getPath()
+                        .flattenedArcs(maxArcTolerance())
+                        .toClosedPath();
+  const QVector<Vertex>& vertices = path.getVertices();
+
+  for (int i = 1; i < vertices.count(); ++i) {
+    const Point& p1 = vertices.at(i - 1).getPos();
+    const Point& p2 = vertices.at(i).getPos();
+    if (p1 == p2) {
+      continue;  // A repeated vertex is no edge.
+    }
+
+    // A board edge spans every copper layer, carries no width and is not
+    // routable: its clearance comes from the copper to board rule and not
+    // from its shape.
+    rs::PnsItemHeader header = makeHeader(id, 0, 0, mCopperLayerCount - 1);
+    header.routable = false;
+    header.board_edge = true;
+    header.compound_primitive = true;
+
+    rs::PnsSolidGeometry geometry = {};
+    geometry.shape = segmentShape(p1, p2, Length(0));
+    geometry.pos = toFfi(p1);
+    geometry.has_hole = false;
+    check(static_cast<int>(rs::ffi_pnsrouter_snapshot_add_solid(
+              *mHandle, &header, &geometry)),
+          QString("board edge %1").arg(polygon.getData().getUuid().toStr()));
   }
 }
 
