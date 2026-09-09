@@ -128,6 +128,141 @@ enum class InteractiveHtmlBomViewMode {
 };
 
 /**
+ * Which design rule a debug constraint query means.
+ *
+ * A subset of `pnsrouter::rules::ConstraintType`, holding the ones
+ * LibrePCB can answer; see the integration design note, section 2.2.
+ */
+enum class PnsConstraintKind {
+  /**
+   * Copper to copper clearance.
+   */
+  Clearance = 0,
+  /**
+   * Track width.
+   */
+  Width = 1,
+  /**
+   * Via drill diameter.
+   */
+  ViaHole = 2,
+  /**
+   * Copper to board edge clearance.
+   */
+  EdgeClearance = 3,
+  /**
+   * Hole to copper clearance.
+   */
+  HoleClearance = 4,
+  /**
+   * Hole to hole clearance.
+   */
+  HoleToHole = 5,
+};
+
+/**
+ * Which of a host object's two engine items a debug query means.
+ *
+ * A drilled pad becomes a solid plus a hole that the engine creates
+ * itself, and the hole is the interesting side of a hole clearance
+ * query.
+ */
+enum class PnsItemRole {
+  /**
+   * The copper item the host object became.
+   */
+  Copper = 0,
+  /**
+   * The hole the engine drilled through it.
+   */
+  Hole = 1,
+};
+
+/**
+ * What went wrong, if anything.
+ *
+ * Every snapshot builder entry point answers with one of these instead of
+ * panicking, so that the C++ side can raise a `RuntimeError` naming the
+ * board item that could not be converted.
+ */
+enum class PnsResult {
+  /**
+   * The call succeeded.
+   */
+  Ok = 0,
+  /**
+   * A coordinate was outside plus or minus 2 metres.
+   */
+  CoordinateOutOfRange = 1,
+  /**
+   * A polygon shape carried fewer than three vertices.
+   */
+  DegeneratePolygon = 2,
+  /**
+   * The layer range was empty or outside the board's copper stack.
+   */
+  InvalidLayerRange = 3,
+  /**
+   * A debug query named a host id the snapshot does not know.
+   */
+  UnknownItem = 4,
+  /**
+   * A clearance query answered "these two can never collide".
+   */
+  NoClearance = 5,
+};
+
+/**
+ * Which shape of the small geometry vocabulary a [`PnsShape`] carries.
+ *
+ * The four the engine has native support for. Keeping circles and
+ * rectangles native rather than polygonising everything is what keeps the
+ * collision inner loop cheap; see the integration design note, section
+ * 1.2.
+ */
+enum class PnsShapeKind {
+  /**
+   * A circle of [`PnsShape::center`] and [`PnsShape::radius`].
+   */
+  Circle = 0,
+  /**
+   * A rectangle centred on [`PnsShape::center`], of
+   * [`PnsShape::half_size`], with corner radius [`PnsShape::radius`].
+   */
+  Rect = 1,
+  /**
+   * A capsule from [`PnsShape::p1`] to [`PnsShape::p2`] of full width
+   * [`PnsShape::radius`].
+   */
+  Segment = 2,
+  /**
+   * A closed polygon of [`PnsShape::vertices`].
+   */
+  Polygon = 3,
+};
+
+/**
+ * How far through the copper stack a via reaches.
+ *
+ * Wrapper for the three of `pnsrouter::item::ViaType` LibrePCB can tell
+ * apart through `Via::isBlind` and `Via::isBuried`.
+ */
+enum class PnsViaType {
+  /**
+   * All the way through the board.
+   */
+  Through = 0,
+  /**
+   * From an outer layer to an inner one.
+   */
+  Blind = 1,
+  /**
+   * Between two inner layers.
+   */
+  Buried = 2,
+};
+
+/**
  * Interactive HTML BOM structure
  *
  * The top-level structure to build & generate a HTML BOM.
@@ -204,6 +339,23 @@ enum class InteractiveHtmlBomViewMode {
 struct InteractiveHtmlBom;
 
 /**
+ * A routing session over one board snapshot.
+ *
+ * Owned by C++ through a `RustHandle` and deleted by
+ * [`ffi_pnsrouter_delete`].
+ */
+struct PnsRouter;
+
+/**
+ * A board snapshot under construction, plus the rules the resolver reads.
+ *
+ * Owned by C++ through a `RustHandle`. Deleted either by
+ * [`ffi_pnsrouter_snapshot_delete`] or by [`ffi_pnsrouter_new`], which
+ * consumes it.
+ */
+struct PnsSnapshot;
+
+/**
  * Wrapper type for [Archive]
  */
 struct ZipArchive;
@@ -275,6 +427,347 @@ struct InteractiveHtmlBomRefMap {
    * Footprint ID
    */
   size_t id;
+};
+
+/**
+ * The board wide design rule values the resolver reads.
+ *
+ * Wrapper for `BoardDesignRuleCheckSettings` and `BoardDesignRules`; see
+ * the integration design note, section 2.1. Every value is in
+ * nanometres.
+ */
+struct PnsBoardRules {
+  /**
+   * `BoardDesignRuleCheckSettings::getMinCopperCopperClearance`.
+   */
+  int64_t min_copper_copper_clearance;
+  /**
+   * `BoardDesignRuleCheckSettings::getMinCopperBoardClearance`.
+   */
+  int64_t min_copper_board_clearance;
+  /**
+   * `BoardDesignRuleCheckSettings::getMinCopperNpthClearance`.
+   */
+  int64_t min_copper_npth_clearance;
+  /**
+   * `BoardDesignRuleCheckSettings::getMinDrillDrillClearance`.
+   */
+  int64_t min_drill_drill_clearance;
+  /**
+   * `BoardDesignRuleCheckSettings::getMinDrillBoardClearance`.
+   */
+  int64_t min_drill_board_clearance;
+  /**
+   * `BoardDesignRuleCheckSettings::getMinCopperWidth`.
+   */
+  int64_t min_copper_width;
+  /**
+   * `BoardDesignRuleCheckSettings::getMinPthDrillDiameter`.
+   */
+  int64_t min_pth_drill_diameter;
+  /**
+   * `BoardDesignRules::getDefaultTraceWidth`.
+   */
+  int64_t default_trace_width;
+  /**
+   * `BoardDesignRules::getDefaultViaDrillDiameter`.
+   */
+  int64_t default_via_drill_diameter;
+};
+
+/**
+ * The per net class design rule values the resolver reads.
+ *
+ * Wrapper for `NetClass`; see the integration design note, section 2.1.
+ * The two defaults are zero when the net class does not set them, which
+ * is how `std::optional` crosses here.
+ */
+struct PnsNetClassRules {
+  /**
+   * `NetClass::getMinCopperCopperClearance`.
+   */
+  int64_t min_copper_copper_clearance;
+  /**
+   * `NetClass::getMinCopperWidth`.
+   */
+  int64_t min_copper_width;
+  /**
+   * `NetClass::getMinViaDrillDiameter`.
+   */
+  int64_t min_via_drill_diameter;
+  /**
+   * `NetClass::getDefaultTraceWidth`, or zero when it is not set.
+   */
+  int64_t default_trace_width;
+  /**
+   * `NetClass::getDefaultViaDrill`, or zero when it is not set.
+   */
+  int64_t default_via_drill;
+};
+
+/**
+ * The part of a snapshot item that does not depend on its geometry.
+ *
+ * Port of the common fields of `pnsrouter::snapshot::WorldItem`.
+ */
+struct PnsItemHeader {
+  /**
+   * The host's own handle for the board object this came from, counted
+   * from one so that zero can serve as a null.
+   */
+  uint64_t host_id;
+  /**
+   * The net, counted from one, or zero for an object with no net at all.
+   */
+  uint32_t net;
+  /**
+   * The first dense copper layer index the item occupies.
+   */
+  int32_t layer_start;
+  /**
+   * The last dense copper layer index the item occupies, inclusive.
+   */
+  int32_t layer_end;
+  /**
+   * Whether the user pinned the object in place.
+   */
+  bool locked;
+  /**
+   * Whether a trace may start or end on the object.
+   */
+  bool routable;
+  /**
+   * Whether the object is a pad on a pin with no internal connection.
+   */
+  bool free_pad;
+  /**
+   * Whether the object became several engine items.
+   */
+  bool compound_primitive;
+  /**
+   * Whether the object is a board edge, which picks up the copper to
+   * board clearance rule.
+   */
+  bool board_edge;
+  /**
+   * The pad's own copper clearance override in nanometres, or a negative
+   * value when the object has none.
+   */
+  int64_t copper_clearance;
+};
+
+/**
+ * One point in host coordinates, nanometres.
+ *
+ * Mirrors LibrePCB's `Point`, whose two `Length` members are `int64_t`
+ * nanometres.
+ */
+struct PnsPoint {
+  /**
+   * The x coordinate in nanometres.
+   */
+  int64_t x;
+  /**
+   * The y coordinate in nanometres.
+   */
+  int64_t y;
+};
+
+/**
+ * A straight track.
+ */
+struct PnsSegmentGeometry {
+  /**
+   * One end of the centre line.
+   */
+  PnsPoint p1;
+  /**
+   * The other end of the centre line.
+   */
+  PnsPoint p2;
+  /**
+   * The full track width in nanometres.
+   */
+  int64_t width;
+};
+
+/**
+ * A plated through, blind or buried via.
+ *
+ * The engine drills the hole itself from the drill diameter, so the host
+ * never fills a hole for a via.
+ */
+struct PnsViaGeometry {
+  /**
+   * The centre.
+   */
+  PnsPoint pos;
+  /**
+   * The copper diameter in nanometres.
+   */
+  int64_t diameter;
+  /**
+   * The drill diameter in nanometres.
+   */
+  int64_t drill;
+  /**
+   * How far through the copper stack the via reaches.
+   */
+  PnsViaType via_type;
+  /**
+   * Whether the via has no net yet.
+   */
+  bool is_free;
+};
+
+/**
+ * One obstacle shape.
+ *
+ * A flat struct rather than a tagged union so that cbindgen can describe
+ * it to C++ without a variant type. Only the fields
+ * [`PnsShape::kind`] names are read; the rest may hold anything.
+ */
+struct PnsShape {
+  /**
+   * Which fields below are meaningful.
+   */
+  PnsShapeKind kind;
+  /**
+   * The centre of a circle or of a rectangle.
+   */
+  PnsPoint center;
+  /**
+   * A circle radius, a rectangle corner radius, or a capsule's full
+   * width.
+   */
+  int64_t radius;
+  /**
+   * Half the width and half the height of a rectangle.
+   */
+  PnsPoint half_size;
+  /**
+   * The first end of a capsule.
+   */
+  PnsPoint p1;
+  /**
+   * The second end of a capsule.
+   */
+  PnsPoint p2;
+  /**
+   * The vertices of a polygon, never null even when the count is zero.
+   */
+  const PnsPoint *vertices;
+  /**
+   * How many vertices [`PnsShape::vertices`] points at.
+   */
+  size_t vertex_count;
+};
+
+/**
+ * A pad, a board outline, or a copper graphic.
+ */
+struct PnsSolidGeometry {
+  /**
+   * The copper, in board coordinates.
+   */
+  PnsShape shape;
+  /**
+   * The point a trace snaps to.
+   */
+  PnsPoint pos;
+  /**
+   * Whether [`PnsSolidGeometry::hole`] is meaningful.
+   */
+  bool has_hole;
+  /**
+   * The shape drilled through the copper.
+   */
+  PnsShape hole;
+};
+
+/**
+ * A hole with no copper of its own, such as a board mounting hole.
+ */
+struct PnsHoleGeometry {
+  /**
+   * The drilled shape.
+   */
+  PnsShape shape;
+};
+
+/**
+ * How many items of each kind a snapshot holds.
+ *
+ * A debug accessor for the unit tests, which have no other way to see
+ * what the builder produced.
+ */
+struct PnsSnapshotStats {
+  /**
+   * How many copper layers the board has.
+   */
+  uint8_t copper_layer_count;
+  /**
+   * The broad phase inflation radius in nanometres.
+   */
+  int32_t max_clearance;
+  /**
+   * How many items the snapshot holds in total.
+   */
+  size_t item_count;
+  /**
+   * How many of them are tracks.
+   */
+  size_t segment_count;
+  /**
+   * How many of them are vias.
+   */
+  size_t via_count;
+  /**
+   * How many of them are solids.
+   */
+  size_t solid_count;
+  /**
+   * How many of them are bare holes.
+   */
+  size_t hole_count;
+  /**
+   * How many solids carry a drilled hole.
+   */
+  size_t drilled_solid_count;
+  /**
+   * How many nets the snapshot knows.
+   */
+  size_t net_count;
+  /**
+   * How many net classes the snapshot knows.
+   */
+  size_t net_class_count;
+};
+
+/**
+ * The settings a routing session starts with.
+ *
+ * Only the values the host has a control for. Everything else stays at
+ * `RoutingSettings::default`, which reproduces KiCad's own constructor.
+ */
+struct PnsRouterSettings {
+  /**
+   * Zero for mark obstacles, one for shove, two for walkaround, which is
+   * `pnsrouter::settings::RouterMode`'s own numbering.
+   */
+  uint8_t mode;
+  /**
+   * The track width to place, in nanometres.
+   */
+  int64_t track_width;
+  /**
+   * The via copper diameter to place, in nanometres.
+   */
+  int64_t via_diameter;
+  /**
+   * The via drill diameter to place, in nanometres.
+   */
+  int64_t via_drill;
 };
 
 extern "C" {
@@ -526,6 +1019,168 @@ double ffi_math_arc_radius_and_center(double dx,
                                       double angle,
                                       double * NONNULL x,
                                       double * NONNULL y);
+
+/**
+ * Create an empty snapshot of a board with `copper_layer_count` copper
+ * layers.
+ *
+ * The layer indices every later call takes are dense and zero based,
+ * `0 ..= copper_layer_count - 1`; see the integration design note,
+ * section 1.3.
+ */
+PnsSnapshot *ffi_pnsrouter_snapshot_new(uint8_t copper_layer_count);
+
+/**
+ * Delete a [`PnsSnapshot`] that was never handed to
+ * [`ffi_pnsrouter_new`].
+ */
+void ffi_pnsrouter_snapshot_delete(PnsSnapshot *obj);
+
+/**
+ * Set the board wide design rule values.
+ */
+PnsResult ffi_pnsrouter_snapshot_set_board_rules(PnsSnapshot * NONNULL obj,
+                                                 const PnsBoardRules * NONNULL rules);
+
+/**
+ * Add one net class and return its index.
+ *
+ * The index is what [`ffi_pnsrouter_snapshot_add_net`] takes.
+ */
+size_t ffi_pnsrouter_snapshot_add_net_class(PnsSnapshot * NONNULL obj,
+                                            const PnsNetClassRules * NONNULL rules);
+
+/**
+ * Add one net belonging to a net class and return the net number the item
+ * headers take, which is the dense net index plus one.
+ */
+uint32_t ffi_pnsrouter_snapshot_add_net(PnsSnapshot * NONNULL obj,
+                                        size_t net_class_index);
+
+/**
+ * Add one track.
+ *
+ * Wraps `pnsrouter::snapshot::WorldGeometry::Segment`.
+ */
+PnsResult ffi_pnsrouter_snapshot_add_segment(PnsSnapshot * NONNULL obj,
+                                             const PnsItemHeader * NONNULL header,
+                                             const PnsSegmentGeometry * NONNULL geometry);
+
+/**
+ * Add one via.
+ *
+ * Wraps `pnsrouter::snapshot::WorldGeometry::Via`. The engine drills the
+ * hole itself, so no hole crosses here.
+ */
+PnsResult ffi_pnsrouter_snapshot_add_via(PnsSnapshot * NONNULL obj,
+                                         const PnsItemHeader * NONNULL header,
+                                         const PnsViaGeometry * NONNULL geometry);
+
+/**
+ * Add one solid: a pad, a copper polygon or a board outline.
+ *
+ * Wraps `pnsrouter::snapshot::WorldGeometry::Solid`. A pad becomes one
+ * solid per copper layer and the hole rides on exactly one of them; see
+ * the integration design note, section 1.7.
+ *
+ * # Safety
+ *
+ * The shapes' vertex pointers must stay valid for the duration of the
+ * call.
+ */
+PnsResult ffi_pnsrouter_snapshot_add_solid(PnsSnapshot * NONNULL obj,
+                                           const PnsItemHeader * NONNULL header,
+                                           const PnsSolidGeometry * NONNULL geometry);
+
+/**
+ * Add one hole with no copper of its own, such as a board mounting hole.
+ *
+ * Wraps `pnsrouter::snapshot::WorldGeometry::Hole`.
+ *
+ * # Safety
+ *
+ * The shape's vertex pointer must stay valid for the duration of the
+ * call.
+ */
+PnsResult ffi_pnsrouter_snapshot_add_hole(PnsSnapshot * NONNULL obj,
+                                          const PnsItemHeader * NONNULL header,
+                                          const PnsHoleGeometry * NONNULL geometry);
+
+/**
+ * Read back what the snapshot holds, for the unit tests.
+ */
+void ffi_pnsrouter_snapshot_stats(PnsSnapshot * NONNULL obj,
+                                  PnsSnapshotStats * NONNULL out);
+
+/**
+ * The clearance the resolver requires between two host objects.
+ *
+ * A debug entry point for the unit tests, which have no other way to
+ * reach `pnsrouter::rules::RuleResolver`. Answers
+ * [`PnsResult::NoClearance`] where the resolver says the two can never
+ * collide, and [`PnsResult::UnknownItem`] where a host id or a role is
+ * not in the snapshot.
+ */
+PnsResult ffi_pnsrouter_snapshot_clearance(PnsSnapshot * NONNULL obj,
+                                           uint64_t a_host,
+                                           PnsItemRole a_role,
+                                           uint64_t b_host,
+                                           PnsItemRole b_role,
+                                           int32_t * NONNULL out);
+
+/**
+ * One design rule value the resolver answers for a host object.
+ *
+ * A debug entry point for the unit tests, mirroring
+ * `BoardDesignRuleCheckData`'s helper methods.
+ */
+PnsResult ffi_pnsrouter_snapshot_constraint(PnsSnapshot * NONNULL obj,
+                                            PnsConstraintKind kind,
+                                            uint64_t host,
+                                            int32_t * NONNULL out_min,
+                                            int32_t * NONNULL out_opt);
+
+/**
+ * The broad phase inflation radius the snapshot will carry.
+ *
+ * Every answer of [`ffi_pnsrouter_snapshot_clearance`] is bounded by it,
+ * which the unit tests assert.
+ */
+int32_t ffi_pnsrouter_snapshot_max_clearance(PnsSnapshot * NONNULL obj);
+
+/**
+ * Create a routing session, consuming the snapshot.
+ *
+ * Wraps `pnsrouter::router::Router::new`. The snapshot pointer is invalid
+ * afterwards and must not be deleted again.
+ *
+ * The via layer pair covers the whole copper stack, because the router
+ * only ever places through vias for now; see the integration design note,
+ * section 1.8.
+ */
+PnsRouter *ffi_pnsrouter_new(PnsSnapshot *snapshot,
+                             const PnsRouterSettings * NONNULL settings);
+
+/**
+ * Delete a [`PnsRouter`] object.
+ */
+void ffi_pnsrouter_delete(PnsRouter *obj);
+
+/**
+ * How many copper layers the session's board has.
+ *
+ * The smallest useful read back, so that a test can prove the session
+ * really was built from the snapshot it was handed.
+ */
+uint8_t ffi_pnsrouter_copper_layer_count(const PnsRouter * NONNULL obj);
+
+/**
+ * Whether a route is currently being placed.
+ *
+ * Wraps `pnsrouter::router::Router::routing_in_progress`. A freshly
+ * created session answers false, which is what the step 1 test asserts.
+ */
+bool ffi_pnsrouter_routing_in_progress(const PnsRouter * NONNULL obj);
 
 /**
  * Wrapper for [increment_number_in_string]

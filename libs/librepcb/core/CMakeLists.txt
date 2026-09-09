@@ -354,6 +354,8 @@ add_library(
   project/board/boardpickplacegenerator.h
   project/board/boardplanefragmentsbuilder.cpp
   project/board/boardplanefragmentsbuilder.h
+  project/board/boardpnssnapshot.cpp
+  project/board/boardpnssnapshot.h
   project/board/boardpolygondata.cpp
   project/board/boardpolygondata.h
   project/board/boardspecctraexport.cpp
