@@ -681,9 +681,38 @@ impl RuleResolver for LibrePcbRules {
   }
 
   /// The net's own number offset by one, because the engine's topology
-  /// code reads zero and below as "no net".
+  /// code reads zero and below as "no net". The orphan below is the one
+  /// net that is not a host net and answers `-1`.
   fn net_code(&self, net: NetId) -> i32 {
+    if net == self.orphaned_net() {
+      return -1;
+    }
+
     i32::try_from(net.0).map_or(i32::MAX, |code| code.saturating_add(1))
+  }
+
+  /// A net number the host cannot send, for a route started in free
+  /// space.
+  ///
+  /// The engine places such a route on this net rather than on no net at
+  /// all, so that its head and the tail it has already fixed count as the
+  /// same net and a shove can push an obstacle instead of the placer
+  /// walking around it. The contract on the trait method asks for three
+  /// things: a stable value, a net code of zero or below, and a net no
+  /// snapshot item carries.
+  ///
+  /// `u32::MAX` gives the third one for free. [`PnsItemHeader::net`]
+  /// counts from one and `to_item` subtracts that one again, so a host
+  /// net would have to arrive as `u32::MAX + 1` to land here. The net
+  /// code needs its own case: the `try_from` above fails on `u32::MAX`
+  /// and its fallback would report the orphan as `i32::MAX`, a real net.
+  ///
+  /// Nothing else needs a case. [`LibrePcbRules::net_class_of`] finds no
+  /// entry for this net and falls back to the all zero defaults, so a
+  /// route in free space is sized by the board settings alone, which is
+  /// what a net with no net class should get.
+  fn orphaned_net(&self) -> NetId {
+    NetId(u32::MAX)
   }
 }
 
