@@ -43,3 +43,6 @@
 [submodule "libs/bootstrap-icons"]
     path = libs/bootstrap-icons
     url = https://github.com/twbs/icons.git
+[submodule "libs/pnsrouter"]
+	path = libs/pnsrouter
+	url = https://github.com/Tubbles/pnsrouter.git
