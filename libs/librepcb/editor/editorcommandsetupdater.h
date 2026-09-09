@@ -128,6 +128,7 @@ public:
     out.set_tool_label(l2s(cmd.toolLabel, out.get_tool_label()));
     out.set_tool_component(l2s(cmd.toolComponent, out.get_tool_component()));
     out.set_tool_trace(l2s(cmd.toolTrace, out.get_tool_trace()));
+    out.set_tool_route_trace(l2s(cmd.toolRouteTrace, out.get_tool_route_trace()));
     out.set_tool_via(l2s(cmd.toolVia, out.get_tool_via()));
     out.set_tool_plane(l2s(cmd.toolPlane, out.get_tool_plane()));
     out.set_tool_generate_outline(l2s(cmd.toolGenerateOutline, out.get_tool_generate_outline()));
@@ -158,6 +159,10 @@ public:
     out.set_wire_mode_90_45(l2s(cmd.wireMode9045, out.get_wire_mode_90_45()));
     out.set_wire_mode_45_90(l2s(cmd.wireMode4590, out.get_wire_mode_45_90()));
     out.set_wire_mode_straight(l2s(cmd.wireModeStraight, out.get_wire_mode_straight()));
+    out.set_router_mode_cycle(l2s(cmd.routerModeCycle, out.get_router_mode_cycle()));
+    out.set_router_corner_mode(l2s(cmd.routerCornerMode, out.get_router_corner_mode()));
+    out.set_router_flip_posture(l2s(cmd.routerFlipPosture, out.get_router_flip_posture()));
+    out.set_router_via_toggle(l2s(cmd.routerViaToggle, out.get_router_via_toggle()));
     out.set_shape_round(l2s(cmd.shapeRound, out.get_shape_round()));
     out.set_shape_rounded_rect(l2s(cmd.shapeRoundedRect, out.get_shape_rounded_rect()));
     out.set_shape_rect(l2s(cmd.shapeRect, out.get_shape_rect()));

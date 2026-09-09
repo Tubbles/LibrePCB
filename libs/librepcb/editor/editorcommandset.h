@@ -1189,6 +1189,15 @@ public:
       {QKeySequence(Qt::Key_W)},
       &categoryTools,
   };
+  EditorCommand toolRouteTrace{
+      "tool_route_trace",  // clang-format break
+      QT_TR_NOOP("Route Trace (Push && Shove)"),
+      QT_TR_NOOP("Draw copper traces with the push and shove router"),
+      ":/img/draw-trace.svg",
+      EditorCommand::Flags(),
+      {QKeySequence(Qt::SHIFT | Qt::Key_W)},
+      &categoryTools,
+  };
   EditorCommand toolVia{
       "tool_via",  // clang-format break
       QT_TR_NOOP("Add Via"),
@@ -1462,6 +1471,43 @@ public:
       ":/img/command_toolbars/wire_straight.png",
       EditorCommand::Flags(),
       {QKeySequence(Qt::Key_5)},
+      &categoryCommands,
+  };
+  EditorCommand routerModeCycle{
+      "router_mode_cycle",  // clang-format break
+      QT_TR_NOOP("Cycle Routing Mode"),
+      QT_TR_NOOP(
+          "Routing mode: Mark obstacles, walk around them or shove them"),
+      nullptr,
+      EditorCommand::Flags(),
+      {QKeySequence(Qt::SHIFT | Qt::Key_S)},
+      &categoryCommands,
+  };
+  EditorCommand routerCornerMode{
+      "router_corner_mode",  // clang-format break
+      QT_TR_NOOP("Toggle Corner Mode"),
+      QT_TR_NOOP("Corner mode: 45° segments or 90° segments only"),
+      nullptr,
+      EditorCommand::Flags(),
+      {QKeySequence(Qt::SHIFT | Qt::Key_A)},
+      &categoryCommands,
+  };
+  EditorCommand routerFlipPosture{
+      "router_flip_posture",  // clang-format break
+      QT_TR_NOOP("Flip Posture"),
+      QT_TR_NOOP("Turn the routed trace's first corner the other way"),
+      nullptr,
+      EditorCommand::Flags(),
+      {QKeySequence(Qt::SHIFT | Qt::Key_P)},
+      &categoryCommands,
+  };
+  EditorCommand routerViaToggle{
+      "router_via_toggle",  // clang-format break
+      QT_TR_NOOP("Toggle Via Placement"),
+      QT_TR_NOOP("Place a via where the routed trace is fixed next"),
+      nullptr,
+      EditorCommand::Flags(),
+      {QKeySequence(Qt::SHIFT | Qt::Key_V)},
       &categoryCommands,
   };
   EditorCommand shapeRound{

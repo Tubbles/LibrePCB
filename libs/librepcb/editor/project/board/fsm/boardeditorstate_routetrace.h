@@ -106,6 +106,13 @@ public:
   QSet<const Layer*> getAvailableLayers() noexcept;
   const Layer& getLayer() const noexcept;
   void setLayer(const Layer& layer) noexcept;
+  BoardPnsRouter::Mode getMode() const noexcept { return mCurrentMode; }
+  void setMode(BoardPnsRouter::Mode mode) noexcept;
+  /// Whether 90 degree corners are built instead of 45 degree ones.
+  bool getCornerMode() const noexcept { return mCornerMode90; }
+  void setCornerMode(bool corners90) noexcept;
+  void flipPosture() noexcept;
+  void toggleVia() noexcept;
   const PositiveLength& getWidth() const noexcept { return mCurrentWidth; }
   void setWidth(const PositiveLength& width) noexcept;
   bool getViaAutoDrillDiameter() const noexcept {
@@ -124,6 +131,8 @@ public:
 
 signals:
   void layerChanged(const Layer& layer);
+  void modeChanged(BoardPnsRouter::Mode mode);
+  void cornerModeChanged(bool corners90);
   void widthChanged(const PositiveLength& width);
   void viaDrillDiameterChanged(bool autoSize, const PositiveLength& diameter);
   void viaSizeChanged(bool autoSize, const PositiveLength& size);
@@ -245,6 +254,15 @@ private:  // Data
   /// The layer a new route starts on. While routing, the router owns the
   /// current layer and #getLayer() reports its answer instead.
   const Layer* mCurrentLayer;
+
+  /// The algorithm the router runs. Applied to a running placement too, the
+  /// router picks it up on the next move.
+  BoardPnsRouter::Mode mCurrentMode;
+
+  /// Whether the router builds 90 degree corners instead of 45 degree ones.
+  /// Not part of ::librepcb::BoardPnsRouter::Settings, so it has to be
+  /// re-applied to every new session.
+  bool mCornerMode90;
 
   PositiveLength mCurrentWidth;  ///< the current trace width
 

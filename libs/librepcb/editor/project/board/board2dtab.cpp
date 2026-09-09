@@ -141,6 +141,30 @@ static BoardEditorState_DrawTrace::WireMode s2l(ui::WireMode v) noexcept {
   }
 }
 
+static ui::RouterMode l2s(BoardPnsRouter::Mode v) noexcept {
+  if (v == BoardPnsRouter::Mode::MarkObstacles) {
+    return ui::RouterMode::MarkObstacles;
+  } else if (v == BoardPnsRouter::Mode::Walkaround) {
+    return ui::RouterMode::Walkaround;
+  } else if (v == BoardPnsRouter::Mode::Shove) {
+    return ui::RouterMode::Shove;
+  } else {
+    return ui::RouterMode::Walkaround;
+  }
+}
+
+static BoardPnsRouter::Mode s2l(ui::RouterMode v) noexcept {
+  if (v == ui::RouterMode::MarkObstacles) {
+    return BoardPnsRouter::Mode::MarkObstacles;
+  } else if (v == ui::RouterMode::Walkaround) {
+    return BoardPnsRouter::Mode::Walkaround;
+  } else if (v == ui::RouterMode::Shove) {
+    return BoardPnsRouter::Mode::Shove;
+  } else {
+    return BoardPnsRouter::Mode::Walkaround;
+  }
+}
+
 /*******************************************************************************
  *  Constructors / Destructor
  ******************************************************************************/
@@ -172,6 +196,8 @@ Board2dTab::Board2dTab(GuiApplication& app, BoardEditor& editor,
     mTool(ui::EditorTool::Select),
     mToolCursorShape(Qt::ArrowCursor),
     mToolWireMode(BoardEditorState_DrawTrace::WireMode::HV),
+    mToolRouterMode(ui::RouterMode::Walkaround),
+    mToolRouterCornerMode(false),
     mToolNets(std::make_shared<slint::VectorModel<slint::SharedString>>()),
     mToolNet({true, std::nullopt}),
     mToolLayers(std::make_shared<slint::VectorModel<slint::SharedString>>()),
@@ -403,6 +429,8 @@ ui::Board2dTabData Board2dTab::getDerivedUiData() const noexcept {
                              : mToolCursorShape),  // Tool cursor
       q2s(mToolOverlayText),  // Tool overlay text
       l2s(mToolWireMode),  // Tool wire mode
+      mToolRouterMode,  // Tool router mode
+      mToolRouterCornerMode,  // Tool router corner mode
       ui::ComboBoxData{
           // Tool net
           mToolNets,  // Items,
@@ -522,6 +550,10 @@ void Board2dTab::setDerivedUiData(const ui::Board2dTabData& data) noexcept {
 
   // Tool wire mode
   emit wireModeRequested(s2l(data.tool_wire_mode));
+
+  // Tool router mode
+  emit routerModeRequested(s2l(data.tool_router_mode));
+  emit routerCornerModeRequested(data.tool_router_corner_mode);
 
   // Tool line width
   mToolLineWidth.setUiData(data.tool_line_width);
@@ -1023,6 +1055,14 @@ void Board2dTab::trigger(ui::TabAction a) noexcept {
       mFsm->processMeasure();
       break;
     }
+    case ui::TabAction::RouterFlipPosture: {
+      emit routerFlipPostureRequested();  // Connected to current FSM state.
+      break;
+    }
+    case ui::TabAction::RouterViaToggle: {
+      emit routerViaToggleRequested();  // Connected to current FSM state.
+      break;
+    }
     case ui::TabAction::ToolbarTraceWidthSaveInBoard: {
       emit saveTraceWidthInBoardRequested();
       break;
@@ -1391,13 +1431,42 @@ void Board2dTab::fsmToolEnter(BoardEditorState_DrawTrace& state) noexcept {
 }
 
 void Board2dTab::fsmToolEnter(BoardEditorState_RouteTrace& state) noexcept {
-  // The push & shove router has no toolbar of its own yet, so it borrows the
-  // draw trace one. Its wire mode selector, its automatic trace width switch
-  // and the "set as default" menu items have no counterpart in this state and
-  // are therefore not connected to anything.
-  mTool = ui::EditorTool::Wire;
+  mTool = ui::EditorTool::RouteTrace;
   mToolNetClassName = QString();
   mToolFilled = false;
+
+  // Routing mode
+  auto setMode = [this](BoardPnsRouter::Mode mode) {
+    mToolRouterMode = l2s(mode);
+    onDerivedUiDataChanged.notify();
+  };
+  setMode(state.getMode());
+  mFsmStateConnections.append(connect(
+      &state, &BoardEditorState_RouteTrace::modeChanged, this, setMode));
+  mFsmStateConnections.append(
+      connect(this, &Board2dTab::routerModeRequested, &state,
+              &BoardEditorState_RouteTrace::setMode));
+
+  // Corner mode
+  auto setCornerMode = [this](bool corners90) {
+    mToolRouterCornerMode = corners90;
+    onDerivedUiDataChanged.notify();
+  };
+  setCornerMode(state.getCornerMode());
+  mFsmStateConnections.append(
+      connect(&state, &BoardEditorState_RouteTrace::cornerModeChanged, this,
+              setCornerMode));
+  mFsmStateConnections.append(
+      connect(this, &Board2dTab::routerCornerModeRequested, &state,
+              &BoardEditorState_RouteTrace::setCornerMode));
+
+  // Posture and via placement
+  mFsmStateConnections.append(
+      connect(this, &Board2dTab::routerFlipPostureRequested, &state,
+              &BoardEditorState_RouteTrace::flipPosture));
+  mFsmStateConnections.append(
+      connect(this, &Board2dTab::routerViaToggleRequested, &state,
+              &BoardEditorState_RouteTrace::toggleVia));
 
   // Trace width
   mToolLineWidth.configure(state.getWidth(),

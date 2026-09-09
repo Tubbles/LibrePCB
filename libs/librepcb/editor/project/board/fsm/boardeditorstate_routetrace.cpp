@@ -60,6 +60,8 @@ BoardEditorState_RouteTrace::BoardEditorState_RouteTrace(
     mRouter(),
     mPreviewItems(),
     mCurrentLayer(&Layer::topCopper()),
+    mCurrentMode(BoardPnsRouter::Mode::Walkaround),
+    mCornerMode90(false),
     mCurrentWidth(mContext.board.getDesignRules().getDefaultTraceWidth()),
     mCurrentViaDrill(std::nullopt),
     mCurrentViaSize(std::nullopt),
@@ -151,16 +153,6 @@ bool BoardEditorState_RouteTrace::processKeyPressed(
       moveToCursor();
       return true;
     }
-    case Qt::Key_V: {
-      // Plain 'V' is the shortcut of the "add via" tool and never reaches a
-      // tool state, so the via toggle is on SHIFT+V.
-      if (e.modifiers.testFlag(Qt::ShiftModifier)) {
-        mRouter->toggleViaPlacement();
-        moveToCursor();
-        return true;
-      }
-      break;
-    }
     default:
       break;
   }
@@ -236,8 +228,7 @@ bool BoardEditorState_RouteTrace::processGraphicsSceneRightMouseButtonReleased(
   mCursorPos = e.scenePos;
 
   if (mRouter && mRouter->isRoutingInProgress()) {
-    mRouter->flipPosture();
-    moveToCursor();
+    flipPosture();
 
     // Always accept the event if we are routing! When ignoring the event, the
     // state machine will abort the tool by a right click!
@@ -286,6 +277,45 @@ void BoardEditorState_RouteTrace::setLayer(const Layer& layer) noexcept {
   }
 
   emit layerChanged(*mCurrentLayer);
+}
+
+void BoardEditorState_RouteTrace::setMode(BoardPnsRouter::Mode mode) noexcept {
+  if (mode == mCurrentMode) return;
+
+  mCurrentMode = mode;
+  emit modeChanged(mCurrentMode);
+
+  // Unlike the geometry, the mode may change in the middle of a route; the
+  // router applies it from the next move on.
+  updateRouterSettings();
+  moveToCursor();
+}
+
+void BoardEditorState_RouteTrace::setCornerMode(bool corners90) noexcept {
+  if (corners90 == mCornerMode90) return;
+
+  mCornerMode90 = corners90;
+  if (mRouter) {
+    mRouter->toggleCornerMode();
+  }
+  emit cornerModeChanged(mCornerMode90);
+
+  // The toggle produces no frame, so follow it with a move.
+  moveToCursor();
+}
+
+void BoardEditorState_RouteTrace::flipPosture() noexcept {
+  if ((!mRouter) || (!mRouter->isRoutingInProgress())) return;
+
+  mRouter->flipPosture();
+  moveToCursor();
+}
+
+void BoardEditorState_RouteTrace::toggleVia() noexcept {
+  if ((!mRouter) || (!mRouter->isRoutingInProgress())) return;
+
+  mRouter->toggleViaPlacement();
+  moveToCursor();
 }
 
 void BoardEditorState_RouteTrace::setWidth(
@@ -375,11 +405,16 @@ bool BoardEditorState_RouteTrace::createRouter() noexcept {
     mRouter.reset(new BoardPnsRouter(
         mContext.board,
         BoardPnsRouter::Settings{
-            BoardPnsRouter::Mode::Walkaround,
+            mCurrentMode,
             mCurrentWidth,
             getViaSize(),
             getViaDrillDiameter(),
         }));
+    if (mCornerMode90) {
+      // Every session starts on 45 degree corners because the corner mode is
+      // not part of the settings, so re-apply it here.
+      mRouter->toggleCornerMode();
+    }
     return true;
   } catch (const Exception& e) {
     QMessageBox::critical(parentWidget(), tr("Error"), e.getMsg());
@@ -397,7 +432,7 @@ void BoardEditorState_RouteTrace::updateRouterSettings() noexcept {
   if (!mRouter) return;
 
   mRouter->setSettings(BoardPnsRouter::Settings{
-      BoardPnsRouter::Mode::Walkaround,
+      mCurrentMode,
       mCurrentWidth,
       getViaSize(),
       getViaDrillDiameter(),

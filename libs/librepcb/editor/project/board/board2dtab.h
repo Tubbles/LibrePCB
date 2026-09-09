@@ -36,6 +36,7 @@
 
 #include <librepcb/core/geometry/pad.h>
 #include <librepcb/core/geometry/zone.h>
+#include <librepcb/core/project/board/boardpnsrouter.h>
 
 #include <QtCore>
 
@@ -190,6 +191,10 @@ public:
 
 signals:
   void wireModeRequested(BoardEditorState_DrawTrace::WireMode mode);
+  void routerModeRequested(BoardPnsRouter::Mode mode);
+  void routerCornerModeRequested(bool corners90);
+  void routerFlipPostureRequested();
+  void routerViaToggleRequested();
   void netRequested(bool autoNet, const std::optional<Uuid>& net);
   void viaDrillRequested(const std::optional<PositiveLength>& drill);
   void viaSizeRequested(const std::optional<PositiveLength>& size);
@@ -281,6 +286,8 @@ private:
   Qt::CursorShape mToolCursorShape;
   QString mToolOverlayText;
   BoardEditorState_DrawTrace::WireMode mToolWireMode;
+  ui::RouterMode mToolRouterMode;
+  bool mToolRouterCornerMode;  // True for 90°, false for 45° corners
   QVector<std::pair<bool, std::optional<Uuid>>> mToolNetsQt;
   std::shared_ptr<slint::VectorModel<slint::SharedString>> mToolNets;
   std::pair<bool, std::optional<Uuid>> mToolNet;

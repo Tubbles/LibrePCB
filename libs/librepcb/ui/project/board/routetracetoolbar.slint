@@ -1,0 +1,192 @@
+import {
+    ComboBox,
+    LengthEdit,
+    ToolBarButton,
+    ToolBarSelectorButton,
+    ToolBarWidget,
+} from "../../widgets.slint";
+import {
+    Backend,
+    Board2dTabData,
+    RouterMode,
+    TabAction,
+    WindowSectionData,
+} from "../../api.slint";
+
+// Toolbar of the push & shove router.
+//
+// The first four widgets are the ones the draw trace toolbar has too, bound
+// to the same generic tool properties. The router-specific ones follow:
+// the routing mode, the corner mode, the posture and the via placement.
+export component RouteTraceToolBar inherits HorizontalLayout {
+    in property <int> section-index;
+    in-out property <WindowSectionData> section;
+    in property <bool> show-via-size: true;
+    property <[Board2dTabData]> tabs: section.board-2d-tabs;
+
+    spacing: 2px;
+
+    layer-cbx := ComboBox {
+        model: tabs[section.current-tab-index].tool-layer.items;
+        current-index: tabs[section.current-tab-index].tool-layer.current-index;
+
+        current-index-changed(index) => {
+            tabs[section.current-tab-index].tool-layer.current-index = index;
+        }
+    }
+
+    line-width-edt := LengthEdit {
+        data: tabs[section.current-tab-index].tool-line-width;
+        icon: @image-url("../../../../bootstrap-icons/icons/border-width.svg");
+        tooltip: @tr("Trace Width");
+        min-width-text: "1.234";
+
+        value-changed(v) => {
+            tabs[section.current-tab-index].tool-line-width.value = v;
+        }
+
+        unit-changed(u) => {
+            tabs[section.current-tab-index].tool-line-width.unit = u;
+        }
+
+        increase-triggered => {
+            tabs[section.current-tab-index].tool-line-width.increase = true;
+        }
+
+        decrease-triggered => {
+            tabs[section.current-tab-index].tool-line-width.decrease = true;
+        }
+    }
+
+    via-drill-edt := LengthEdit {
+        data: tabs[section.current-tab-index].tool-drill;
+        icon: @image-url("../../../../font-awesome/svgs/solid/bore-hole.svg");
+        tooltip: @tr("Via Drill Diameter");
+        min-width-text: "1.234";
+        auto-supported: true;
+        auto-checked: tabs[section.current-tab-index].tool-pressfit;
+
+        value-changed(v) => {
+            tabs[section.current-tab-index].tool-pressfit = false;
+            tabs[section.current-tab-index].tool-drill.value = v;
+        }
+
+        unit-changed(u) => {
+            tabs[section.current-tab-index].tool-drill.unit = u;
+        }
+
+        increase-triggered => {
+            tabs[section.current-tab-index].tool-pressfit = false;
+            tabs[section.current-tab-index].tool-drill.increase = true;
+        }
+
+        decrease-triggered => {
+            tabs[section.current-tab-index].tool-pressfit = false;
+            tabs[section.current-tab-index].tool-drill.decrease = true;
+        }
+
+        auto-toggled(checked) => {
+            tabs[section.current-tab-index].tool-pressfit = checked;
+        }
+    }
+
+    if show-via-size: via-size-edt := LengthEdit {
+        data: tabs[section.current-tab-index].tool-size;
+        icon: @image-url("../../../../bootstrap-icons/icons/record-circle-fill.svg");
+        tooltip: @tr("Via Outer Diameter");
+        min-width-text: "1.234";
+        auto-supported: true;
+        auto-checked: tabs[section.current-tab-index].tool-mirrored;
+        enabled: !via-drill-edt.auto-checked;
+
+        value-changed(v) => {
+            tabs[section.current-tab-index].tool-mirrored = false;
+            tabs[section.current-tab-index].tool-size.value = v;
+        }
+
+        unit-changed(u) => {
+            tabs[section.current-tab-index].tool-size.unit = u;
+        }
+
+        increase-triggered => {
+            tabs[section.current-tab-index].tool-mirrored = false;
+            tabs[section.current-tab-index].tool-size.increase = true;
+        }
+
+        decrease-triggered => {
+            tabs[section.current-tab-index].tool-mirrored = false;
+            tabs[section.current-tab-index].tool-size.decrease = true;
+        }
+
+        auto-toggled(checked) => {
+            tabs[section.current-tab-index].tool-mirrored = checked;
+        }
+    }
+
+    mode-selector := ToolBarWidget {
+        ToolBarSelectorButton {
+            icon: @image-url("../../../../font-awesome/svgs/solid/road-barrier.svg");
+            tooltip: @tr("Mark Obstacles");
+            status-tip: @tr("Routing mode: Route straight through and highlight what collides");
+            checked: tabs[section.current-tab-index].tool-router-mode == RouterMode.mark-obstacles;
+
+            clicked => {
+                tabs[section.current-tab-index].tool-router-mode = RouterMode.mark-obstacles;
+            }
+        }
+
+        ToolBarSelectorButton {
+            icon: @image-url("../../../../bootstrap-icons/icons/sign-turn-slight-right.svg");
+            tooltip: @tr("Walk Around");
+            status-tip: @tr("Routing mode: Bend the trace around whatever is in the way");
+            checked: tabs[section.current-tab-index].tool-router-mode == RouterMode.walkaround;
+
+            clicked => {
+                tabs[section.current-tab-index].tool-router-mode = RouterMode.walkaround;
+            }
+        }
+
+        ToolBarSelectorButton {
+            icon: @image-url("../../../../font-awesome/svgs/solid/arrows-left-right.svg");
+            tooltip: @tr("Shove");
+            status-tip: @tr("Routing mode: Push colliding traces and vias aside");
+            checked: tabs[section.current-tab-index].tool-router-mode == RouterMode.shove;
+
+            clicked => {
+                tabs[section.current-tab-index].tool-router-mode = RouterMode.shove;
+            }
+        }
+    }
+
+    corner-mode-sw := ToolBarButton {
+        icon: @image-url("../../../../../img/command_toolbars/wire_h_v.png");
+        tooltip: @tr("90° Corners");
+        status-tip: @tr("Build the trace from horizontal and vertical segments only");
+        checked: tabs[section.current-tab-index].tool-router-corner-mode;
+        checkable: true;
+
+        clicked => {
+            tabs[section.current-tab-index].tool-router-corner-mode = !self.checked;
+        }
+    }
+
+    flip-posture-btn := ToolBarButton {
+        icon: @image-url("../../../../font-awesome/svgs/solid/arrow-right-arrow-left.svg");
+        tooltip: @tr("Flip Posture");
+        status-tip: @tr("Turn the routed trace's first corner the other way");
+
+        clicked => {
+            Backend.trigger-tab(section-index, section.current-tab-index, TabAction.router-flip-posture);
+        }
+    }
+
+    via-toggle-btn := ToolBarButton {
+        icon: @image-url("../../../../../img/via.svg");
+        tooltip: @tr("Toggle Via Placement");
+        status-tip: @tr("Place a via where the routed trace is fixed next");
+
+        clicked => {
+            Backend.trigger-tab(section-index, section.current-tab-index, TabAction.router-via-toggle);
+        }
+    }
+}

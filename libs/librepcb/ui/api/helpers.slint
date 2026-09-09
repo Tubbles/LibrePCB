@@ -3,6 +3,7 @@ import {
     LengthUnit,
     NotificationType,
     ProjectAction,
+    RouterMode,
     RuleCheckType,
     SchematicAction,
     TabAction,
@@ -109,6 +110,16 @@ export global Helpers {
             deg45-90
         } else {
             straight
+        }
+    }
+
+    pure public function get-next-router-mode(m: RouterMode) -> RouterMode {
+        if m == mark-obstacles {
+            walkaround
+        } else if m == walkaround {
+            shove
+        } else {
+            mark-obstacles
         }
     }
 

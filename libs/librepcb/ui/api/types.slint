@@ -363,6 +363,7 @@ export enum EditorTool {
     pad-tht,
     pad-smt,
     wire,
+    route-trace,
     bus,
     label,
     via,
@@ -379,6 +380,13 @@ export enum WireMode {
     deg90-45,
     deg45-90,
     straight,
+}
+
+// How the push & shove router treats what is in the way of a trace.
+export enum RouterMode {
+    mark-obstacles,
+    walkaround,
+    shove,
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -873,6 +881,10 @@ export enum TabAction {
     toolbar-trace-width-save-in-netclass,
     toolbar-via-drill-save-in-board,
     toolbar-via-drill-save-in-netclass,
+
+    // Push & shove router
+    router-flip-posture,
+    router-via-toggle,
 }
 
 // Window tab base data
@@ -1371,6 +1383,8 @@ export struct Board2dTabData {
     tool-cursor: MouseCursor,
     tool-overlay-text: string,
     tool-wire-mode: WireMode,
+    tool-router-mode: RouterMode,
+    tool-router-corner-mode: bool,  // True for 90°, false for 45° corners
     tool-net: ComboBoxData,
     tool-netclass-name: string,  // Read-only, empty if not in routing state
     tool-layer: ComboBoxData,
