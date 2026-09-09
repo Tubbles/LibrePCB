@@ -883,6 +883,16 @@ struct PnsRouterSettings {
    * The via drill diameter to place, in nanometres.
    */
   int64_t via_drill;
+  /**
+   * Whether the session records everything it is driven with.
+   *
+   * Read by [`ffi_pnsrouter_new`] only, because a recording has to start
+   * from the snapshot the session was built on and that snapshot is gone
+   * by the time [`ffi_pnsrouter_set_settings`] runs. It is ignored there
+   * rather than refused, so that a host can hand the same struct to both
+   * entry points.
+   */
+  bool record_session;
 };
 
 /**
@@ -1483,6 +1493,23 @@ int32_t ffi_pnsrouter_current_layer(const PnsRouter * NONNULL obj);
  * Wraps `pnsrouter::router::Router::placing_via`.
  */
 bool ffi_pnsrouter_placing_via(const PnsRouter * NONNULL obj);
+
+/**
+ * Take the session recording out, in the crate's own text format.
+ *
+ * Wraps `pnsrouter::router::Router::take_recording` followed by
+ * `pnsrouter::eventlog::SessionRecording::to_text`. Taking the recording
+ * ends it, which is the crate's semantics, so a host that wants to keep
+ * recording has to build a new session.
+ *
+ * Answers false and leaves `out` alone when the session was not created
+ * with `record_session`, or when its recording has already been taken.
+ * The text parses back with
+ * `pnsrouter::eventlog::SessionRecording::from_text`, so it can be
+ * dropped into the crate's `tests/fixtures/sessions/` unchanged.
+ */
+bool ffi_pnsrouter_take_recording(PnsRouter * NONNULL obj,
+                                  QString * NONNULL out);
 
 /**
  * Find every host object under a point and return how many there are.

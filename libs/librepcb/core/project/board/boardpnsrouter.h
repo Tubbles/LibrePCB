@@ -233,6 +233,12 @@ public:
     PositiveLength traceWidth;
     PositiveLength viaDiameter;
     PositiveLength viaDrill;
+
+    /// Whether the session records what it is driven with, so that
+    /// #takeRecording() can answer with it. Off by default: a recording
+    /// keeps a copy of the whole board snapshot and of every event.
+    /// Only honoured by the constructor, not by #setSettings().
+    bool recordSession = false;
   };
 
   /**
@@ -461,8 +467,30 @@ public:
    * A running placement keeps the geometry it started with, because the
    * router has no entry point for a mid route size change yet. A caller
    * applies a width change by fixing and starting a new leg.
+   *
+   * ::librepcb::BoardPnsRouter::Settings::recordSession is ignored here: a
+   * recording opens with the board snapshot, which only exists while the
+   * session is being constructed.
    */
   void setSettings(const Settings& settings) noexcept;
+
+  /**
+   * @brief Take what this session recorded, in the router's own format
+   *
+   * The text of the router crate's `SessionRecording::to_text()`: the board
+   * snapshot, the settings, the sizes, every event the session was driven
+   * with and every commit it answered. The crate parses it back with
+   * `SessionRecording::from_text()` and replays it, so a file written from
+   * here is a regression fixture for the router without any conversion.
+   *
+   * Taking the recording ends it, which is the crate's own semantics. A
+   * caller that wants to keep recording has to build a new session.
+   *
+   * @return The recording, or an empty string if the session was not built
+   *         with ::librepcb::BoardPnsRouter::Settings::recordSession or if
+   *         its recording was already taken.
+   */
+  QString takeRecording() noexcept;
 
   // Operator Overloadings
   BoardPnsRouter& operator=(const BoardPnsRouter& rhs) = delete;

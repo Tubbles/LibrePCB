@@ -31,6 +31,8 @@
 #include "../graphicsitems/bgi_pad.h"
 #include "../graphicsitems/bgi_via.h"
 
+#include <librepcb/core/fileio/filepath.h>
+#include <librepcb/core/fileio/fileutils.h>
 #include <librepcb/core/geometry/via.h>
 #include <librepcb/core/project/board/board.h>
 #include <librepcb/core/project/board/boarddesignrules.h>
@@ -103,14 +105,22 @@ bool BoardEditorState_RouteTrace::exit() noexcept {
   // hidden and the commit below can delete them.
   mPreviewItems.reset();
 
+  std::optional<BoardPnsCommit> commit;
   if (mRouter && mRouter->isRoutingInProgress()) {
     // Keep whatever was fixed, like escape does, but do not build a new
     // session for a tool which is going away.
-    const BoardPnsCommit commit = mRouter->stopRouting();
-    mRouter.reset();
-    applyCommit(commit);
+    commit = mRouter->stopRouting();
   }
+
+  // After the stop above, so that the last commit is in the file too.
+  writeSessionRecording();
+
+  // The board objects the commit names are the ones the session hid, so
+  // the session goes away before the board is edited.
   mRouter.reset();
+  if (commit) {
+    applyCommit(*commit);
+  }
   mCurrentNetSignal = nullptr;
 
   mAdapter.fsmCrossProbe();
@@ -400,6 +410,9 @@ void BoardEditorState_RouteTrace::setViaSize(
  ******************************************************************************/
 
 bool BoardEditorState_RouteTrace::createRouter() noexcept {
+  // Every commit and every abort is followed by a new session, so this is
+  // the one place an outgoing session's recording has to be collected.
+  writeSessionRecording();
   mRouter.reset();
   try {
     mRouter.reset(new BoardPnsRouter(
@@ -409,6 +422,7 @@ bool BoardEditorState_RouteTrace::createRouter() noexcept {
             mCurrentWidth,
             getViaSize(),
             getViaDrillDiameter(),
+            getRecordingDirectory().isValid(),
         }));
     if (mCornerMode90) {
       // Every session starts on 45 degree corners because the corner mode is
@@ -600,6 +614,40 @@ void BoardEditorState_RouteTrace::applyCommit(
   // through the item lifecycle, and BoardEditor rebuilds them because it
   // listens to UndoStack::stateModified, which execCmd() emits with no
   // command group open. That also rebuilds the air wires.
+}
+
+FilePath BoardEditorState_RouteTrace::getRecordingDirectory() noexcept {
+  const QString path = QString(qgetenv("LIBREPCB_PNS_RECORD_DIR")).trimmed();
+  if (path.isEmpty()) {
+    return FilePath();
+  }
+
+  const FilePath dir(path);
+  return dir.isExistingDir() ? dir : FilePath();
+}
+
+void BoardEditorState_RouteTrace::writeSessionRecording() noexcept {
+  if (!mRouter) return;
+
+  const FilePath dir = getRecordingDirectory();
+  if (!dir.isValid()) return;
+
+  const QString text = mRouter->takeRecording();
+  if (text.isEmpty()) return;
+
+  const QString timestamp =
+      QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss");
+  const QString boardName = FilePath::cleanFileName(
+      *mContext.board.getName(), FilePath::ReplaceSpaces | FilePath::KeepCase);
+  const FilePath fp = dir.getPathTo(timestamp % "-" % boardName % ".txt");
+
+  try {
+    FileUtils::writeFile(fp, text.toUtf8());  // can throw
+  } catch (const Exception& e) {
+    // A developer switch must never get in the way of routing, so this is
+    // a status bar line rather than a dialog.
+    mAdapter.fsmSetStatusBarMessage(e.getMsg(), 5000);
+  }
 }
 
 QString BoardEditorState_RouteTrace::getStartResultMessage(

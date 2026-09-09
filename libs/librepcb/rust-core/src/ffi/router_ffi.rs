@@ -18,6 +18,7 @@
 //! [`PnsResult::CoordinateOutOfRange`] rather than wrapped silently; the
 //! C++ builder turns that into a `RuntimeError` naming the board item.
 
+use super::cpp_ffi::{qstring_set, QString};
 use pnsrouter::geometry::line_chain::LineChain;
 use pnsrouter::geometry::seg::Seg;
 use pnsrouter::geometry::shape::Shape;
@@ -359,6 +360,14 @@ pub struct PnsRouterSettings {
   pub via_diameter: i64,
   /// The via drill diameter to place, in nanometres.
   pub via_drill: i64,
+  /// Whether the session records everything it is driven with.
+  ///
+  /// Read by [`ffi_pnsrouter_new`] only, because a recording has to start
+  /// from the snapshot the session was built on and that snapshot is gone
+  /// by the time [`ffi_pnsrouter_set_settings`] runs. It is ignored there
+  /// rather than refused, so that a host can hand the same struct to both
+  /// entry points.
+  pub record_session: bool,
 }
 
 // ---------------------------------------------------------------------
@@ -1594,12 +1603,18 @@ extern "C" fn ffi_pnsrouter_new(
     settings,
   );
 
-  let router = Router::new(
+  let mut router = Router::new(
     &snapshot.snapshot,
     Box::new(snapshot.rules.clone()),
     routing_settings,
     sizes,
   );
+
+  if settings.record_session {
+    // The recording has to open with the board the session runs on, and
+    // this is the only place that still holds it.
+    router.start_recording(&snapshot.snapshot);
+  }
 
   Box::into_raw(Box::new(PnsRouter {
     router,
@@ -1672,6 +1687,31 @@ extern "C" fn ffi_pnsrouter_current_layer(obj: &PnsRouter) -> i32 {
 #[no_mangle]
 extern "C" fn ffi_pnsrouter_placing_via(obj: &PnsRouter) -> bool {
   obj.router.placing_via()
+}
+
+/// Take the session recording out, in the crate's own text format.
+///
+/// Wraps `pnsrouter::router::Router::take_recording` followed by
+/// `pnsrouter::eventlog::SessionRecording::to_text`. Taking the recording
+/// ends it, which is the crate's semantics, so a host that wants to keep
+/// recording has to build a new session.
+///
+/// Answers false and leaves `out` alone when the session was not created
+/// with `record_session`, or when its recording has already been taken.
+/// The text parses back with
+/// `pnsrouter::eventlog::SessionRecording::from_text`, so it can be
+/// dropped into the crate's `tests/fixtures/sessions/` unchanged.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_take_recording(
+  obj: &mut PnsRouter,
+  out: &mut QString,
+) -> bool {
+  let Some(recording) = obj.router.take_recording() else {
+    return false;
+  };
+
+  qstring_set(out, &recording.to_text());
+  true
 }
 
 // ---------------------------------------------------------------------

@@ -38,6 +38,7 @@
 namespace librepcb {
 
 class BI_NetPoint;
+class FilePath;
 class Layer;
 class NetSignal;
 
@@ -73,6 +74,16 @@ class BoardPnsPreviewItems;
  * the router knows. #snapCursor() is the only place that produces the
  * ::librepcb::editor::BoardEditorState_RouteTrace::SnappedCursor every
  * router call takes, so an unsnapped point cannot reach the router.
+ *
+ * @note Setting the environment variable `LIBREPCB_PNS_RECORD_DIR` to an
+ *       existing directory makes every session record what it is driven
+ *       with and write it to `<dir>/<yyyyMMdd-HHmmss>-<board name>.txt`
+ *       when the session ends. The file is in the router crate's own
+ *       recorded session format, so it can be dropped into the crate's
+ *       `tests/fixtures/sessions/` and replayed as a regression fixture.
+ *       This is a developer switch with no user interface: nothing happens
+ *       while the variable is unset, and a failed write only reaches the
+ *       status bar, never a dialog, and never interrupts routing.
  */
 class BoardEditorState_RouteTrace final : public BoardEditorState {
   Q_OBJECT
@@ -235,6 +246,25 @@ private:  // Methods
    * exit path applies a commit without needing a new session.
    */
   void applyCommit(const BoardPnsCommit& commit) noexcept;
+
+  /**
+   * @brief Get the directory recorded sessions are written to
+   *
+   * @return The directory named by `LIBREPCB_PNS_RECORD_DIR`, or an invalid
+   *         ::librepcb::FilePath when the variable is unset or does not name
+   *         an existing directory, which is what switches recording off.
+   */
+  static FilePath getRecordingDirectory() noexcept;
+
+  /**
+   * @brief Write what the current session recorded, if it recorded anything
+   *
+   * Taking the recording ends it, so this must be called exactly once per
+   * session, right before the session is replaced or dropped. Does nothing
+   * when there is no session, when recording is off, or when the recording
+   * was already taken.
+   */
+  void writeSessionRecording() noexcept;
 
   /**
    * @brief Get the message to show for a refused start

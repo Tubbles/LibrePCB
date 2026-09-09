@@ -335,6 +335,61 @@ TEST_F(BoardPnsRouterTest, testStartingPointRoutable) {
 }
 
 /*******************************************************************************
+ *  Session recording
+ ******************************************************************************/
+
+TEST_F(BoardPnsRouterTest, testRecordedSessionIsInTheRouterFixtureFormat) {
+  BoardPnsRouter probeRouter(*mBoard, makeSettings());
+  const std::optional<RouteStart> start = findStartPad(probeRouter, *mBoard);
+  ASSERT_TRUE(start.has_value()) << "no routable top layer pad with a net";
+  const std::optional<Point> target = findFreeTarget(*mBoard, *start);
+  ASSERT_TRUE(target.has_value()) << "no free space around the start pad";
+
+  BoardPnsRouter::Settings settings = makeSettings();
+  settings.recordSession = true;
+
+  BoardPnsRouter router(*mBoard, settings);
+  ASSERT_EQ(router.startRouting(start->pos, start->hostId, Layer::topCopper()),
+            BoardPnsRouter::StartResult::Ok);
+  router.moveTo(*target, 0);
+  ASSERT_EQ(router.fixRoute(*target, 0, true),
+            BoardPnsRouter::FixOutcome::Finished);
+
+  const QString recording = router.takeRecording();
+  ASSERT_FALSE(recording.isEmpty());
+
+  // The shape of the router crate's recorded session format, as in its
+  // tests/fixtures/sessions/*.txt: a comment header, the version record,
+  // the board, the events and the commit the session answered with. A file
+  // holding this is a fixture the crate replays without any conversion.
+  EXPECT_TRUE(recording.startsWith("# A pnsrouter session recording."))
+      << recording.left(80).toStdString();
+  EXPECT_TRUE(recording.contains("\npnsrouter-session 1\n"));
+  EXPECT_TRUE(recording.contains("\nsnapshot "));
+  EXPECT_TRUE(recording.contains("\nsettings 0 mode "));
+  EXPECT_TRUE(recording.contains("\nsizes 0 track-width 250000\n"));
+  EXPECT_TRUE(recording.contains("\nevent start-routing "));
+  EXPECT_TRUE(recording.contains("\nevent move-to "));
+  EXPECT_TRUE(recording.contains("\nevent fix-route "));
+  EXPECT_TRUE(recording.contains("\ncommit\n"));
+  EXPECT_TRUE(recording.contains("\nadded segment "));
+  EXPECT_TRUE(recording.endsWith("\n"));
+
+  // The board is really in there, not just the session's own geometry.
+  EXPECT_GT(recording.count("\nitem "), 1);
+
+  // Taking the recording ends it, which is the crate's own semantics.
+  EXPECT_TRUE(router.takeRecording().isEmpty());
+}
+
+TEST_F(BoardPnsRouterTest, testNothingIsRecordedWithoutTheSetting) {
+  EXPECT_FALSE(makeSettings().recordSession);
+
+  BoardPnsRouter router(*mBoard, makeSettings());
+  EXPECT_TRUE(router.takeRecording().isEmpty());
+}
+
+/*******************************************************************************
  *  End of File
  ******************************************************************************/
 

@@ -131,6 +131,7 @@ static rs::PnsRouterSettings toFfi(
       (*settings.traceWidth).toNm(),
       (*settings.viaDiameter).toNm(),
       (*settings.viaDrill).toNm(),
+      settings.recordSession,
   };
 }
 
@@ -303,6 +304,14 @@ void BoardPnsRouter::abortRouting() noexcept {
 void BoardPnsRouter::setSettings(const Settings& settings) noexcept {
   const rs::PnsRouterSettings ffiSettings = toFfi(settings);
   rs::ffi_pnsrouter_set_settings(*mHandle, &ffiSettings);
+}
+
+QString BoardPnsRouter::takeRecording() noexcept {
+  QString text;
+  if (!rs::ffi_pnsrouter_take_recording(*mHandle, &text)) {
+    return QString();
+  }
+  return text;
 }
 
 /*******************************************************************************
