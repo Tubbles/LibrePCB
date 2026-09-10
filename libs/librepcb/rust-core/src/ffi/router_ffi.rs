@@ -23,7 +23,7 @@ use pnsrouter::geometry::line_chain::LineChain;
 use pnsrouter::geometry::seg::Seg;
 use pnsrouter::geometry::shape::Shape;
 use pnsrouter::geometry::vec2::Vec2;
-use pnsrouter::item::{HostId, LayerRange, NetId, ViaType};
+use pnsrouter::item::{HostId, Kind, LayerRange, NetId, ViaType};
 use pnsrouter::node::World;
 use pnsrouter::router::{
   CommitDiff, FixOutcome, NewGeometry, NewItem, PreviewFrame, PreviewStyle,
@@ -156,6 +156,9 @@ pub struct PnsItemHeader {
   /// Whether the object is a board edge, which picks up the copper to
   /// board clearance rule.
   pub board_edge: bool,
+  /// Whether the object is a keepout area, which excludes the copper the
+  /// router places instead of keeping a distance from it.
+  pub keepout: bool,
   /// The pad's own copper clearance override in nanometres, or a negative
   /// value when the object has none.
   pub copper_clearance: i64,
@@ -305,6 +308,9 @@ pub struct PnsSnapshotStats {
   pub net_count: usize,
   /// How many net classes the snapshot knows.
   pub net_class_count: usize,
+  /// How many items are keepout obstacles, which is one per triangle of
+  /// every keepout zone on every copper layer the zone covers.
+  pub keepout_count: usize,
 }
 
 /// Which of a host object's two engine items a debug query means.
@@ -388,6 +394,8 @@ struct HostRules {
   copper_clearance: Option<i32>,
   /// Whether the object is a board edge.
   board_edge: bool,
+  /// Whether the object is a keepout area.
+  keepout: bool,
 }
 
 /// LibrePCB's design rules as a table the resolver reads without ever
@@ -682,10 +690,42 @@ impl RuleResolver for LibrePcbRules {
     })
   }
 
-  /// Never, until zones are synced. See the integration design note,
-  /// section 1.10.
-  fn is_keepout(&self, _obstacle: ItemRef<'_>, _item: ItemRef<'_>) -> Keepout {
-    Keepout::None
+  /// Whether an obstacle is a keepout area, and whether it excludes this
+  /// item.
+  ///
+  /// A `BI_Zone` carrying `Zone::Rule::NoCopper` is LibrePCB's only
+  /// keepout, and what it excludes here is the copper the router places:
+  /// tracks, the line being placed, vias and the holes they drill.
+  /// [`Keepout::Enforced`] gives that pair a clearance of zero, so the
+  /// zone excludes at its exact boundary rather than keeping a distance,
+  /// which is how the design rule check reads it too: it intersects the
+  /// areas and applies no clearance
+  /// (`BoardDesignRuleCheck::checkZones`).
+  ///
+  /// Anything else answers [`Keepout::Present`], which the ladder reads as
+  /// "these two never collide". A keepout is not copper, so it must not
+  /// impose a copper clearance on the pads, polygons and board edges that
+  /// stand in it; whether their copper belongs there is the design rule
+  /// check's business, not the router's. KiCad answers the same way: its
+  /// resolver returns true for every item whose obstacle is a rule area
+  /// and only varies the enforce flag
+  /// (`pcbnew/router/pns_kicad_iface.cpp:415`).
+  fn is_keepout(&self, obstacle: ItemRef<'_>, item: ItemRef<'_>) -> Keepout {
+    if !self.host_rules_of(obstacle).keepout {
+      return Keepout::None;
+    }
+
+    // `Kind::ARC` is in the mask because KiCad's own keepout test spells
+    // the track case `{ PCB_ARC_T, PCB_TRACE_T }`; the engine has no arc
+    // body yet, so nothing carries the bit today.
+    let placed =
+      Kind::SEGMENT | Kind::ARC | Kind::LINE | Kind::VIA | Kind::HOLE;
+
+    if item.item().kind().of_kind(placed) {
+      Keepout::Enforced
+    } else {
+      Keepout::Present
+    }
   }
 
   /// Every hole, because LibrePCB has no plating attribute the snapshot
@@ -870,6 +910,7 @@ impl PnsSnapshot {
     let entry = &mut self.rules.hosts[index];
 
     entry.board_edge |= header.board_edge;
+    entry.keepout |= header.keepout;
 
     if header.copper_clearance >= 0 {
       let clearance = to_coord(header.copper_clearance).unwrap_or(i32::MAX);
@@ -1195,6 +1236,17 @@ extern "C" fn ffi_pnsrouter_snapshot_stats(
     if item.hole.is_some() {
       stats.drilled_solid_count += 1;
     }
+
+    // The keepout flag lives on the host object rather than on the item,
+    // because every triangle of a zone shares the zone's host id.
+    if obj
+      .rules
+      .hosts
+      .get(item.id.0 as usize)
+      .is_some_and(|host| host.keepout)
+    {
+      stats.keepout_count += 1;
+    }
   }
 
   *out = stats;
@@ -1207,6 +1259,11 @@ extern "C" fn ffi_pnsrouter_snapshot_stats(
 /// [`PnsResult::NoClearance`] where the resolver says the two can never
 /// collide, and [`PnsResult::UnknownItem`] where a host id or a role is
 /// not in the snapshot.
+///
+/// The keepout rung is asked first, exactly as the engine's own ladder
+/// asks it (`pnsrouter::collide`, the port of
+/// `pcbnew/router/pns_item.cpp:198`), so that the answer a test reads is
+/// the answer a collision would get.
 #[no_mangle]
 extern "C" fn ffi_pnsrouter_snapshot_clearance(
   obj: &mut PnsSnapshot,
@@ -1229,6 +1286,22 @@ extern "C" fn ffi_pnsrouter_snapshot_clearance(
   let Some(b) = resolve_item(world, index, b_host, b_role) else {
     return PnsResult::UnknownItem;
   };
+
+  let mut keepout = rules.is_keepout(a, b);
+
+  if keepout == Keepout::None {
+    keepout = rules.is_keepout(b, a);
+  }
+
+  match keepout {
+    // A keepout excludes at its exact boundary; it keeps no distance.
+    Keepout::Enforced => {
+      *out = 0;
+      return PnsResult::Ok;
+    }
+    Keepout::Present => return PnsResult::NoClearance,
+    Keepout::None => {}
+  }
 
   match rules.clearance(a, Some(b), false) {
     Some(clearance) => {

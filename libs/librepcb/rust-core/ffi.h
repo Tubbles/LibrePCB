@@ -684,6 +684,11 @@ struct PnsItemHeader {
    */
   bool board_edge;
   /**
+   * Whether the object is a keepout area, which excludes the copper the
+   * router places instead of keeping a distance from it.
+   */
+  bool keepout;
+  /**
    * The pad's own copper clearance override in nanometres, or a negative
    * value when the object has none.
    */
@@ -876,6 +881,11 @@ struct PnsSnapshotStats {
    * How many net classes the snapshot knows.
    */
   size_t net_class_count;
+  /**
+   * How many items are keepout obstacles, which is one per triangle of
+   * every keepout zone on every copper layer the zone covers.
+   */
+  size_t keepout_count;
 };
 
 /**
@@ -1439,6 +1449,11 @@ void ffi_pnsrouter_snapshot_stats(PnsSnapshot * NONNULL obj,
  * [`PnsResult::NoClearance`] where the resolver says the two can never
  * collide, and [`PnsResult::UnknownItem`] where a host id or a role is
  * not in the snapshot.
+ *
+ * The keepout rung is asked first, exactly as the engine's own ladder
+ * asks it (`pnsrouter::collide`, the port of
+ * `pcbnew/router/pns_item.cpp:198`), so that the answer a test reads is
+ * the answer a collision would get.
  */
 PnsResult ffi_pnsrouter_snapshot_clearance(PnsSnapshot * NONNULL obj,
                                            uint64_t a_host,

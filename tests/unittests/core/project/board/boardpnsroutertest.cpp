@@ -22,13 +22,17 @@
  ******************************************************************************/
 #include <gtest/gtest.h>
 #include <librepcb/core/fileio/transactionalfilesystem.h>
+#include <librepcb/core/geometry/path.h>
+#include <librepcb/core/geometry/zone.h>
 #include <librepcb/core/project/board/board.h>
 #include <librepcb/core/project/board/boardpnsrouter.h>
+#include <librepcb/core/project/board/boardzonedata.h>
 #include <librepcb/core/project/board/items/bi_device.h>
 #include <librepcb/core/project/board/items/bi_hole.h>
 #include <librepcb/core/project/board/items/bi_netline.h>
 #include <librepcb/core/project/board/items/bi_netsegment.h>
 #include <librepcb/core/project/board/items/bi_pad.h>
+#include <librepcb/core/project/board/items/bi_zone.h>
 #include <librepcb/core/project/circuit/netsignal.h>
 #include <librepcb/core/project/project.h>
 #include <librepcb/core/project/projectloader.h>
@@ -59,9 +63,10 @@ static std::unique_ptr<Project> openGerberTestProject() {
                      fp.getFilename());  // can throw
 }
 
-static BoardPnsRouter::Settings makeSettings() noexcept {
+static BoardPnsRouter::Settings makeSettings(
+    BoardPnsRouter::Mode mode = BoardPnsRouter::Mode::Walkaround) noexcept {
   return BoardPnsRouter::Settings{
-      BoardPnsRouter::Mode::Walkaround,
+      mode,
       PositiveLength(Length(250000)),  // 0.25 mm trace, above the minimum.
       PositiveLength(Length(700000)),  // 0.7 mm via.
       PositiveLength(Length(300000)),  // 0.3 mm via drill.
@@ -70,7 +75,7 @@ static BoardPnsRouter::Settings makeSettings() noexcept {
 
 static bool isNull(const BoardPnsHostRef& ref) noexcept {
   return (!ref.netLine) && (!ref.via) && (!ref.pad) && (!ref.hole) &&
-      (!ref.polygon);
+      (!ref.polygon) && (!ref.zone);
 }
 
 /**
@@ -266,6 +271,136 @@ static std::optional<DragCase> findDragCase(const Board& board) {
     return candidate;
   }
   return std::nullopt;
+}
+
+/**
+ * @brief Add a square keepout zone on the top layer to a board
+ *
+ * The board takes ownership: ::librepcb::Board::~Board() deletes every zone
+ * it holds, so the caller must not.
+ */
+static const BI_Zone* addKeepoutZone(Board& board, const Point& center,
+                                     const Length& size) {
+  const Point half(Length(size.toNm() / 2), Length(size.toNm() / 2));
+  BI_Zone* zone = new BI_Zone(
+      board,
+      BoardZoneData(Uuid::createRandom(), {&Layer::topCopper()},
+                    Zone::Rules(Zone::Rule::NoCopper),
+                    Path::rect(center - half, center + half), false));
+  board.addZone(*zone);
+  return zone;
+}
+
+/**
+ * @brief Whether the copper of one straight trace reaches into a zone
+ *
+ * The design rule check's own test, which intersects the two areas and
+ * applies no clearance at all (`BoardDesignRuleCheck::checkZones`). The trace
+ * is narrowed by two micrometres first because a keepout is an exact
+ * boundary: the router is entitled to place copper right up against the zone,
+ * and Qt reads two areas which only touch as intersecting.
+ */
+static bool isInZone(const Point& p1, const Point& p2,
+                     const PositiveLength& width,
+                     const Path& outline) noexcept {
+  const Length narrowed = (*width) - Length(2000);
+  if ((p1 == p2) || (narrowed <= 0)) {
+    return false;
+  }
+  const Path area = Path::obround(p1, p2, PositiveLength(narrowed));
+  return outline.toQPainterPathPx().intersects(area.toQPainterPathPx());
+}
+
+static bool isCopperInZone(const BoardPnsNewItem& item,
+                           const Path& outline) noexcept {
+  return (item.kind == BoardPnsNewItem::Kind::Segment) &&
+      isInZone(item.start, item.end, item.width, outline);
+}
+
+/**
+ * @brief How many pieces of one preview polyline reach into a zone
+ */
+static int piecesInZone(const BoardPnsPreviewItem& item,
+                        const Path& outline) noexcept {
+  int count = 0;
+  for (int i = 1; i < item.path.count(); ++i) {
+    if (isInZone(item.path.at(i - 1), item.path.at(i), item.width, outline)) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+/**
+ * @brief Route once from a start to a target and hand back what it committed
+ */
+static QVector<BoardPnsNewItem> routeOnce(const Board& board,
+                                          const RouteStart& start,
+                                          const Point& target,
+                                          BoardPnsRouter::Mode mode) {
+  BoardPnsRouter router(board, makeSettings(mode));
+  if (router.startRouting(start.pos, start.hostId, Layer::topCopper()) !=
+      BoardPnsRouter::StartResult::Ok) {
+    return QVector<BoardPnsNewItem>();
+  }
+  router.moveTo(target, 0);
+  if (router.fixRoute(target, 0, true) !=
+      BoardPnsRouter::FixOutcome::Finished) {
+    return QVector<BoardPnsNewItem>();
+  }
+  return router.getCommit().added;
+}
+
+/**
+ * @brief The middle of the longest piece of the head a preview holds
+ *
+ * Where a zone has to sit to be in the way of a route, whatever the fixture's
+ * geometry made the router do.
+ */
+static std::optional<Point> longestHeadPieceMiddle(
+    const BoardPnsPreview& preview) noexcept {
+  std::optional<Point> middle;
+  Length longest(0);
+  foreach (const BoardPnsPreviewItem& item, preview.items) {
+    if (item.style != BoardPnsPreviewStyle::Head) {
+      continue;
+    }
+    for (int i = 1; i < item.path.count(); ++i) {
+      const Point& p1 = item.path.at(i - 1);
+      const Point& p2 = item.path.at(i);
+      const Length length = *(p2 - p1).getLength();
+      if (length > longest) {
+        longest = length;
+        middle = Point(Length((p1.getX().toNm() + p2.getX().toNm()) / 2),
+                       Length((p1.getY().toNm() + p2.getY().toNm()) / 2));
+      }
+    }
+  }
+  return middle;
+}
+
+/**
+ * @brief The middle of the longest segment of a commit
+ *
+ * The same thing for a session which has already committed.
+ */
+static std::optional<Point> longestSegmentMiddle(
+    const QVector<BoardPnsNewItem>& items) noexcept {
+  std::optional<Point> middle;
+  Length longest(0);
+  foreach (const BoardPnsNewItem& item, items) {
+    if (item.kind != BoardPnsNewItem::Kind::Segment) {
+      continue;
+    }
+    const Length length = *(item.end - item.start).getLength();
+    if (length > longest) {
+      longest = length;
+      middle = Point(
+          Length((item.start.getX().toNm() + item.end.getX().toNm()) / 2),
+          Length((item.start.getY().toNm() + item.end.getY().toNm()) / 2));
+    }
+  }
+  return middle;
 }
 
 /*******************************************************************************
@@ -622,6 +757,147 @@ TEST_F(BoardPnsRouterTest, testShoveIterationLimitReachesTheEngine) {
   const QString recording = router.takeRecording();
   EXPECT_TRUE(recording.contains("\nsettings 0 shove-iteration-limit 50\n"))
       << recording.left(400).toStdString();
+}
+
+/*******************************************************************************
+ *  Keepout zones
+ ******************************************************************************/
+
+TEST_F(BoardPnsRouterTest, testRouteWalksAroundAKeepoutZone) {
+  BoardPnsRouter probeRouter(*mBoard, makeSettings());
+  const std::optional<RouteStart> start = findStartPad(probeRouter, *mBoard);
+  ASSERT_TRUE(start.has_value()) << "no routable top layer pad with a net";
+  const std::optional<Point> target = findFreeTarget(*mBoard, *start);
+  ASSERT_TRUE(target.has_value()) << "no free space around the start pad";
+
+  // Where the route goes while nothing is in the way, so that the zone can be
+  // put right on top of it. Committing changes nothing on the board, so the
+  // second session below starts from the same place.
+  const QVector<BoardPnsNewItem> direct =
+      routeOnce(*mBoard, *start, *target, BoardPnsRouter::Mode::Walkaround);
+  ASSERT_FALSE(direct.isEmpty());
+  const std::optional<Point> center = longestSegmentMiddle(direct);
+  ASSERT_TRUE(center.has_value());
+
+  const BI_Zone* zone = addKeepoutZone(*mBoard, *center, Length(1000000));
+  const Path& outline = zone->getData().getOutline();
+
+  // The control: the route this one has to avoid ran straight through where
+  // the zone now is.
+  int through = 0;
+  foreach (const BoardPnsNewItem& item, direct) {
+    if (isCopperInZone(item, outline)) {
+      ++through;
+    }
+  }
+  EXPECT_GT(through, 0);
+
+  BoardPnsRouter router(*mBoard, makeSettings());
+  ASSERT_EQ(router.startRouting(start->pos, start->hostId, Layer::topCopper()),
+            BoardPnsRouter::StartResult::Ok);
+  router.moveTo(*target, 0);
+  ASSERT_EQ(router.fixRoute(*target, 0, true),
+            BoardPnsRouter::FixOutcome::Finished);
+
+  const BoardPnsCommit& commit = router.getCommit();
+  ASSERT_FALSE(commit.added.isEmpty());
+  foreach (const BoardPnsNewItem& item, commit.added) {
+    EXPECT_FALSE(isCopperInZone(item, outline))
+        << "a segment ending at " << item.end.getX().toNm() << ", "
+        << item.end.getY().toNm() << " nm is in the zone";
+  }
+}
+
+/**
+ * @brief A pad which a keepout zone stands on is not a place to route from
+ *
+ * The pad itself is routable, so the gate's per object half is happy; what
+ * refuses the start is the probe trace it puts down there, which the zone
+ * excludes.
+ */
+TEST_F(BoardPnsRouterTest, testStartInsideAKeepoutZoneIsRefused) {
+  BoardPnsRouter probeRouter(*mBoard, makeSettings());
+  const std::optional<RouteStart> start = findStartPad(probeRouter, *mBoard);
+  ASSERT_TRUE(start.has_value()) << "no routable top layer pad with a net";
+
+  addKeepoutZone(*mBoard, start->pos, Length(2000000));  // 2 mm.
+
+  BoardPnsRouter router(*mBoard, makeSettings());
+  EXPECT_EQ(router.isStartingPointRoutable(start->pos, start->hostId,
+                                           Layer::topCopper()),
+            BoardPnsRouter::StartResult::StartPointViolatesRules);
+  EXPECT_NE(router.startRouting(start->pos, start->hostId, Layer::topCopper()),
+            BoardPnsRouter::StartResult::Ok);
+  EXPECT_FALSE(router.isRoutingInProgress());
+  EXPECT_TRUE(router.getPreview().items.isEmpty());
+}
+
+/**
+ * @brief Mark obstacles mode draws a keepout instead of avoiding it
+ *
+ * The mode puts the route where the user pointed and marks what it runs into,
+ * so a zone has to reach the preview as a violation naming the zone rather
+ * than bending the route the way ::testRouteWalksAroundAKeepoutZone expects
+ * of the walkaround, and rather than stopping the session.
+ *
+ * Whether a route which breaks a rule may then be committed is the router's
+ * own `allow_drc_violations` setting, KiCad's "Allow DRC violations" switch.
+ * This host does not expose it, so a colliding fix is refused in this mode
+ * whatever it collided with; the keepout is no different from the copper the
+ * fixture already has in the way.
+ */
+TEST_F(BoardPnsRouterTest, testMarkObstaclesReportsAKeepoutZone) {
+  BoardPnsRouter probeRouter(*mBoard, makeSettings());
+  const std::optional<RouteStart> start = findStartPad(probeRouter, *mBoard);
+  ASSERT_TRUE(start.has_value()) << "no routable top layer pad with a net";
+  const std::optional<Point> target = findFreeTarget(*mBoard, *start);
+  ASSERT_TRUE(target.has_value()) << "no free space around the start pad";
+
+  // Where this mode puts the head, so that the zone can be put on top of it.
+  std::optional<Point> center;
+  {
+    BoardPnsRouter probe(*mBoard,
+                         makeSettings(BoardPnsRouter::Mode::MarkObstacles));
+    ASSERT_EQ(probe.startRouting(start->pos, start->hostId, Layer::topCopper()),
+              BoardPnsRouter::StartResult::Ok);
+    probe.moveTo(*target, 0);
+    center = longestHeadPieceMiddle(probe.getPreview());
+  }
+  ASSERT_TRUE(center.has_value());
+
+  const BI_Zone* zone = addKeepoutZone(*mBoard, *center, Length(1000000));
+
+  BoardPnsRouter router(*mBoard,
+                        makeSettings(BoardPnsRouter::Mode::MarkObstacles));
+  // A keepout under the route does not stop a session whose job is to show
+  // what the route breaks.
+  ASSERT_EQ(router.startRouting(start->pos, start->hostId, Layer::topCopper()),
+            BoardPnsRouter::StartResult::Ok);
+  router.moveTo(*target, 0);
+
+  int reported = 0;
+  foreach (const BoardPnsViolation& violation, router.getPreview().violations) {
+    if (violation.host.zone == zone) {
+      ++reported;
+      // A keepout excludes at its exact boundary, so there is no distance to
+      // draw around it.
+      EXPECT_EQ(violation.clearance.toNm(), 0);
+      // Every triangle is a compound primitive, so the zone keeps being drawn
+      // and the violation is shown on top of it rather than in its place.
+      EXPECT_FALSE(violation.hideOriginal);
+    }
+  }
+  EXPECT_GT(reported, 0);
+
+  // And the head was not bent around it, which is what separates this mode
+  // from the walkaround.
+  int through = 0;
+  foreach (const BoardPnsPreviewItem& item, router.getPreview().items) {
+    if (item.style == BoardPnsPreviewStyle::Head) {
+      through += piecesInZone(item, zone->getData().getOutline());
+    }
+  }
+  EXPECT_GT(through, 0);
 }
 
 /*******************************************************************************

@@ -28,6 +28,7 @@
 #include "../../geometry/padhole.h"
 #include "../../geometry/path.h"
 #include "../../geometry/via.h"
+#include "../../geometry/zone.h"
 #include "../../types/layer.h"
 #include "../../utils/transform.h"
 #include "../circuit/circuit.h"
@@ -44,6 +45,7 @@
 #include "items/bi_pad.h"
 #include "items/bi_polygon.h"
 #include "items/bi_via.h"
+#include "items/bi_zone.h"
 
 #include <librepcb/rust-core/ffi.h>
 
@@ -141,6 +143,155 @@ static rs::PnsShape drillShape(const Path& path,
                       diameter);
 }
 
+/**
+ * Twice the signed area of the triangle a, b, c.
+ *
+ * Positive when the three turn counterclockwise. The arithmetic is floating
+ * point because the product of two nanometre coordinate differences
+ * overflows a signed 64 bit integer on an outline spanning the whole
+ * coordinate range the router accepts. Only the sign is read, and a double
+ * carries it everywhere except within a few micrometres of a degenerate
+ * triangle, where a wrong answer costs one ear rather than a wrong shape.
+ */
+static qreal doubledArea(const Point& a, const Point& b,
+                         const Point& c) noexcept {
+  const qreal abx = static_cast<qreal>(b.getX().toNm() - a.getX().toNm());
+  const qreal aby = static_cast<qreal>(b.getY().toNm() - a.getY().toNm());
+  const qreal acx = static_cast<qreal>(c.getX().toNm() - a.getX().toNm());
+  const qreal acy = static_cast<qreal>(c.getY().toNm() - a.getY().toNm());
+  return (abx * acy) - (aby * acx);
+}
+
+/**
+ * Whether p lies in the triangle a, b, c, which must turn counterclockwise.
+ *
+ * A point exactly on an edge counts as inside, so that a corner touching a
+ * candidate ear blocks it instead of letting two triangles overlap.
+ */
+static bool isInTriangle(const Point& a, const Point& b, const Point& c,
+                         const Point& p) noexcept {
+  return (doubledArea(a, b, p) >= 0) && (doubledArea(b, c, p) >= 0) &&
+      (doubledArea(c, a, p) >= 0);
+}
+
+/**
+ * Cut a closed outline into triangles by ear clipping.
+ *
+ * The router's polygon shape is filled and assumed convex, so an area
+ * obstacle has to arrive as triangles. That is what KiCad's own router does
+ * with a rule area too: one simple shape per triangle of the outline, all
+ * flagged as compound primitives.
+ *
+ * LibrePCB has no polygon triangulation to borrow here. The Delaunay library
+ * under `libs/` triangulates a point set, so on a concave outline it covers
+ * the convex hull rather than the outline (::librepcb::AirWiresBuilder is
+ * its only user), and the 3D scene builder's GLU tesselator lives in the
+ * editor library, needs an OpenGL dependency LibrePCB can be built without,
+ * and works in floating point millimetres. Ear clipping is exact on the
+ * integer coordinates and handles a concave outline, which is what this
+ * needs.
+ *
+ * @return One three vertex path per triangle, or an empty vector for an
+ *         outline which is not a simple polygon. A convex hull is
+ *         deliberately not offered as a fallback: it would keep the router
+ *         out of area the zone does not cover, which is a wrong obstacle
+ *         rather than a missing one.
+ */
+static QVector<Path> triangulate(const Path& outline) noexcept {
+  // Arcs are flattened as the board outline's are, so that the router and
+  // the design rule check see the same polygon.
+  const Path flat = outline.flattenedArcs(maxArcTolerance()).toClosedPath();
+
+  // A repeated vertex is no corner, and the closing repetition of a closed
+  // path is one of them.
+  QVector<Point> ring;
+  foreach (const Vertex& vertex, flat.getVertices()) {
+    if (ring.isEmpty() || (ring.last() != vertex.getPos())) {
+      ring.append(vertex.getPos());
+    }
+  }
+  if ((ring.count() > 1) && (ring.first() == ring.last())) {
+    ring.removeLast();
+  }
+  if (ring.count() < 3) {
+    return QVector<Path>();
+  }
+
+  // A corner exactly on the line between its neighbours adds no area and
+  // would leave the ear clipping below with a degenerate triangle it cannot
+  // cut, so it goes first. Removing one can make a neighbour collinear in
+  // turn, hence the loop. Users produce these by clicking on an edge while
+  // drawing a zone.
+  for (bool removed = true; removed && (ring.count() >= 3);) {
+    removed = false;
+    for (int i = 0; (!removed) && (i < ring.count()); ++i) {
+      const Point& previous = ring.at((i + ring.count() - 1) % ring.count());
+      const Point& next = ring.at((i + 1) % ring.count());
+      if (doubledArea(previous, ring.at(i), next) == 0) {
+        ring.removeAt(i);
+        removed = true;
+      }
+    }
+  }
+  if (ring.count() < 3) {
+    return QVector<Path>();
+  }
+
+  // Ear clipping wants a counterclockwise ring, which is the winding
+  // isInTriangle() assumes.
+  qreal area = 0;
+  for (int i = 1; i < (ring.count() - 1); ++i) {
+    area += doubledArea(ring.first(), ring.at(i), ring.at(i + 1));
+  }
+  if (area == 0) {
+    return QVector<Path>();  // No area, so no obstacle.
+  }
+  if (area < 0) {
+    std::reverse(ring.begin(), ring.end());
+  }
+
+  QVector<Path> triangles;
+  triangles.reserve(ring.count() - 2);
+  while (ring.count() > 2) {
+    bool clipped = false;
+    for (int i = 0; (!clipped) && (i < ring.count()); ++i) {
+      const Point previous = ring.at((i + ring.count() - 1) % ring.count());
+      const Point current = ring.at(i);
+      const Point next = ring.at((i + 1) % ring.count());
+
+      // A reflex or a collinear corner is no ear.
+      if (doubledArea(previous, current, next) <= 0) {
+        continue;
+      }
+
+      // Nor is one which would swallow another corner of the ring.
+      bool occupied = false;
+      for (int k = 0; (!occupied) && (k < ring.count()); ++k) {
+        const Point& candidate = ring.at(k);
+        if ((candidate == previous) || (candidate == current) ||
+            (candidate == next)) {
+          continue;
+        }
+        occupied = isInTriangle(previous, current, next, candidate);
+      }
+      if (occupied) {
+        continue;
+      }
+
+      triangles.append(Path({Vertex(previous), Vertex(current), Vertex(next)}));
+      ring.removeAt(i);
+      clipped = true;
+    }
+
+    if (!clipped) {
+      // Every corner was rejected, so the outline is not a simple polygon.
+      return QVector<Path>();
+    }
+  }
+
+  return triangles;
+}
+
 static rs::PnsItemHeader makeHeader(quint64 hostId, quint32 net, int layerStart,
                                     int layerEnd) noexcept {
   rs::PnsItemHeader header = {};
@@ -153,6 +304,7 @@ static rs::PnsItemHeader makeHeader(quint64 hostId, quint32 net, int layerStart,
   header.free_pad = false;
   header.compound_primitive = false;
   header.board_edge = false;
+  header.keepout = false;
   header.copper_clearance = -1;
   return header;
 }
@@ -186,6 +338,7 @@ BoardPnsSnapshot::BoardPnsSnapshot(const Board& board)
   addPads(board);
   addHoles(board);
   addPolygons(board);
+  addZones(board);
 }
 
 BoardPnsSnapshot::~BoardPnsSnapshot() noexcept {
@@ -614,6 +767,77 @@ void BoardPnsSnapshot::addBoardEdge(const BI_Polygon& polygon, quint64 id) {
   }
 }
 
+void BoardPnsSnapshot::addZones(const Board& board) {
+  foreach (const BI_Zone* zone, board.getZones()) {
+    addZone(*zone);
+  }
+}
+
+void BoardPnsSnapshot::addZone(const BI_Zone& zone) {
+  const BoardZoneData& data = zone.getData();
+
+  // Only the no copper rule keeps the router out. The other three are about
+  // planes, stop mask and devices, none of which the router places, and the
+  // design rule check reads the no copper rule the same way: it reports any
+  // copper whose area intersects the zone, at no clearance at all.
+  if (!data.getRules().testFlag(Zone::Rule::NoCopper)) {
+    return;
+  }
+
+  // The board zone already carries board layers, so no layer flag has to be
+  // resolved here. A layer the board does not have is not a layer of this
+  // zone either.
+  QVector<int> layers;
+  foreach (const Layer* layer, data.getLayers()) {
+    const int denseLayer = toDenseLayerIndex(*layer, mInnerLayerCount);
+    if (denseLayer >= 0) {
+      layers.append(denseLayer);
+    }
+  }
+  if (layers.isEmpty()) {
+    return;
+  }
+  // A QSet iterates in an unspecified order, and the snapshot must not
+  // depend on the memory addresses the layers happen to have.
+  std::sort(layers.begin(), layers.end());
+
+  const QVector<Path> triangles = triangulate(data.getOutline());
+  if (triangles.isEmpty()) {
+    qWarning() << "The router ignores zone" << data.getUuid().toStr()
+               << "because its outline could not be cut into triangles. "
+                  "Check whether it intersects itself.";
+    return;
+  }
+
+  BoardPnsHostRef ref;
+  ref.zone = &zone;
+  const quint64 hostId = addHostRef(ref);
+
+  foreach (int layer, layers) {
+    foreach (const Path& triangle, triangles) {
+      // A keepout carries no net, is never routed on and never moved, and
+      // all its triangles are one host object, so a violation on one of
+      // them is reported on the whole zone.
+      rs::PnsItemHeader header = makeHeader(hostId, 0, layer, layer);
+      header.routable = false;
+      header.compound_primitive = true;
+      header.keepout = true;
+
+      std::vector<rs::PnsPoint> buffer;
+      rs::PnsSolidGeometry geometry = {};
+      geometry.shape = polygonShape(triangle, buffer);
+      if (geometry.shape.vertex_count < 3) {
+        continue;  // A degenerate triangle is no obstacle.
+      }
+      geometry.pos = buffer.front();
+      geometry.has_hole = false;
+      check(static_cast<int>(rs::ffi_pnsrouter_snapshot_add_solid(
+                *mHandle, &header, &geometry)),
+            QString("zone %1").arg(data.getUuid().toStr()));
+    }
+  }
+}
+
 quint64 BoardPnsSnapshot::addHostRef(const BoardPnsHostRef& ref) noexcept {
   const quint64 id = static_cast<quint64>(mHostRefs.count());
   mHostRefs.append(ref);
@@ -621,7 +845,8 @@ quint64 BoardPnsSnapshot::addHostRef(const BoardPnsHostRef& ref) noexcept {
       : ref.via                 ? static_cast<const void*>(ref.via)
       : ref.pad                 ? static_cast<const void*>(ref.pad)
       : ref.hole                ? static_cast<const void*>(ref.hole)
-                                : static_cast<const void*>(ref.polygon);
+      : ref.polygon             ? static_cast<const void*>(ref.polygon)
+                                : static_cast<const void*>(ref.zone);
   if (obj) {
     mHostIds.insert(obj, id);
   }

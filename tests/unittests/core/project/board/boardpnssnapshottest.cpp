@@ -22,13 +22,19 @@
  ******************************************************************************/
 #include <gtest/gtest.h>
 #include <librepcb/core/fileio/transactionalfilesystem.h>
+#include <librepcb/core/geometry/path.h>
+#include <librepcb/core/geometry/zone.h>
 #include <librepcb/core/project/board/board.h>
 #include <librepcb/core/project/board/boardpnssnapshot.h>
+#include <librepcb/core/project/board/boardzonedata.h>
 #include <librepcb/core/project/board/drc/boarddesignrulecheckdata.h>
+#include <librepcb/core/project/board/items/bi_device.h>
 #include <librepcb/core/project/board/items/bi_hole.h>
 #include <librepcb/core/project/board/items/bi_netline.h>
 #include <librepcb/core/project/board/items/bi_netsegment.h>
+#include <librepcb/core/project/board/items/bi_pad.h>
 #include <librepcb/core/project/board/items/bi_via.h>
+#include <librepcb/core/project/board/items/bi_zone.h>
 #include <librepcb/core/project/circuit/circuit.h>
 #include <librepcb/core/project/project.h>
 #include <librepcb/core/project/projectloader.h>
@@ -108,6 +114,66 @@ static void addHole(rs::PnsSnapshot* snapshot, quint64 hostId, quint32 net,
   const rs::PnsHoleGeometry geometry{circle(x, 0, 200000)};
   ASSERT_EQ(rs::ffi_pnsrouter_snapshot_add_hole(snapshot, &header, &geometry),
             rs::PnsResult::Ok);
+}
+
+/**
+ * @brief Add a zone to a board, which takes ownership of it
+ *
+ * ::librepcb::Board::~Board() deletes every zone it holds, so the caller must
+ * not.
+ */
+static const BI_Zone* addZone(Board& board, const Path& outline,
+                              const QSet<const Layer*>& layers,
+                              Zone::Rules rules) {
+  BI_Zone* zone = new BI_Zone(
+      board,
+      BoardZoneData(Uuid::createRandom(), layers, rules, outline, false));
+  board.addZone(*zone);
+  return zone;
+}
+
+static const BI_Zone* addKeepoutZone(Board& board, const Path& outline,
+                                     const QSet<const Layer*>& layers) {
+  return addZone(board, outline, layers, Zone::Rules(Zone::Rule::NoCopper));
+}
+
+/**
+ * @brief A five millimetre square at the origin, four corners
+ */
+static Path squareOutline() noexcept {
+  return Path::rect(Point(0, 0),
+                    Point(Length(5000000), Length(5000000)));  // 5 mm.
+}
+
+/**
+ * @brief An L shaped outline at the origin, six corners, one of them reflex
+ */
+static Path lShapedOutline() noexcept {
+  const Length outer(10000000);  // 10 mm.
+  const Length inner(5000000);  // 5 mm.
+  return Path({
+                  Vertex(Point(Length(0), Length(0))),
+                  Vertex(Point(outer, Length(0))),
+                  Vertex(Point(outer, inner)),
+                  Vertex(Point(inner, inner)),
+                  Vertex(Point(inner, outer)),
+                  Vertex(Point(Length(0), outer)),
+              })
+      .toClosedPath();
+}
+
+/**
+ * @brief Get the host ID a zone was given, or 0 if it is not in the snapshot
+ */
+static quint64 findZoneHostId(const BoardPnsSnapshot& snapshot,
+                              const BI_Zone* zone) noexcept {
+  const QVector<BoardPnsHostRef>& refs = snapshot.getHostRefs();
+  for (int i = 0; i < refs.count(); ++i) {
+    if (refs.at(i).zone == zone) {
+      return static_cast<quint64>(i);
+    }
+  }
+  return 0;
 }
 
 static std::unique_ptr<Project> openGerberTestProject() {
@@ -424,6 +490,154 @@ TEST_F(BoardPnsSnapshotTest, testCoordinateOutOfRangeIsAnError) {
   EXPECT_EQ(
       rs::ffi_pnsrouter_snapshot_add_segment(*snapshot, &header, &geometry),
       rs::PnsResult::CoordinateOutOfRange);
+}
+
+/*******************************************************************************
+ *  Keepout zones
+ ******************************************************************************/
+
+TEST_F(BoardPnsSnapshotTest, testKeepoutZoneBecomesOneObstaclePerTriangle) {
+  std::unique_ptr<Project> project = openGerberTestProject();
+  ASSERT_FALSE(project->getBoards().isEmpty());
+  Board& board = *project->getBoards().first();
+
+  // The fixture carries two keepout zones of its own, a four corner
+  // diamond on each outer layer, which are two triangles each.
+  BoardPnsSnapshot before(board);
+  rs::PnsSnapshotStats without = {};
+  rs::ffi_pnsrouter_snapshot_stats(*before, &without);
+  EXPECT_EQ(without.keepout_count, 4U);
+
+  const BI_Zone* zone =
+      addKeepoutZone(board, squareOutline(), {&Layer::topCopper()});
+
+  BoardPnsSnapshot snapshot(board);
+  rs::PnsSnapshotStats stats = {};
+  rs::ffi_pnsrouter_snapshot_stats(*snapshot, &stats);
+
+  // A rectangle is two triangles, on the one layer the zone names.
+  EXPECT_EQ(stats.keepout_count, without.keepout_count + 2);
+  EXPECT_EQ(stats.solid_count, without.solid_count + 2);
+  EXPECT_EQ(stats.item_count, without.item_count + 2);
+
+  // Both of them are one host object, so a router answer names the zone and
+  // not one of its triangles.
+  EXPECT_EQ(snapshot.getHostRefs().count(), before.getHostRefs().count() + 1);
+  const quint64 hostId = findZoneHostId(snapshot, zone);
+  ASSERT_GT(hostId, 0U);
+  const BoardPnsHostRef& ref = snapshot.getHostRefs().at(hostId);
+  EXPECT_EQ(ref.zone, zone);
+  EXPECT_EQ(ref.netLine, nullptr);
+  EXPECT_EQ(ref.via, nullptr);
+  EXPECT_EQ(ref.pad, nullptr);
+  EXPECT_EQ(ref.hole, nullptr);
+  EXPECT_EQ(ref.polygon, nullptr);
+}
+
+TEST_F(BoardPnsSnapshotTest, testKeepoutZoneCoversEveryLayerItNames) {
+  std::unique_ptr<Project> project = openGerberTestProject();
+  ASSERT_FALSE(project->getBoards().isEmpty());
+  Board& board = *project->getBoards().first();
+
+  BoardPnsSnapshot before(board);
+  rs::PnsSnapshotStats without = {};
+  rs::ffi_pnsrouter_snapshot_stats(*before, &without);
+
+  // Six corners, one of them reflex, so the outline is not convex and no
+  // single polygon shape of the router could stand in for it.
+  const BI_Zone* zone = addKeepoutZone(
+      board, lShapedOutline(), {&Layer::topCopper(), &Layer::botCopper()});
+  EXPECT_EQ(zone->getData().getOutline().getVertices().count(), 7);
+
+  BoardPnsSnapshot snapshot(board);
+  rs::PnsSnapshotStats stats = {};
+  rs::ffi_pnsrouter_snapshot_stats(*snapshot, &stats);
+
+  // An outline of n corners is n - 2 triangles, on each of the two layers.
+  EXPECT_EQ(stats.keepout_count, without.keepout_count + 8);
+  EXPECT_GT(findZoneHostId(snapshot, zone), 0U);
+}
+
+TEST_F(BoardPnsSnapshotTest, testZoneWithoutTheNoCopperRuleIsNoKeepout) {
+  std::unique_ptr<Project> project = openGerberTestProject();
+  ASSERT_FALSE(project->getBoards().isEmpty());
+  Board& board = *project->getBoards().first();
+
+  BoardPnsSnapshot before(board);
+  rs::PnsSnapshotStats without = {};
+  rs::ffi_pnsrouter_snapshot_stats(*before, &without);
+
+  // The other three rules are about planes, stop mask and devices, none of
+  // which the router places.
+  const BI_Zone* zone = addZone(board, squareOutline(), {&Layer::topCopper()},
+                                Zone::Rule::NoPlanes | Zone::Rule::NoExposure |
+                                    Zone::Rule::NoDevices);
+
+  BoardPnsSnapshot snapshot(board);
+  rs::PnsSnapshotStats stats = {};
+  rs::ffi_pnsrouter_snapshot_stats(*snapshot, &stats);
+  EXPECT_EQ(stats.keepout_count, without.keepout_count);
+  EXPECT_EQ(stats.item_count, without.item_count);
+  EXPECT_EQ(findZoneHostId(snapshot, zone), 0U);
+}
+
+/**
+ * @brief A keepout excludes copper, it does not keep a distance from it
+ *
+ * Which is what the design rule check says too: it reports copper whose area
+ * intersects the zone, at no clearance at all
+ * (`BoardDesignRuleCheck::checkZones`).
+ */
+TEST_F(BoardPnsSnapshotTest, testKeepoutHasNoClearance) {
+  std::unique_ptr<Project> project = openGerberTestProject();
+  ASSERT_FALSE(project->getBoards().isEmpty());
+  Board& board = *project->getBoards().first();
+
+  const BI_Zone* zone =
+      addKeepoutZone(board, squareOutline(), {&Layer::topCopper()});
+
+  BoardPnsSnapshot snapshot(board);
+  const quint64 zoneId = findZoneHostId(snapshot, zone);
+  ASSERT_GT(zoneId, 0U);
+
+  // The board's own copper to copper rule is not zero, so a zero answer can
+  // only have come from the keepout rung of the ladder.
+  EXPECT_GT((*board.getDrcSettings().getMinCopperCopperClearance()).toNm(), 0);
+
+  quint64 traceId = 0;
+  foreach (const BI_NetSegment* segment, board.getNetSegments()) {
+    foreach (const BI_NetLine* netLine, segment->getNetLines()) {
+      if (traceId == 0) {
+        traceId = snapshot.getHostId(*netLine);
+      }
+    }
+  }
+  ASSERT_GT(traceId, 0U);
+
+  qint32 clearance = -1;
+  EXPECT_EQ(rs::ffi_pnsrouter_snapshot_clearance(
+                *snapshot, zoneId, rs::PnsItemRole::Copper, traceId,
+                rs::PnsItemRole::Copper, &clearance),
+            rs::PnsResult::Ok);
+  EXPECT_EQ(clearance, 0);
+
+  // A pad is not copper the router places, so the zone is not an obstacle to
+  // it at all. Whether that pad belongs there is the design rule check's
+  // business, and giving the zone a copper clearance instead would drag
+  // every pad standing in it into the router's walkaround clusters.
+  quint64 padId = 0;
+  foreach (const BI_Device* device, board.getDeviceInstances()) {
+    foreach (const BI_Pad* pad, device->getPads()) {
+      if (padId == 0) {
+        padId = snapshot.getHostId(*pad);
+      }
+    }
+  }
+  ASSERT_GT(padId, 0U);
+  EXPECT_EQ(rs::ffi_pnsrouter_snapshot_clearance(
+                *snapshot, zoneId, rs::PnsItemRole::Copper, padId,
+                rs::PnsItemRole::Copper, &clearance),
+            rs::PnsResult::NoClearance);
 }
 
 /*******************************************************************************

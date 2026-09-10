@@ -38,6 +38,7 @@ class BI_NetLine;
 class BI_Pad;
 class BI_Polygon;
 class BI_Via;
+class BI_Zone;
 class Board;
 class Layer;
 class NetClass;
@@ -65,6 +66,7 @@ struct BoardPnsHostRef final {
   const BI_Pad* pad = nullptr;
   const BI_Hole* hole = nullptr;
   const BI_Polygon* polygon = nullptr;
+  const BI_Zone* zone = nullptr;
 };
 
 /*******************************************************************************
@@ -83,10 +85,10 @@ struct BoardPnsHostRef final {
  * again while it is routing.
  *
  * What is synced: traces, vias, pads (one solid per copper layer), board
- * holes, copper polygons and the board outline. What is deliberately not
- * synced: planes, air wires, zones, stroke texts and everything on a non
- * copper layer. The router routes through a plane and the caller rebuilds
- * it afterwards.
+ * holes, copper polygons, the board outline and keepout zones. What is
+ * deliberately not synced: planes, air wires, stroke texts, the zones of a
+ * device's footprint and everything on a non copper layer. The router routes
+ * through a plane and the caller rebuilds it afterwards.
  *
  * @note This is just a wrapper around its Rust implementation.
  */
@@ -215,6 +217,7 @@ private:  // Methods
   void addPads(const Board& board);
   void addHoles(const Board& board);
   void addPolygons(const Board& board);
+  void addZones(const Board& board);
 
   /**
    * @brief Add one pad as one solid per copper layer
@@ -236,6 +239,23 @@ private:  // Methods
    * how KiCad syncs its own board edges.
    */
   void addBoardEdge(const BI_Polygon& polygon, quint64 id);
+
+  /**
+   * @brief Add one keepout zone, one obstacle per triangle of its outline
+   *
+   * A zone which does not carry ::librepcb::Zone::Rule::NoCopper is skipped:
+   * the other three rules are about planes, stop mask and devices, none of
+   * which the router places. The zone becomes one non routable obstacle per
+   * triangle per copper layer it covers, all sharing one host ID and flagged
+   * as compound primitives, because the router's polygon shape is assumed
+   * convex and a zone outline is not.
+   *
+   * A zone whose outline cannot be triangulated, which in practice means one
+   * that intersects itself, is skipped with a warning rather than replaced by
+   * an approximation: an obstacle of the wrong shape is worse than none, and
+   * the design rule check still reports copper in the zone.
+   */
+  void addZone(const BI_Zone& zone);
 
   /**
    * @brief Reserve the next host ID for a board object
