@@ -497,9 +497,10 @@ TEST_F(BoardPnsRouterTest, testDragOnAPadIsRefused) {
   const std::optional<RouteStart> start = findStartPad(router, *mBoard);
   ASSERT_TRUE(start.has_value()) << "no routable top layer pad with a net";
 
-  // A pad is copper the router may route from but never move.
+  // A selection of nothing but pads is a component drag to the router,
+  // which this host does not offer yet.
   EXPECT_EQ(router.startDragging(start->pos, start->hostId, false),
-            BoardPnsRouter::StartResult::NotDraggable);
+            BoardPnsRouter::StartResult::ComponentDragUnsupported);
   EXPECT_FALSE(router.isDragging());
   EXPECT_FALSE(router.isRoutingInProgress());
 

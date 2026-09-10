@@ -1374,8 +1374,8 @@ pub enum PnsStartResult {
   PlacerRefused = 5,
   /// `StartError::NothingToDrag`.
   NothingToDrag = 6,
-  /// `StartError::MultiDragUnsupported`.
-  MultiDragUnsupported = 7,
+  /// `StartError::ComponentDragUnsupported`.
+  ComponentDragUnsupported = 7,
   /// `StartError::NotDraggable`.
   NotDraggable = 8,
 }
@@ -1816,10 +1816,12 @@ extern "C" fn ffi_pnsrouter_start_routing(
 ///
 /// Wraps `pnsrouter::router::Router::start_dragging`. `host_id` is the
 /// board object to drag, or zero for none, which is
-/// [`PnsStartResult::NothingToDrag`]. The crate takes a slice because
-/// multi drag will need one and refuses more than one object with
-/// [`PnsStartResult::MultiDragUnsupported`]; one host id is therefore the
-/// whole of what can cross here today.
+/// [`PnsStartResult::NothingToDrag`]. The crate takes a slice and drags
+/// several traces at once when it gets several; a set of nothing but
+/// pads is KiCad's component drag and is refused with
+/// [`PnsStartResult::ComponentDragUnsupported`]. One host id is what
+/// crosses here today, so a multi drag waits for a host gesture that
+/// selects several traces.
 ///
 /// `free_angle` drags the clicked corner without the 45 degree
 /// constraint; every other drag mode is decided by the crate from the
@@ -2409,8 +2411,8 @@ fn to_start_result(result: Result<(), StartError>) -> PnsStartResult {
     }
     Err(StartError::PlacerRefused) => PnsStartResult::PlacerRefused,
     Err(StartError::NothingToDrag) => PnsStartResult::NothingToDrag,
-    Err(StartError::MultiDragUnsupported) => {
-      PnsStartResult::MultiDragUnsupported
+    Err(StartError::ComponentDragUnsupported) => {
+      PnsStartResult::ComponentDragUnsupported
     }
     Err(StartError::NotDraggable(_)) => PnsStartResult::NotDraggable,
   }

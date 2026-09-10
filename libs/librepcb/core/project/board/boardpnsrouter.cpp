@@ -101,8 +101,8 @@ static BoardPnsRouter::StartResult toStartResult(
       return BoardPnsRouter::StartResult::PlacerRefused;
     case rs::PnsStartResult::NothingToDrag:
       return BoardPnsRouter::StartResult::NothingToDrag;
-    case rs::PnsStartResult::MultiDragUnsupported:
-      return BoardPnsRouter::StartResult::MultiDragUnsupported;
+    case rs::PnsStartResult::ComponentDragUnsupported:
+      return BoardPnsRouter::StartResult::ComponentDragUnsupported;
     case rs::PnsStartResult::NotDraggable:
       return BoardPnsRouter::StartResult::NotDraggable;
     case rs::PnsStartResult::Ok:

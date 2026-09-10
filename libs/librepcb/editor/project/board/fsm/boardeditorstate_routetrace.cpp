@@ -850,8 +850,8 @@ QString BoardEditorState_RouteTrace::getStartResultMessage(
       return tr("The router could not start a trace here.");
     case BoardPnsRouter::StartResult::NothingToDrag:
       return tr("There is nothing to drag here.");
-    case BoardPnsRouter::StartResult::MultiDragUnsupported:
-      return tr("Only one object can be dragged at a time.");
+    case BoardPnsRouter::StartResult::ComponentDragUnsupported:
+      return tr("Footprints cannot be dragged with the router yet.");
     case BoardPnsRouter::StartResult::NotDraggable:
       return tr("This object cannot be dragged.");
     default:
