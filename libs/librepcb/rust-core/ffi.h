@@ -366,6 +366,11 @@ enum class PnsStartResult {
    * starts a pair, so the value exists to keep the mapping total.
    */
   DiffPairRefused = 9,
+  /**
+   * Any of the engine's length tuning refusals. This host never starts
+   * a tuning session, so the value exists to keep the mapping total.
+   */
+  TuningRefused = 10,
 };
 
 /**

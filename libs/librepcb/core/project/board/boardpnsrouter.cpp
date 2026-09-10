@@ -106,6 +106,7 @@ static BoardPnsRouter::StartResult toStartResult(
     case rs::PnsStartResult::NotDraggable:
       return BoardPnsRouter::StartResult::NotDraggable;
     case rs::PnsStartResult::DiffPairRefused:
+    case rs::PnsStartResult::TuningRefused:
       return BoardPnsRouter::StartResult::PlacerRefused;
     case rs::PnsStartResult::Ok:
     default:

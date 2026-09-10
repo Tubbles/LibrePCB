@@ -1456,6 +1456,9 @@ pub enum PnsStartResult {
   /// Any of the engine's differential pair refusals. This host never
   /// starts a pair, so the value exists to keep the mapping total.
   DiffPairRefused = 9,
+  /// Any of the engine's length tuning refusals. This host never starts
+  /// a tuning session, so the value exists to keep the mapping total.
+  TuningRefused = 10,
 }
 
 /// What happened to a fix.
@@ -2501,5 +2504,13 @@ fn to_start_result(result: Result<(), StartError>) -> PnsStartResult {
       | StartError::PairGapBelowMinClearance
       | StartError::PairGapMismatch,
     ) => PnsStartResult::DiffPairRefused,
+    Err(
+      StartError::TuningNeedsStartItem
+      | StartError::NotATrack(_)
+      | StartError::NoTuningPath
+      | StartError::NotADiffPairForTuning
+      | StartError::NotADiffPairForSkew
+      | StartError::PairLaneHasNoSegments,
+    ) => PnsStartResult::TuningRefused,
   }
 }
