@@ -336,6 +336,20 @@ public:
   WorkspaceSettingsItem_GenericValue<GridStyle> boardGridStyle;
 
   /**
+   * @brief Push & shove router: shove iterations per mouse move
+   *
+   * How many times the router may push a colliding trace aside before it
+   * gives up and walks around instead. Bounds the time one mouse move can
+   * take on a densely populated board.
+   *
+   * Readers are expected to clamp the value to a sane range, see
+   * ::librepcb::editor::BoardEditorState_RouteTrace.
+   *
+   * Default: 250 (the value KiCad's router uses)
+   */
+  WorkspaceSettingsItem_GenericValue<uint> pnsShoveIterationLimit;
+
+  /**
    * @brief Schematic color schemes
    *
    * @see ::librepcb::WorkspaceSettingsItem_ColorSchemes

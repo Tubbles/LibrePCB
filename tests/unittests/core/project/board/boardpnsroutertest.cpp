@@ -390,6 +390,36 @@ TEST_F(BoardPnsRouterTest, testNothingIsRecordedWithoutTheSetting) {
 }
 
 /*******************************************************************************
+ *  Shove iteration limit
+ ******************************************************************************/
+
+TEST_F(BoardPnsRouterTest, testShoveIterationLimitReachesTheEngine) {
+  EXPECT_EQ(makeSettings().shoveIterationLimit, 250U);  // KiCad's value.
+
+  BoardPnsRouter probeRouter(*mBoard, makeSettings());
+  const std::optional<RouteStart> start = findStartPad(probeRouter, *mBoard);
+  ASSERT_TRUE(start.has_value()) << "no routable top layer pad with a net";
+  const std::optional<Point> target = findFreeTarget(*mBoard, *start);
+  ASSERT_TRUE(target.has_value()) << "no free space around the start pad";
+
+  BoardPnsRouter::Settings settings = makeSettings();
+  settings.shoveIterationLimit = 50;
+  settings.recordSession = true;  // The only read back of the limit.
+
+  BoardPnsRouter router(*mBoard, settings);
+  ASSERT_EQ(router.startRouting(start->pos, start->hostId, Layer::topCopper()),
+            BoardPnsRouter::StartResult::Ok);
+  router.moveTo(*target, 0);
+  ASSERT_EQ(router.fixRoute(*target, 0, true),
+            BoardPnsRouter::FixOutcome::Finished);
+  EXPECT_FALSE(router.getCommit().added.isEmpty());
+
+  const QString recording = router.takeRecording();
+  EXPECT_TRUE(recording.contains("\nsettings 0 shove-iteration-limit 50\n"))
+      << recording.left(400).toStdString();
+}
+
+/*******************************************************************************
  *  End of File
  ******************************************************************************/
 

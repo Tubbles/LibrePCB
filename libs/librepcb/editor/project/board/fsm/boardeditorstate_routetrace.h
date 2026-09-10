@@ -179,9 +179,23 @@ private:  // Methods
   void rebuildRouter() noexcept;
 
   /**
-   * @brief Push the current width, via size and via drill into the session
+   * @brief Push the current width, via size, via drill and workspace
+   *        settings into the session
+   *
+   * Also connected to the workspace setting the router reads, so that a
+   * change made while the tool is open reaches the running session. Does
+   * nothing when no session is open.
    */
   void updateRouterSettings() noexcept;
+
+  /**
+   * @brief Get the shove iteration limit from the workspace settings
+   *
+   * Clamped to a range the router can work with: zero would make every
+   * shove fail immediately, and a value far above the default only wastes
+   * time the user waits for.
+   */
+  uint getShoveIterationLimit() const noexcept;
 
   /**
    * @brief Snap the cursor to the grid and to the board object under it

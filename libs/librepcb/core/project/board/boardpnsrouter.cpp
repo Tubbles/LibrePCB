@@ -131,6 +131,7 @@ static rs::PnsRouterSettings toFfi(
       (*settings.traceWidth).toNm(),
       (*settings.viaDiameter).toNm(),
       (*settings.viaDrill).toNm(),
+      settings.shoveIterationLimit,
       settings.recordSession,
   };
 }

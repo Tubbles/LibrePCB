@@ -884,6 +884,15 @@ struct PnsRouterSettings {
    */
   int64_t via_drill;
   /**
+   * How many times the shove may push before it gives up and the router
+   * falls back to walking around.
+   *
+   * `RoutingSettings::shove_iteration_limit`, whose default is KiCad's
+   * 250. The host is expected to keep it in a sane range. Zero would make
+   * every shove fail immediately.
+   */
+  uint32_t shove_iteration_limit;
+  /**
    * Whether the session records everything it is driven with.
    *
    * Read by [`ffi_pnsrouter_new`] only, because a recording has to start

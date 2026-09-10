@@ -739,6 +739,10 @@ void WorkspaceSettingsDialog::loadSettings() noexcept {
   mUi->spbAutosaveInterval->setValue(
       mSettings.projectAutosaveIntervalSeconds.get());
 
+  // Push & Shove Iteration Limit
+  mUi->spbPnsShoveIterationLimit->setValue(
+      mSettings.pnsShoveIterationLimit.get());
+
   // Use OpenGL
   mUi->cbxUseOpenGl->setChecked(mSettings.useOpenGl.get());
 
@@ -802,6 +806,10 @@ void WorkspaceSettingsDialog::saveSettings() noexcept {
     // Autosave Interval
     mSettings.projectAutosaveIntervalSeconds.set(
         mUi->spbAutosaveInterval->value());
+
+    // Push & Shove Iteration Limit
+    mSettings.pnsShoveIterationLimit.set(
+        mUi->spbPnsShoveIterationLimit->value());
 
     // Use OpenGL
     mSettings.useOpenGl.set(mUi->cbxUseOpenGl->isChecked());

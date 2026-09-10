@@ -360,6 +360,13 @@ pub struct PnsRouterSettings {
   pub via_diameter: i64,
   /// The via drill diameter to place, in nanometres.
   pub via_drill: i64,
+  /// How many times the shove may push before it gives up and the router
+  /// falls back to walking around.
+  ///
+  /// `RoutingSettings::shove_iteration_limit`, whose default is KiCad's
+  /// 250. The host is expected to keep it in a sane range. Zero would make
+  /// every shove fail immediately.
+  pub shove_iteration_limit: u32,
   /// Whether the session records everything it is driven with.
   ///
   /// Read by [`ffi_pnsrouter_new`] only, because a recording has to start
@@ -1533,7 +1540,7 @@ impl PnsRouter {
   }
 }
 
-/// Derive the engine's settings and sizes from the host's four values.
+/// Derive the engine's settings and sizes from the host's values.
 ///
 /// Shared by [`ffi_pnsrouter_new`] and [`ffi_pnsrouter_set_settings`], so
 /// that a session created with one set of values and a session updated to
@@ -1555,6 +1562,7 @@ fn derive_settings(
       1 => RouterMode::Shove,
       _ => RouterMode::Walkaround,
     },
+    shove_iteration_limit: settings.shove_iteration_limit,
     ..base
   };
 

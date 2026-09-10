@@ -43,6 +43,8 @@
 #include <librepcb/core/project/board/items/bi_via.h>
 #include <librepcb/core/types/layer.h>
 #include <librepcb/core/utils/toolbox.h>
+#include <librepcb/core/workspace/workspace.h>
+#include <librepcb/core/workspace/workspacesettings.h>
 
 #include <QtCore>
 
@@ -70,6 +72,11 @@ BoardEditorState_RouteTrace::BoardEditorState_RouteTrace(
     mCursorPos(),
     mSnapActive(true),
     mCurrentNetSignal(nullptr) {
+  // The workspace settings dialog stays usable while the tool is open, so
+  // a new iteration limit has to reach the running session too.
+  connect(&mContext.workspace.getSettings().pnsShoveIterationLimit,
+          &WorkspaceSettingsItem::edited, this,
+          &BoardEditorState_RouteTrace::updateRouterSettings);
 }
 
 BoardEditorState_RouteTrace::~BoardEditorState_RouteTrace() noexcept {
@@ -422,6 +429,7 @@ bool BoardEditorState_RouteTrace::createRouter() noexcept {
             mCurrentWidth,
             getViaSize(),
             getViaDrillDiameter(),
+            getShoveIterationLimit(),
             getRecordingDirectory().isValid(),
         }));
     if (mCornerMode90) {
@@ -450,7 +458,13 @@ void BoardEditorState_RouteTrace::updateRouterSettings() noexcept {
       mCurrentWidth,
       getViaSize(),
       getViaDrillDiameter(),
+      getShoveIterationLimit(),
   });
+}
+
+uint BoardEditorState_RouteTrace::getShoveIterationLimit() const noexcept {
+  const WorkspaceSettings& settings = mContext.workspace.getSettings();
+  return qBound(1U, settings.pnsShoveIterationLimit.get(), 10000U);
 }
 
 BoardEditorState_RouteTrace::SnappedCursor

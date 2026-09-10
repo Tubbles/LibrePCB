@@ -234,6 +234,12 @@ public:
     PositiveLength viaDiameter;
     PositiveLength viaDrill;
 
+    /// How many times the shove may push a colliding trace before it gives
+    /// up and the router walks around instead. KiCad's default is 250. A
+    /// smaller value bounds the time one mouse move can take on a densely
+    /// populated board.
+    uint shoveIterationLimit = 250;
+
     /// Whether the session records what it is driven with, so that
     /// #takeRecording() can answer with it. Off by default: a recording
     /// keeps a copy of the whole board snapshot and of every event.

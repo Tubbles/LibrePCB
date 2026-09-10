@@ -110,6 +110,7 @@ WorkspaceSettings::WorkspaceSettings(QObject* parent)
     keyboardShortcuts(this),
     schematicGridStyle("schematic_grid_style", GridStyle::Lines, this),
     boardGridStyle("board_grid_style", GridStyle::Lines, this),
+    pnsShoveIterationLimit("pns_shove_iteration_limit", 250U, this),
     schematicColorSchemes(WorkspaceSettingsItem_ColorSchemes::Kind::sSchematic,
                           this),
     boardColorSchemes(WorkspaceSettingsItem_ColorSchemes::Kind::sBoard, this),

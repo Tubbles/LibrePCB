@@ -141,7 +141,7 @@ TEST_F(BoardPnsSnapshotTest, testSnapshotHandleLifetime) {
 TEST_F(BoardPnsSnapshotTest, testRouterHandleLifetime) {
   RustHandle<rs::PnsSnapshot> snapshot = makeSnapshot(4);
 
-  const rs::PnsRouterSettings settings{2, 250000, 700000, 300000, false};
+  const rs::PnsRouterSettings settings{2, 250000, 700000, 300000, 250, false};
   rs::PnsRouter* obj = rs::ffi_pnsrouter_new(snapshot.mObj, &settings);
   ASSERT_NE(obj, nullptr);
   snapshot.mObj = nullptr;  // Consumed by ffi_pnsrouter_new().
