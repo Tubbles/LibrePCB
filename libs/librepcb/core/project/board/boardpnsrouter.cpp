@@ -247,6 +247,15 @@ BoardPnsRouter::StartResult BoardPnsRouter::startRouting(
 
 BoardPnsRouter::StartResult BoardPnsRouter::startDragging(
     const Point& pos, quint64 hostId, bool freeAngle) noexcept {
+  // The router drags a pad as a component drag, which moves the whole
+  // footprint, and this host applies no footprint move yet. Holes and
+  // copper graphics are obstacles the router never moves.
+  const BoardPnsHostRef ref = getHostRef(hostId);
+  if (ref.pad) {
+    return StartResult::ComponentDragUnsupported;
+  } else if (ref.hole || ref.polygon) {
+    return StartResult::NotDraggable;
+  }
   const rs::PnsStartResult result =
       rs::ffi_pnsrouter_start_dragging(*mHandle, toFfi(pos), hostId, freeAngle);
   updatePreview();

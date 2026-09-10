@@ -1374,7 +1374,9 @@ pub enum PnsStartResult {
   PlacerRefused = 5,
   /// `StartError::NothingToDrag`.
   NothingToDrag = 6,
-  /// `StartError::ComponentDragUnsupported`.
+  /// Answered by the host, not by the engine: a pad would start KiCad's
+  /// component drag, which moves the footprint, and this host applies no
+  /// footprint move yet.
   ComponentDragUnsupported = 7,
   /// `StartError::NotDraggable`.
   NotDraggable = 8,
@@ -1817,11 +1819,11 @@ extern "C" fn ffi_pnsrouter_start_routing(
 /// Wraps `pnsrouter::router::Router::start_dragging`. `host_id` is the
 /// board object to drag, or zero for none, which is
 /// [`PnsStartResult::NothingToDrag`]. The crate takes a slice and drags
-/// several traces at once when it gets several; a set of nothing but
-/// pads is KiCad's component drag and is refused with
-/// [`PnsStartResult::ComponentDragUnsupported`]. One host id is what
-/// crosses here today, so a multi drag waits for a host gesture that
-/// selects several traces.
+/// several traces at once when it gets several, and a set of nothing but
+/// pads is KiCad's component drag, which moves the footprint. One host id
+/// is what crosses here today, so a multi drag waits for a host gesture
+/// that selects several traces, and the C++ side refuses a pad before it
+/// reaches here because it applies no footprint move yet.
 ///
 /// `free_angle` drags the clicked corner without the 45 degree
 /// constraint; every other drag mode is decided by the crate from the
@@ -1865,7 +1867,10 @@ extern "C" fn ffi_pnsrouter_start_dragging(
 /// and this pair of predicates already answers all of them.
 #[no_mangle]
 extern "C" fn ffi_pnsrouter_is_dragging(obj: &PnsRouter) -> bool {
-  obj.router.state() == RouterState::DragSegment
+  matches!(
+    obj.router.state(),
+    RouterState::DragSegment | RouterState::DragComponent
+  )
 }
 
 /// Move the end of the route, and store the frame it produced.
@@ -2411,9 +2416,6 @@ fn to_start_result(result: Result<(), StartError>) -> PnsStartResult {
     }
     Err(StartError::PlacerRefused) => PnsStartResult::PlacerRefused,
     Err(StartError::NothingToDrag) => PnsStartResult::NothingToDrag,
-    Err(StartError::ComponentDragUnsupported) => {
-      PnsStartResult::ComponentDragUnsupported
-    }
     Err(StartError::NotDraggable(_)) => PnsStartResult::NotDraggable,
   }
 }

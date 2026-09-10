@@ -260,7 +260,7 @@ public:
     StartPointViolatesRules,  ///< Even a minimum width trace collides here.
     PlacerRefused,  ///< The router could not build a placement.
     NothingToDrag,  ///< No object was named to drag.
-    ComponentDragUnsupported,  ///< A selection of nothing but pads, KiCad's component drag, not ported.
+    ComponentDragUnsupported,  ///< A pad: the router would move the footprint.
     NotDraggable,  ///< A pad, a hole or anything else which is not copper
                    ///< the router owns.
   };
