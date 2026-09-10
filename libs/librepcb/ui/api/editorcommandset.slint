@@ -1724,6 +1724,16 @@ export global EditorCommandSet {
         key: Key.F1,
     };
 
+    in property <EditorCommand> record-routing-sessions: {
+        id: "record_routing_sessions",
+        icon: @image-url("../../../font-awesome/svgs/solid/circle.svg"),
+        text: "Record Routing Sessions...",
+        status-tip: "Write every push and shove routing session to a file, to attach to a bug report",
+        shortcut: "",
+        modifiers: { alt: false, control: false, shift: false, meta: false },
+        key: "",
+    };
+
     in property <EditorCommand> vertex-add: {
         id: "vertex_add",
         icon: @image-url(""),

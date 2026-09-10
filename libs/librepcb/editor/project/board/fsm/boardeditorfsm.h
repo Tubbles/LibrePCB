@@ -45,6 +45,7 @@ namespace editor {
 class BoardEditorFsmAdapter;
 class BoardEditorState;
 class GraphicsLayerList;
+class PnsSessionRecorder;
 class UndoStack;
 struct GraphicsSceneKeyEvent;
 struct GraphicsSceneMouseEvent;
@@ -105,6 +106,10 @@ public:
     UndoStack& undoStack;
     GraphicsLayerList& layers;
     BoardEditorFsmAdapter& adapter;
+
+    /// Application wide, so that recording switched on from any window
+    /// reaches the router tool of every board.
+    PnsSessionRecorder& pnsRecorder;
   };
 
   // Constructors / Destructor

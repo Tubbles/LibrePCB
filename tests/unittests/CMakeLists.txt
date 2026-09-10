@@ -128,6 +128,7 @@ add_executable(
   editor/project/board/boardpnspreviewtest.cpp
   editor/project/board/cmdboardapplypnscommittest.cpp
   editor/project/board/cmdboardspecctraimporttest.cpp
+  editor/project/board/pnssessionrecordertest.cpp
   editor/project/schematic/cmddragselectedschematicitemstest.cpp
   editor/project/schematic/schematicclipboarddatatest.cpp
   editor/utils/shortcutsreferencegeneratortest.cpp

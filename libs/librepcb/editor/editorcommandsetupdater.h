@@ -188,6 +188,7 @@ public:
     out.set_support(l2s(cmd.support, out.get_support()));
     out.set_donate(l2s(cmd.donate, out.get_donate()));
     out.set_keyboard_shortcuts_reference(l2s(cmd.keyboardShortcutsReference, out.get_keyboard_shortcuts_reference()));
+    out.set_record_routing_sessions(l2s(cmd.recordRoutingSessions, out.get_record_routing_sessions()));
     out.set_vertex_add(l2s(cmd.vertexAdd, out.get_vertex_add()));
     out.set_vertex_remove(l2s(cmd.vertexRemove, out.get_vertex_remove()));
     out.set_trace_select_whole(l2s(cmd.traceSelectWhole, out.get_trace_select_whole()));

@@ -30,9 +30,8 @@
 #include "../graphicsitems/bgi_netpoint.h"
 #include "../graphicsitems/bgi_pad.h"
 #include "../graphicsitems/bgi_via.h"
+#include "../pnssessionrecorder.h"
 
-#include <librepcb/core/fileio/filepath.h>
-#include <librepcb/core/fileio/fileutils.h>
 #include <librepcb/core/geometry/via.h>
 #include <librepcb/core/project/board/board.h>
 #include <librepcb/core/project/board/boarddesignrules.h>
@@ -77,6 +76,15 @@ BoardEditorState_RouteTrace::BoardEditorState_RouteTrace(
   connect(&mContext.workspace.getSettings().pnsShoveIterationLimit,
           &WorkspaceSettingsItem::edited, this,
           &BoardEditorState_RouteTrace::updateRouterSettings);
+
+  // The last moment at which a session which is recording can still hand
+  // its recording over, so this one is not a rebuild.
+  connect(&mContext.pnsRecorder, &PnsSessionRecorder::recordingAboutToStop,
+          this, &BoardEditorState_RouteTrace::writeSessionRecording);
+  connect(&mContext.pnsRecorder, &PnsSessionRecorder::recordingStarted, this,
+          &BoardEditorState_RouteTrace::handleRecordingToggled);
+  connect(&mContext.pnsRecorder, &PnsSessionRecorder::recordingStopped, this,
+          &BoardEditorState_RouteTrace::handleRecordingToggled);
 }
 
 BoardEditorState_RouteTrace::~BoardEditorState_RouteTrace() noexcept {
@@ -430,7 +438,7 @@ bool BoardEditorState_RouteTrace::createRouter() noexcept {
             getViaSize(),
             getViaDrillDiameter(),
             getShoveIterationLimit(),
-            getRecordingDirectory().isValid(),
+            mContext.pnsRecorder.isRecording(),
         }));
     if (mCornerMode90) {
       // Every session starts on 45 degree corners because the corner mode is
@@ -662,37 +670,25 @@ void BoardEditorState_RouteTrace::applyCommit(
   // command group open. That also rebuilds the air wires.
 }
 
-FilePath BoardEditorState_RouteTrace::getRecordingDirectory() noexcept {
-  const QString path = QString(qgetenv("LIBREPCB_PNS_RECORD_DIR")).trimmed();
-  if (path.isEmpty()) {
-    return FilePath();
-  }
-
-  const FilePath dir(path);
-  return dir.isExistingDir() ? dir : FilePath();
-}
-
 void BoardEditorState_RouteTrace::writeSessionRecording() noexcept {
   if (!mRouter) return;
-
-  const FilePath dir = getRecordingDirectory();
-  if (!dir.isValid()) return;
 
   const QString text = mRouter->takeRecording();
   if (text.isEmpty()) return;
 
-  const QString timestamp =
-      QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss");
-  const QString boardName = FilePath::cleanFileName(
-      *mContext.board.getName(), FilePath::ReplaceSpaces | FilePath::KeepCase);
-  const FilePath fp = dir.getPathTo(timestamp % "-" % boardName % ".txt");
-
+  const QString boardName = *mContext.board.getName();
   try {
-    FileUtils::writeFile(fp, text.toUtf8());  // can throw
+    mContext.pnsRecorder.writeSession(text, boardName);  // can throw
   } catch (const Exception& e) {
-    // A developer switch must never get in the way of routing, so this is
-    // a status bar line rather than a dialog.
+    // Recording must never get in the way of routing, so this is a status
+    // bar line rather than a dialog.
     mAdapter.fsmSetStatusBarMessage(e.getMsg(), 5000);
+  }
+}
+
+void BoardEditorState_RouteTrace::handleRecordingToggled() noexcept {
+  if (mRouter && (!mRouter->isRoutingInProgress())) {
+    rebuildRouter();
   }
 }
 

@@ -519,6 +519,10 @@ add_library(
   project/board/graphicsitems/bgi_via.h
   project/board/graphicsitems/bgi_zone.cpp
   project/board/graphicsitems/bgi_zone.h
+  project/board/pnsrecordingwindow.cpp
+  project/board/pnsrecordingwindow.h
+  project/board/pnssessionrecorder.cpp
+  project/board/pnssessionrecorder.h
   project/bomreviewdialog.cpp
   project/bomreviewdialog.h
   project/bomreviewdialog.ui

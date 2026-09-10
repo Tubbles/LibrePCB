@@ -38,7 +38,6 @@
 namespace librepcb {
 
 class BI_NetPoint;
-class FilePath;
 class Layer;
 class NetSignal;
 
@@ -75,15 +74,11 @@ class BoardPnsPreviewItems;
  * ::librepcb::editor::BoardEditorState_RouteTrace::SnappedCursor every
  * router call takes, so an unsnapped point cannot reach the router.
  *
- * @note Setting the environment variable `LIBREPCB_PNS_RECORD_DIR` to an
- *       existing directory makes every session record what it is driven
- *       with and write it to `<dir>/<yyyyMMdd-HHmmss>-<board name>.txt`
- *       when the session ends. The file is in the router crate's own
- *       recorded session format, so it can be dropped into the crate's
- *       `tests/fixtures/sessions/` and replayed as a regression fixture.
- *       This is a developer switch with no user interface: nothing happens
- *       while the variable is unset, and a failed write only reaches the
- *       status bar, never a dialog, and never interrupts routing.
+ * While ::librepcb::editor::PnsSessionRecorder is recording, every session
+ * records what it is driven with and hands the recording to the recorder
+ * when it ends, which is one file per session in the router crate's own
+ * fixture format. A failed write only reaches the status bar, never a
+ * dialog, because recording must never interrupt routing.
  */
 class BoardEditorState_RouteTrace final : public BoardEditorState {
   Q_OBJECT
@@ -271,16 +266,7 @@ private:  // Methods
   void applyCommit(const BoardPnsCommit& commit) noexcept;
 
   /**
-   * @brief Get the directory recorded sessions are written to
-   *
-   * @return The directory named by `LIBREPCB_PNS_RECORD_DIR`, or an invalid
-   *         ::librepcb::FilePath when the variable is unset or does not name
-   *         an existing directory, which is what switches recording off.
-   */
-  static FilePath getRecordingDirectory() noexcept;
-
-  /**
-   * @brief Write what the current session recorded, if it recorded anything
+   * @brief Hand what the current session recorded to the recorder
    *
    * Taking the recording ends it, so this must be called exactly once per
    * session, right before the session is replaced or dropped. Does nothing
@@ -288,6 +274,16 @@ private:  // Methods
    * was already taken.
    */
   void writeSessionRecording() noexcept;
+
+  /**
+   * @brief React to recording being switched on or off
+   *
+   * A session decides at construction whether it records, so the answer
+   * only changes with a new session. A route being placed cannot survive a
+   * rebuild, so it is left alone: it finishes in the session it started in
+   * and the session which follows it picks the new answer up.
+   */
+  void handleRecordingToggled() noexcept;
 
   /**
    * @brief Get the message to show for a refused start

@@ -1803,6 +1803,17 @@ public:
       {QKeySequence(Qt::CTRL | Qt::Key_F1)},
       &categoryHelp,
   };
+  EditorCommand recordRoutingSessions{
+      "record_routing_sessions",  // clang-format break
+      QT_TR_NOOP("Record Routing Sessions"),
+      QT_TR_NOOP(
+          "Write every push and shove routing session to a file, to attach "
+          "to a bug report"),
+      ":/fa/solid/circle.svg",
+      EditorCommand::Flag::OpensPopup,
+      {},
+      &categoryHelp,
+  };
 
   EditorCommandCategory categoryContextMenu{
       "categoryContextMenu", QT_TR_NOOP("Context Menu"), false, &categoryRoot};

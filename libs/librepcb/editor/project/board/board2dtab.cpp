@@ -312,6 +312,7 @@ Board2dTab::Board2dTab(GuiApplication& app, BoardEditor& editor,
   BoardEditorFsm::Context fsmContext{
       mApp.getWorkspace(),           mProject, mBoard,
       mProjectEditor.getUndoStack(), *mLayers, *this,
+      mApp.getPnsSessionRecorder(),
   };
   mFsm.reset(new BoardEditorFsm(fsmContext));
 
