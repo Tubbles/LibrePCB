@@ -216,6 +216,15 @@ private:  // Methods
    * ::librepcb::BI_NetPoint::getNetLines() is an unordered set.
    */
   quint64 getHostIdOfNetPoint(const BI_NetPoint& netPoint) const noexcept;
+  /**
+   * @brief The layer a route started on a board object begins on
+   *
+   * A trace hands over its layer, a surface mount pad its solder layer and
+   * a via its start layer when the selected layer is not one it spans;
+   * everything else keeps the selected layer. Mirrors the draw trace tool.
+   */
+  const Layer& getStartLayer(quint64 hostId) const noexcept;
+
 
   /**
    * @brief Get the net signal of a board object the router named

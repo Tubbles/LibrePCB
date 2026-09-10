@@ -522,6 +522,33 @@ quint64 BoardEditorState_RouteTrace::getHostIdOfNetPoint(
   return hostId;
 }
 
+const Layer& BoardEditorState_RouteTrace::getStartLayer(
+    quint64 hostId) const noexcept {
+  // The rules of the draw trace tool (startPositioning() in
+  // boardeditorstate_drawtrace.cpp): a trace hands over its layer, a
+  // surface mount pad its solder layer, a via its start layer only when
+  // the selected layer is not one it spans, and a through hole pad or
+  // free space keeps the selected layer.
+  const Layer* layer = mCurrentLayer;
+  if (!mRouter) return *layer;
+  const QSet<const Layer*> copperLayers = mContext.board.getCopperLayers();
+  const BoardPnsHostRef ref = mRouter->getHostRef(hostId);
+  if (ref.netLine) {
+    layer = &ref.netLine->getLayer();
+  } else if (ref.via) {
+    const Via& via = ref.via->getVia();
+    if ((!via.isOnLayer(*layer)) &&
+        copperLayers.contains(&via.getStartLayer())) {
+      layer = &via.getStartLayer();
+    }
+  } else if (ref.pad) {
+    if (!ref.pad->getProperties().isTht()) {
+      layer = &ref.pad->getSolderLayer();
+    }
+  }
+  return copperLayers.contains(layer) ? *layer : *mCurrentLayer;
+}
+
 const NetSignal* BoardEditorState_RouteTrace::getNetSignalOfHostId(
     quint64 hostId) const noexcept {
   if (!mRouter) return nullptr;
@@ -541,7 +568,7 @@ void BoardEditorState_RouteTrace::startRouting(
     const SnappedCursor& cursor) noexcept {
   if (!mRouter) return;
 
-  const Layer& layer = *mCurrentLayer;
+  const Layer& layer = getStartLayer(cursor.item);
   BoardPnsRouter::StartResult result =
       mRouter->isStartingPointRoutable(cursor.pos, cursor.item, layer);
   if (result == BoardPnsRouter::StartResult::Ok) {
@@ -552,6 +579,11 @@ void BoardEditorState_RouteTrace::startRouting(
     return;
   }
 
+  // The start item decided the layer, so the toolbar follows it.
+  if (&layer != mCurrentLayer) {
+    mCurrentLayer = &layer;
+    makeLayerVisible(layer.getColorRole());
+  }
   mCurrentNetSignal = getNetSignalOfHostId(cursor.item);
   mAdapter.fsmCrossProbe({mCurrentNetSignal});
   emit layerChanged(getLayer());
