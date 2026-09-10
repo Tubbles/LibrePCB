@@ -1380,6 +1380,9 @@ pub enum PnsStartResult {
   ComponentDragUnsupported = 7,
   /// `StartError::NotDraggable`.
   NotDraggable = 8,
+  /// Any of the engine's differential pair refusals. This host never
+  /// starts a pair, so the value exists to keep the mapping total.
+  DiffPairRefused = 9,
 }
 
 /// What happened to a fix.
@@ -2417,5 +2420,13 @@ fn to_start_result(result: Result<(), StartError>) -> PnsStartResult {
     Err(StartError::PlacerRefused) => PnsStartResult::PlacerRefused,
     Err(StartError::NothingToDrag) => PnsStartResult::NothingToDrag,
     Err(StartError::NotDraggable(_)) => PnsStartResult::NotDraggable,
+    Err(
+      StartError::PairNeedsStartItem
+      | StartError::NotADiffPair
+      | StartError::NoDanglingAnchor
+      | StartError::NoCoupledStartItem(_)
+      | StartError::PairGapBelowMinClearance
+      | StartError::PairGapMismatch,
+    ) => PnsStartResult::DiffPairRefused,
   }
 }

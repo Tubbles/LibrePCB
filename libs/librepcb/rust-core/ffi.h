@@ -352,13 +352,20 @@ enum class PnsStartResult {
    */
   NothingToDrag = 6,
   /**
-   * `StartError::ComponentDragUnsupported`.
+   * Answered by the host, not by the engine: a pad would start KiCad's
+   * component drag, which moves the footprint, and this host applies no
+   * footprint move yet.
    */
   ComponentDragUnsupported = 7,
   /**
    * `StartError::NotDraggable`.
    */
   NotDraggable = 8,
+  /**
+   * Any of the engine's differential pair refusals. This host never
+   * starts a pair, so the value exists to keep the mapping total.
+   */
+  DiffPairRefused = 9,
 };
 
 /**
@@ -1578,11 +1585,11 @@ PnsStartResult ffi_pnsrouter_start_routing(PnsRouter * NONNULL obj,
  * Wraps `pnsrouter::router::Router::start_dragging`. `host_id` is the
  * board object to drag, or zero for none, which is
  * [`PnsStartResult::NothingToDrag`]. The crate takes a slice and drags
- * several traces at once when it gets several; a set of nothing but
- * pads is KiCad's component drag and is refused with
- * [`PnsStartResult::ComponentDragUnsupported`]. One host id is what
- * crosses here today, so a multi drag waits for a host gesture that
- * selects several traces.
+ * several traces at once when it gets several, and a set of nothing but
+ * pads is KiCad's component drag, which moves the footprint. One host id
+ * is what crosses here today, so a multi drag waits for a host gesture
+ * that selects several traces, and the C++ side refuses a pad before it
+ * reaches here because it applies no footprint move yet.
  *
  * `free_angle` drags the clicked corner without the 45 degree
  * constraint; every other drag mode is decided by the crate from the
