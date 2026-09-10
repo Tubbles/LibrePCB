@@ -70,6 +70,7 @@ BoardEditorState_RouteTrace::BoardEditorState_RouteTrace(
     mCurrentViaSize(std::nullopt),
     mCursorPos(),
     mSnapActive(true),
+    mPendingDrag(std::nullopt),
     mCurrentNetSignal(nullptr) {
   // The workspace settings dialog stays usable while the tool is open, so
   // a new iteration limit has to reach the running session too.
@@ -120,10 +121,13 @@ bool BoardEditorState_RouteTrace::exit() noexcept {
   // hidden and the commit below can delete them.
   mPreviewItems.reset();
 
+  mPendingDrag = std::nullopt;
+
   std::optional<BoardPnsCommit> commit;
   if (mRouter && mRouter->isRoutingInProgress()) {
     // Keep whatever was fixed, like escape does, but do not build a new
-    // session for a tool which is going away.
+    // session for a tool which is going away. A drag is not fixed by this,
+    // it answers an empty commit and is discarded.
     commit = mRouter->stopRouting();
   }
 
@@ -149,7 +153,14 @@ bool BoardEditorState_RouteTrace::exit() noexcept {
  ******************************************************************************/
 
 bool BoardEditorState_RouteTrace::processAbortCommand() noexcept {
-  if (mRouter && mRouter->isRoutingInProgress()) {
+  mPendingDrag = std::nullopt;
+
+  if (mRouter && mRouter->isDragging()) {
+    // A drag is thrown away instead of being kept: nothing of it was ever
+    // fixed, so there is nothing to commit.
+    abortDragging();
+    return true;
+  } else if (mRouter && mRouter->isRoutingInProgress()) {
     // Just finish the current route, not exiting the whole tool.
     stopRouting();
     return true;
@@ -211,6 +222,20 @@ bool BoardEditorState_RouteTrace::processGraphicsSceneMouseMoved(
   mSnapActive = !e.modifiers.testFlag(Qt::ShiftModifier);
   mCursorPos = e.scenePos;
 
+  if (mPendingDrag) {
+    if (!e.buttons.testFlag(Qt::LeftButton)) {
+      // The release was lost, so the press cannot become anything any more.
+      mPendingDrag = std::nullopt;
+    } else if (exceedsDragThreshold(mPendingDrag->pressPos, e.scenePos)) {
+      // Far enough from the press to mean a drag rather than a click. The
+      // drag starts where the button went down, not where the cursor is
+      // now, and the move below takes it from there to the cursor.
+      const SnappedCursor cursor = mPendingDrag->cursor;
+      mPendingDrag = std::nullopt;
+      startDragging(cursor);
+    }
+  }
+
   if (mRouter && mRouter->isRoutingInProgress()) {
     moveToCursor();
     return true;
@@ -225,14 +250,60 @@ bool BoardEditorState_RouteTrace::processGraphicsSceneLeftMouseButtonPressed(
 
   mSnapActive = !e.modifiers.testFlag(Qt::ShiftModifier);
   mCursorPos = e.scenePos;
-  const SnappedCursor cursor = snapCursor();
+  mPendingDrag = std::nullopt;
 
+  if (mRouter->isDragging()) {
+    // The button which started the drag is still down and the drag ends on
+    // its release, so nothing may happen in between.
+    return true;
+  }
+
+  const SnappedCursor cursor = snapCursor();
   if (mRouter->isRoutingInProgress()) {
     fixRoute(cursor, false);
+  } else if (isDraggable(cursor.item)) {
+    // Whether this press starts a route or drags the object under it is not
+    // known yet, so the decision waits for the first mouse move or for the
+    // release.
+    mPendingDrag = PendingDrag{e.scenePos, cursor};
   } else {
     startRouting(cursor);
   }
   return true;
+}
+
+bool BoardEditorState_RouteTrace::processGraphicsSceneLeftMouseButtonReleased(
+    const GraphicsSceneMouseEvent& e) noexcept {
+  if (!mRouter) return false;
+
+  mSnapActive = !e.modifiers.testFlag(Qt::ShiftModifier);
+  mCursorPos = e.scenePos;
+
+  if (mRouter->isDragging()) {
+    // The drag ends where the cursor is, which is what KiCad's router does
+    // when the button goes up, and the force flag is the drag's force
+    // commit: there is no button left to try a refused fix again with.
+    fixRoute(snapCursor(), true);
+    if (mRouter && mRouter->isDragging()) {
+      // The router refused even the forced commit, so the drag is dropped
+      // rather than left running without a button holding it.
+      mAdapter.fsmSetStatusBarMessage(
+          tr("The router could not move this object here."), 3000);
+      abortDragging();
+    }
+    return true;
+  }
+
+  if (mPendingDrag) {
+    // A press which never travelled far enough is an ordinary click, and a
+    // click starts a route where the button went down.
+    const SnappedCursor cursor = mPendingDrag->cursor;
+    mPendingDrag = std::nullopt;
+    startRouting(cursor);
+    return true;
+  }
+
+  return false;
 }
 
 bool BoardEditorState_RouteTrace::
@@ -482,6 +553,15 @@ BoardEditorState_RouteTrace::SnappedCursor
     return cursor;
   }
 
+  // A drag snaps to the grid only. The router's own host excludes the line
+  // being dragged from the snap search (PNS::TOOL_BASE::checkSnap, through
+  // DRAGGER::GetOriginalLine); there is no such exclusion here, and without
+  // it the cursor would snap onto the very object being dragged and pin it
+  // where it started.
+  if (mRouter->isDragging()) {
+    return cursor;
+  }
+
   // While routing, restrict the search the same way the draw trace tool
   // restricts its end anchor search.
   const bool routing = mRouter->isRoutingInProgress();
@@ -572,6 +652,24 @@ const NetSignal* BoardEditorState_RouteTrace::getNetSignalOfHostId(
   return nullptr;
 }
 
+bool BoardEditorState_RouteTrace::isDraggable(quint64 hostId) const noexcept {
+  if (!mRouter) return false;
+
+  const BoardPnsHostRef ref = mRouter->getHostRef(hostId);
+  return ref.netLine || ref.via;
+}
+
+bool BoardEditorState_RouteTrace::exceedsDragThreshold(
+    const Point& pressPos, const Point& pos) const noexcept {
+  // A multiplier of one is five screen pixels, which is the tolerance
+  // findItemsAtPos() picks board objects with and the distance the view
+  // takes as the beginning of a pan. The view converts it to scene
+  // coordinates, so the threshold is the same distance on screen at every
+  // zoom level.
+  const QPainterPath area = mAdapter.fsmCalcPosWithTolerance(pressPos, 1);
+  return !area.contains(pos.toPxQPointF());
+}
+
 void BoardEditorState_RouteTrace::startRouting(
     const SnappedCursor& cursor) noexcept {
   if (!mRouter) return;
@@ -599,6 +697,51 @@ void BoardEditorState_RouteTrace::startRouting(
   if (mPreviewItems) {
     mPreviewItems->update(mRouter->getPreview());
   }
+}
+
+void BoardEditorState_RouteTrace::startDragging(
+    const SnappedCursor& cursor) noexcept {
+  if (!mRouter) return;
+
+  // Free angle dragging has no control in this tool, so the router decides
+  // between a corner drag and a segment drag from the clicked object and
+  // from where on it the drag began, and keeps the 45 degree constraint.
+  const BoardPnsRouter::StartResult result =
+      mRouter->startDragging(cursor.pos, cursor.item, false);
+  if (result != BoardPnsRouter::StartResult::Ok) {
+    mAdapter.fsmSetStatusBarMessage(getStartResultMessage(result), 3000);
+    return;
+  }
+
+  // The dragged object decides the layer, like the start item of a route.
+  const Layer& layer = getStartLayer(cursor.item);
+  if (&layer != mCurrentLayer) {
+    mCurrentLayer = &layer;
+    makeLayerVisible(layer.getColorRole());
+  }
+  mCurrentNetSignal = getNetSignalOfHostId(cursor.item);
+  mAdapter.fsmCrossProbe({mCurrentNetSignal});
+  emit layerChanged(getLayer());
+
+  // A drag which has not moved yet has an empty frame, so this only takes
+  // the last route's leftovers off the scene; the caller's move fills it.
+  if (mPreviewItems) {
+    mPreviewItems->update(mRouter->getPreview());
+  }
+}
+
+void BoardEditorState_RouteTrace::abortDragging() noexcept {
+  if ((!mRouter) || (!mRouter->isDragging())) return;
+
+  // The board was never edited, so there is no commit to apply and no new
+  // session to build: the router drops everything the drag speculatively
+  // built and is idle again.
+  mRouter->abortRouting();
+  if (mPreviewItems) {
+    mPreviewItems->clear();
+  }
+  mCurrentNetSignal = nullptr;
+  mAdapter.fsmCrossProbe();
 }
 
 void BoardEditorState_RouteTrace::moveToCursor() noexcept {
@@ -705,6 +848,12 @@ QString BoardEditorState_RouteTrace::getStartResultMessage(
       return tr("There is not enough space here for a trace.");
     case BoardPnsRouter::StartResult::PlacerRefused:
       return tr("The router could not start a trace here.");
+    case BoardPnsRouter::StartResult::NothingToDrag:
+      return tr("There is nothing to drag here.");
+    case BoardPnsRouter::StartResult::MultiDragUnsupported:
+      return tr("Only one object can be dragged at a time.");
+    case BoardPnsRouter::StartResult::NotDraggable:
+      return tr("This object cannot be dragged.");
     default:
       return tr("The router refused to start a trace here.");
   }

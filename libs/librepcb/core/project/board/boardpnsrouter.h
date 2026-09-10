@@ -249,6 +249,8 @@ public:
 
   /**
    * @brief Why a session refused to start
+   *
+   * The last three can only come out of #startDragging().
    */
   enum class StartResult {
     Ok,  ///< The point may be routed from.
@@ -257,6 +259,10 @@ public:
     NotRoutable,  ///< A drill, a board edge or another fixed obstacle.
     StartPointViolatesRules,  ///< Even a minimum width trace collides here.
     PlacerRefused,  ///< The router could not build a placement.
+    NothingToDrag,  ///< No object was named to drag.
+    MultiDragUnsupported,  ///< More than one object at once, not ported yet.
+    NotDraggable,  ///< A pad, a hole or anything else which is not copper
+                   ///< the router owns.
   };
 
   /**
@@ -295,9 +301,21 @@ public:
   int getCopperLayerCount() const noexcept;
 
   /**
-   * @brief Check whether a route is currently being placed
+   * @brief Check whether a route is being placed or an object dragged
+   *
+   * True for both, which is the router's own "routing in progress"; use
+   * #isDragging() to tell the two apart.
    */
   bool isRoutingInProgress() const noexcept;
+
+  /**
+   * @brief Check whether an existing object is being dragged
+   *
+   * The one thing #isRoutingInProgress() cannot tell apart from a
+   * placement. A drag runs the same event methods as a route, but it only
+   * ever commits through #fixRoute().
+   */
+  bool isDragging() const noexcept;
 
   /**
    * @brief Get the layer the route is being placed on
@@ -389,10 +407,31 @@ public:
                            const Layer& layer) noexcept;
 
   /**
-   * @brief Move the end of the route
+   * @brief Begin dragging an existing trace or via
+   *
+   * Which kind of drag it becomes is the router's decision, taken from the
+   * object and from where on it the drag began: a click near an end of a
+   * trace drags that corner, a click in the middle drags the segment, and
+   * a via is dragged with whatever is connected to it. The algorithm is
+   * the mode the session was built with, exactly as for a route.
+   *
+   * The session holds the frame of a drag which has not moved yet, which
+   * is empty, so a caller follows this with a #moveTo().
+   *
+   * @param pos         The already snapped point the drag starts at.
+   * @param hostId      The host ID of the object to drag.
+   * @param freeAngle   Whether to drag the clicked corner without the 45
+   *                    degree constraint.
+   */
+  StartResult startDragging(const Point& pos, quint64 hostId,
+                            bool freeAngle) noexcept;
+
+  /**
+   * @brief Move the end of the route, or the object being dragged
    *
    * @param pos       The already snapped cursor point.
    * @param endItem   The host ID under the cursor, or 0 for free space.
+   *                  Ignored while dragging.
    */
   void moveTo(const Point& pos, quint64 endItem) noexcept;
 
@@ -402,7 +441,10 @@ public:
    * @param pos           The already snapped cursor point.
    * @param endItem       The host ID under the cursor, or 0 for free space.
    * @param forceFinish   Whether to end the session here rather than start a
-   *                      new leg, which is what a double click does.
+   *                      new leg, which is what a double click does. For a
+   *                      drag it is the force commit instead, which takes
+   *                      the drag even where the rules refuse it; a drag is
+   *                      always terminal either way.
    */
   FixOutcome fixRoute(const Point& pos, quint64 endItem,
                       bool forceFinish) noexcept;
@@ -456,6 +498,10 @@ public:
 
   /**
    * @brief Commit what was routed and end the session
+   *
+   * A drag commits nothing here, which is the router's own semantics:
+   * #fixRoute() is the only path which commits one, so a drag which was
+   * never fixed is discarded.
    *
    * @return What the caller has to apply to the board. Empty if nothing was
    *         being routed.

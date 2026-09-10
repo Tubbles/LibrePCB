@@ -74,6 +74,16 @@ class BoardPnsPreviewItems;
  * ::librepcb::editor::BoardEditorState_RouteTrace::SnappedCursor every
  * router call takes, so an unsnapped point cannot reach the router.
  *
+ * The tool has two gestures, told apart by whether the mouse travels while
+ * the left button is down, which is what KiCad's router tool does too:
+ *   - A click starts a route, and every further click fixes one leg of it.
+ *   - Pressing on an existing trace or via and then moving further than
+ *     #exceedsDragThreshold() drags that object with the router: every move
+ *     takes it to the cursor, the release commits the drag where the cursor
+ *     is, and escape throws it away. A press on a pad or on empty space is
+ *     never a drag, and a drag ends the way a route commit does, with the
+ *     board edited and a new session built over it.
+ *
  * While ::librepcb::editor::PnsSessionRecorder is recording, every session
  * records what it is driven with and hands the recording to the recorder
  * when it ends, which is one file per session in the router crate's own
@@ -102,6 +112,8 @@ public:
   bool processGraphicsSceneMouseMoved(
       const GraphicsSceneMouseEvent& e) noexcept override;
   bool processGraphicsSceneLeftMouseButtonPressed(
+      const GraphicsSceneMouseEvent& e) noexcept override;
+  bool processGraphicsSceneLeftMouseButtonReleased(
       const GraphicsSceneMouseEvent& e) noexcept override;
   bool processGraphicsSceneLeftMouseButtonDoubleClicked(
       const GraphicsSceneMouseEvent& e) noexcept override;
@@ -157,6 +169,22 @@ private:  // Types
 
     /// The host ID of that board object, or 0 for free space.
     quint64 item = 0;
+  };
+
+  /**
+   * @brief A left button press which may still become either gesture
+   *
+   * Held from the press on a draggable object until the first mouse move
+   * decides that it was a drag or the release decides that it was a click.
+   */
+  struct PendingDrag final {
+    /// Where the button went down, unsnapped, which the threshold is
+    /// measured from.
+    Point pressPos;
+
+    /// The snapped press position and the object under it, which both
+    /// gestures start from.
+    SnappedCursor cursor;
   };
 
 private:  // Methods
@@ -227,9 +255,49 @@ private:  // Methods
   const NetSignal* getNetSignalOfHostId(quint64 hostId) const noexcept;
 
   /**
+   * @brief Check whether a board object is one the router can drag
+   *
+   * Traces and vias are, the pads, holes and copper graphics the router
+   * only knows as obstacles are not. The router refuses the others itself;
+   * this is what keeps a press on one of them an ordinary click.
+   */
+  bool isDraggable(quint64 hostId) const noexcept;
+
+  /**
+   * @brief Check whether the cursor left the press position far enough
+   *        to mean a drag
+   *
+   * Five screen pixels, which is the tolerance the editor picks board
+   * objects with and the distance the view itself takes as the beginning of
+   * a pan. The view converts it, so the threshold is a constant distance on
+   * screen at every zoom level.
+   */
+  bool exceedsDragThreshold(const Point& pressPos,
+                            const Point& pos) const noexcept;
+
+  /**
    * @brief Begin a route at the cursor
    */
   void startRouting(const SnappedCursor& cursor) noexcept;
+
+  /**
+   * @brief Begin dragging the board object under the cursor
+   *
+   * Locks are not consulted, because neither a trace nor a via can be
+   * locked in LibrePCB; #getIgnoreLocks() belongs here if that ever
+   * changes, because the router's dragger clears a lock instead of
+   * honouring it and leaves the decision to its host.
+   */
+  void startDragging(const SnappedCursor& cursor) noexcept;
+
+  /**
+   * @brief Throw a running drag away and put the board back as it was
+   *
+   * Nothing is applied and no new session is built: a drag which was never
+   * fixed changed nothing, and the router drops what it speculatively built
+   * along with it.
+   */
+  void abortDragging() noexcept;
 
   /**
    * @brief Move the end of the route to the cursor
@@ -243,8 +311,13 @@ private:  // Methods
   /**
    * @brief Pin the route down at the cursor and apply what that commits
    *
+   * Also how a drag ends: a drag fix is always terminal, so this is the one
+   * path which commits one.
+   *
    * @param forceFinish   Whether to end the session here rather than start a
-   *                      new leg, which is what a double click does.
+   *                      new leg, which is what a double click does. For a
+   *                      drag it is the force commit the button release
+   *                      needs, because the gesture cannot be retried.
    */
   void fixRoute(const SnappedCursor& cursor, bool forceFinish) noexcept;
 
@@ -323,6 +396,9 @@ private:  // Data
 
   Point mCursorPos;  ///< the current cursor position, not snapped
   bool mSnapActive;  ///< whether the cursor snaps to board objects
+
+  /// The press which has not been resolved into a click or a drag yet.
+  std::optional<PendingDrag> mPendingDrag;
 
   /// The net of the route being placed, `nullptr` for a route in free space
   /// and while idle.

@@ -26,6 +26,8 @@
 #include <librepcb/core/project/board/boardpnsrouter.h>
 #include <librepcb/core/project/board/items/bi_device.h>
 #include <librepcb/core/project/board/items/bi_hole.h>
+#include <librepcb/core/project/board/items/bi_netline.h>
+#include <librepcb/core/project/board/items/bi_netsegment.h>
 #include <librepcb/core/project/board/items/bi_pad.h>
 #include <librepcb/core/project/circuit/netsignal.h>
 #include <librepcb/core/project/project.h>
@@ -153,6 +155,115 @@ static std::optional<Point> findFreeTarget(const Board& board,
       continue;
     }
     return target;
+  }
+  return std::nullopt;
+}
+
+/**
+ * @brief A net line to drag, and where to drag it to
+ */
+struct DragCase {
+  const BI_NetLine* netLine = nullptr;
+  quint64 hostId = 0;
+
+  /// The middle of the net line, which is what makes it a segment drag
+  /// rather than a corner drag.
+  Point pos;
+
+  /// One millimetre away from there.
+  Point target;
+};
+
+static Point middleOf(const BI_NetLine& netLine) noexcept {
+  const Point p1 = netLine.getP1().getPosition();
+  const Point p2 = netLine.getP2().getPosition();
+  return Point(Length((p1.getX().toNm() + p2.getX().toNm()) / 2),
+               Length((p1.getY().toNm() + p2.getY().toNm()) / 2));
+}
+
+static bool holdsNetLine(const QVector<BoardPnsHostRef>& refs,
+                         const BI_NetLine& netLine) noexcept {
+  foreach (const BoardPnsHostRef& ref, refs) {
+    if (ref.netLine == &netLine) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * @brief Check whether a commit takes a net line off the board
+ *
+ * A dragged trace comes back as an update rather than as a removal when the
+ * router could pair it with one of the segments it replaced it with, which
+ * is how the board object keeps its identity across the drag. Both mean the
+ * trace as it was is gone, and the commit applier treats a net line update
+ * as a removal plus an addition either way.
+ */
+static bool dropsNetLine(const BoardPnsCommit& commit,
+                         const BI_NetLine& netLine) noexcept {
+  if (holdsNetLine(commit.removed, netLine)) {
+    return true;
+  }
+  for (const auto& pair : commit.updated) {
+    if (pair.first.netLine == &netLine) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * @brief Every net line of the board, each with the four directions to try
+ *
+ * Which net line can be moved where depends on the fixture's geometry, which
+ * is exactly what the tests must not depend on, so every combination is
+ * offered and the first one the router accepts is picked.
+ */
+static QVector<DragCase> dragCandidates(const BoardPnsRouter& router,
+                                        const Board& board) {
+  static const int directions[4][2] = {{0, 1}, {0, -1}, {1, 0}, {-1, 0}};
+  QVector<DragCase> candidates;
+  foreach (const BI_NetSegment* segment, board.getNetSegments()) {
+    foreach (const BI_NetLine* netLine, segment->getNetLines()) {
+      const quint64 hostId = router.getSnapshot().getHostId(*netLine);
+      if (hostId == 0) {
+        continue;
+      }
+      const Point middle = middleOf(*netLine);
+      for (const auto& direction : directions) {
+        const Point offset(Length(1000000LL * direction[0]),
+                           Length(1000000LL * direction[1]));  // 1 mm.
+        candidates.append(DragCase{netLine, hostId, middle, middle + offset});
+      }
+    }
+  }
+  return candidates;
+}
+
+/**
+ * @brief Find a net line the router drags one millimetre aside and commits
+ *
+ * Each attempt gets its own session because a successful one commits.
+ */
+static std::optional<DragCase> findDragCase(const Board& board) {
+  BoardPnsRouter probeRouter(board, makeSettings());
+  foreach (const DragCase& candidate, dragCandidates(probeRouter, board)) {
+    BoardPnsRouter probe(board, makeSettings());
+    if (probe.startDragging(candidate.pos, candidate.hostId, false) !=
+        BoardPnsRouter::StartResult::Ok) {
+      continue;
+    }
+    probe.moveTo(candidate.target, 0);
+    if (probe.fixRoute(candidate.target, 0, true) !=
+        BoardPnsRouter::FixOutcome::Finished) {
+      continue;
+    }
+    if (probe.getCommit().added.isEmpty() ||
+        (!dropsNetLine(probe.getCommit(), *candidate.netLine))) {
+      continue;
+    }
+    return candidate;
   }
   return std::nullopt;
 }
@@ -332,6 +443,99 @@ TEST_F(BoardPnsRouterTest, testStartingPointRoutable) {
   EXPECT_EQ(
       router.isStartingPointRoutable(start->pos, unknown, Layer::topCopper()),
       BoardPnsRouter::StartResult::UnknownStartItem);
+}
+
+/*******************************************************************************
+ *  Dragging
+ ******************************************************************************/
+
+TEST_F(BoardPnsRouterTest, testDragNetLineAside) {
+  const std::optional<DragCase> drag = findDragCase(*mBoard);
+  ASSERT_TRUE(drag.has_value()) << "no net line the router moves 1 mm aside";
+  const Layer& layer = drag->netLine->getLayer();
+  const NetSignal* net = drag->netLine->getNetSegment().getNetSignal();
+
+  BoardPnsRouter router(*mBoard, makeSettings());
+  ASSERT_EQ(router.startDragging(drag->pos, drag->hostId, false),
+            BoardPnsRouter::StartResult::Ok);
+  EXPECT_TRUE(router.isDragging());
+  EXPECT_TRUE(router.isRoutingInProgress());
+
+  // A drag which has not moved yet holds the untouched board, so the
+  // geometry only appears once the cursor has gone somewhere.
+  EXPECT_TRUE(router.getPreview().items.isEmpty());
+  router.moveTo(drag->target, 0);
+  EXPECT_FALSE(router.getPreview().items.isEmpty());
+
+  ASSERT_EQ(router.fixRoute(drag->target, 0, true),
+            BoardPnsRouter::FixOutcome::Finished);
+  EXPECT_FALSE(router.isDragging());
+  EXPECT_FALSE(router.isRoutingInProgress());
+
+  // The dragged trace is gone and what replaces it is on its layer and on
+  // its net, which is what makes this a move rather than a new route.
+  const BoardPnsCommit& commit = router.getCommit();
+  EXPECT_TRUE(dropsNetLine(commit, *drag->netLine));
+  int segments = 0;
+  foreach (const BoardPnsNewItem& item, commit.added) {
+    ASSERT_EQ(item.kind, BoardPnsNewItem::Kind::Segment);
+    ++segments;
+    EXPECT_EQ(item.layer, &layer);
+    EXPECT_EQ(item.net, net);
+  }
+  for (const auto& pair : commit.updated) {
+    ASSERT_EQ(pair.second.kind, BoardPnsNewItem::Kind::Segment);
+    ++segments;
+    EXPECT_EQ(pair.second.layer, &layer);
+    EXPECT_EQ(pair.second.net, net);
+  }
+  EXPECT_GT(segments, 0);
+}
+
+TEST_F(BoardPnsRouterTest, testDragOnAPadIsRefused) {
+  BoardPnsRouter router(*mBoard, makeSettings());
+  const std::optional<RouteStart> start = findStartPad(router, *mBoard);
+  ASSERT_TRUE(start.has_value()) << "no routable top layer pad with a net";
+
+  // A pad is copper the router may route from but never move.
+  EXPECT_EQ(router.startDragging(start->pos, start->hostId, false),
+            BoardPnsRouter::StartResult::NotDraggable);
+  EXPECT_FALSE(router.isDragging());
+  EXPECT_FALSE(router.isRoutingInProgress());
+
+  // And nothing at all is not something to drag either.
+  EXPECT_EQ(router.startDragging(start->pos, 0, false),
+            BoardPnsRouter::StartResult::NothingToDrag);
+}
+
+TEST_F(BoardPnsRouterTest, testAbortDraggingCommitsNothing) {
+  const std::optional<DragCase> drag = findDragCase(*mBoard);
+  ASSERT_TRUE(drag.has_value()) << "no net line the router moves 1 mm aside";
+
+  BoardPnsRouter router(*mBoard, makeSettings());
+  ASSERT_EQ(router.startDragging(drag->pos, drag->hostId, false),
+            BoardPnsRouter::StartResult::Ok);
+  router.moveTo(drag->target, 0);
+
+  router.abortRouting();
+  EXPECT_FALSE(router.isDragging());
+  EXPECT_FALSE(router.isRoutingInProgress());
+  EXPECT_TRUE(router.getPreview().items.isEmpty());
+  EXPECT_TRUE(router.getCommit().removed.isEmpty());
+  EXPECT_TRUE(router.getCommit().added.isEmpty());
+  EXPECT_TRUE(router.getCommit().updated.isEmpty());
+
+  // A drag is committed by its fix and by nothing else, so stopping one
+  // which was never fixed must not move anything either.
+  BoardPnsRouter stopped(*mBoard, makeSettings());
+  ASSERT_EQ(stopped.startDragging(drag->pos, drag->hostId, false),
+            BoardPnsRouter::StartResult::Ok);
+  stopped.moveTo(drag->target, 0);
+  const BoardPnsCommit commit = stopped.stopRouting();
+  EXPECT_TRUE(commit.removed.isEmpty());
+  EXPECT_TRUE(commit.added.isEmpty());
+  EXPECT_TRUE(commit.updated.isEmpty());
+  EXPECT_FALSE(stopped.isRoutingInProgress());
 }
 
 /*******************************************************************************

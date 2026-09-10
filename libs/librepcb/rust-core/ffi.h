@@ -347,6 +347,18 @@ enum class PnsStartResult {
    * `StartError::PlacerRefused`.
    */
   PlacerRefused = 5,
+  /**
+   * `StartError::NothingToDrag`.
+   */
+  NothingToDrag = 6,
+  /**
+   * `StartError::MultiDragUnsupported`.
+   */
+  MultiDragUnsupported = 7,
+  /**
+   * `StartError::NotDraggable`.
+   */
+  NotDraggable = 8,
 };
 
 /**
@@ -1559,6 +1571,39 @@ PnsStartResult ffi_pnsrouter_start_routing(PnsRouter * NONNULL obj,
                                            PnsPoint at,
                                            uint64_t start,
                                            int32_t layer);
+
+/**
+ * Begin dragging an existing track or via.
+ *
+ * Wraps `pnsrouter::router::Router::start_dragging`. `host_id` is the
+ * board object to drag, or zero for none, which is
+ * [`PnsStartResult::NothingToDrag`]. The crate takes a slice because
+ * multi drag will need one and refuses more than one object with
+ * [`PnsStartResult::MultiDragUnsupported`]; one host id is therefore the
+ * whole of what can cross here today.
+ *
+ * `free_angle` drags the clicked corner without the 45 degree
+ * constraint; every other drag mode is decided by the crate from the
+ * clicked object and the click position.
+ *
+ * On success the session holds the frame of a drag that has not moved
+ * yet, which is empty, so a host follows this with a move exactly as
+ * KiCad's does.
+ */
+PnsStartResult ffi_pnsrouter_start_dragging(PnsRouter * NONNULL obj,
+                                            PnsPoint at,
+                                            uint64_t host_id,
+                                            bool free_angle);
+
+/**
+ * Whether an existing object is being dragged.
+ *
+ * `pnsrouter::router::RouterState::DragSegment`, which is the one thing
+ * [`ffi_pnsrouter_routing_in_progress`] cannot tell apart from a
+ * placement. The state enum itself does not cross: it has three values
+ * and this pair of predicates already answers all of them.
+ */
+bool ffi_pnsrouter_is_dragging(const PnsRouter * NONNULL obj);
 
 /**
  * Move the end of the route, and store the frame it produced.

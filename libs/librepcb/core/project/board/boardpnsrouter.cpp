@@ -99,6 +99,12 @@ static BoardPnsRouter::StartResult toStartResult(
       return BoardPnsRouter::StartResult::StartPointViolatesRules;
     case rs::PnsStartResult::PlacerRefused:
       return BoardPnsRouter::StartResult::PlacerRefused;
+    case rs::PnsStartResult::NothingToDrag:
+      return BoardPnsRouter::StartResult::NothingToDrag;
+    case rs::PnsStartResult::MultiDragUnsupported:
+      return BoardPnsRouter::StartResult::MultiDragUnsupported;
+    case rs::PnsStartResult::NotDraggable:
+      return BoardPnsRouter::StartResult::NotDraggable;
     case rs::PnsStartResult::Ok:
     default:
       return BoardPnsRouter::StartResult::Ok;
@@ -180,6 +186,10 @@ const Layer* BoardPnsRouter::getCurrentLayer() const noexcept {
   return toLayer(rs::ffi_pnsrouter_current_layer(*mHandle));
 }
 
+bool BoardPnsRouter::isDragging() const noexcept {
+  return rs::ffi_pnsrouter_is_dragging(*mHandle);
+}
+
 bool BoardPnsRouter::isPlacingVia() const noexcept {
   return rs::ffi_pnsrouter_placing_via(*mHandle);
 }
@@ -231,6 +241,14 @@ BoardPnsRouter::StartResult BoardPnsRouter::startRouting(
       BoardPnsSnapshot::toDenseLayerIndex(layer, mInnerLayerCount);
   const rs::PnsStartResult result = rs::ffi_pnsrouter_start_routing(
       *mHandle, toFfi(pos), startItem, denseLayer);
+  updatePreview();
+  return toStartResult(result);
+}
+
+BoardPnsRouter::StartResult BoardPnsRouter::startDragging(
+    const Point& pos, quint64 hostId, bool freeAngle) noexcept {
+  const rs::PnsStartResult result =
+      rs::ffi_pnsrouter_start_dragging(*mHandle, toFfi(pos), hostId, freeAngle);
   updatePreview();
   return toStartResult(result);
 }
