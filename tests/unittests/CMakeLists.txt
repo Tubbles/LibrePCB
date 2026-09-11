@@ -78,6 +78,7 @@ add_executable(
   core/project/board/boardpnsroutertest.cpp
   core/project/board/boardpnssnapshottest.cpp
   core/project/board/boardspecctraexporttest.cpp
+  core/project/circuit/differentialpairstest.cpp
   core/project/outputjobrunnertest.cpp
   core/project/projectjsonexporttest.cpp
   core/project/projectlibrarytest.cpp
