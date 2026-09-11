@@ -164,6 +164,11 @@ public:
     out.set_router_flip_posture(l2s(cmd.routerFlipPosture, out.get_router_flip_posture()));
     out.set_router_via_toggle(l2s(cmd.routerViaToggle, out.get_router_via_toggle()));
     out.set_router_diff_pair_toggle(l2s(cmd.routerDiffPairToggle, out.get_router_diff_pair_toggle()));
+    out.set_router_tuning_mode_cycle(l2s(cmd.routerTuningModeCycle, out.get_router_tuning_mode_cycle()));
+    out.set_router_spacing_decrease(l2s(cmd.routerSpacingDecrease, out.get_router_spacing_decrease()));
+    out.set_router_spacing_increase(l2s(cmd.routerSpacingIncrease, out.get_router_spacing_increase()));
+    out.set_router_amplitude_decrease(l2s(cmd.routerAmplitudeDecrease, out.get_router_amplitude_decrease()));
+    out.set_router_amplitude_increase(l2s(cmd.routerAmplitudeIncrease, out.get_router_amplitude_increase()));
     out.set_shape_round(l2s(cmd.shapeRound, out.get_shape_round()));
     out.set_shape_rounded_rect(l2s(cmd.shapeRoundedRect, out.get_shape_rounded_rect()));
     out.set_shape_rect(l2s(cmd.shapeRect, out.get_shape_rect()));

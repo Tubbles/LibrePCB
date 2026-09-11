@@ -44,6 +44,7 @@
 #include <librepcb/core/project/board/items/bi_pad.h>
 #include <librepcb/core/project/board/items/bi_via.h>
 #include <librepcb/core/types/layer.h>
+#include <librepcb/core/types/lengthunit.h>
 #include <librepcb/core/utils/toolbox.h>
 #include <librepcb/core/workspace/workspace.h>
 #include <librepcb/core/workspace/workspacesettings.h>
@@ -68,6 +69,15 @@ static const PositiveLength sDefaultDiffPairWidth(125000);
 
 /// The gap a differential pair starts at, the router's own default.
 static const PositiveLength sDefaultDiffPairGap(180000);
+
+/// The meander dimensions a tuning session starts at, the router's own
+/// defaults, which are KiCad's.
+static const PositiveLength sDefaultTuningMinAmplitude(200000);  // 0.2 mm.
+static const PositiveLength sDefaultTuningMaxAmplitude(1000000);  // 1 mm.
+static const PositiveLength sDefaultTuningSpacing(600000);  // 0.6 mm.
+
+/// How far off the target still counts as tuned, the router's own value.
+static const PositiveLength sDefaultTuningTolerance(100000);  // 0.1 mm.
 
 /**
  * The gap a differential pair starts at on one board
@@ -102,6 +112,12 @@ BoardEditorState_RouteTrace::BoardEditorState_RouteTrace(
     mDiffPairWidth(sDefaultDiffPairWidth),
     mDiffPairGap(defaultDiffPairGap(mContext.board)),
     mDiffPairViaGap(std::nullopt),
+    mTuningMode(std::nullopt),
+    mTuningTarget(0),
+    mTuningTolerance(sDefaultTuningTolerance),
+    mTuningMinAmplitude(sDefaultTuningMinAmplitude),
+    mTuningMaxAmplitude(sDefaultTuningMaxAmplitude),
+    mTuningSpacing(sDefaultTuningSpacing),
     mCursorPos(),
     mSnapActive(true),
     mPendingDrag(std::nullopt),
@@ -178,6 +194,7 @@ bool BoardEditorState_RouteTrace::exit() noexcept {
   if (commit) {
     applyCommit(*commit);
   }
+  clearTuningReadout();
   mCurrentNetSignals.clear();
 
   mAdapter.fsmCrossProbe();
@@ -197,6 +214,12 @@ bool BoardEditorState_RouteTrace::processAbortCommand() noexcept {
     // A drag is thrown away instead of being kept: nothing of it was ever
     // fixed, so there is nothing to commit.
     abortDragging();
+    return true;
+  } else if (mRouter && mRouter->isTuning()) {
+    // The same for a tuning session, which has nothing fixed either: its
+    // one fix is terminal, so a session which is still running never
+    // reached it.
+    abortTuning();
     return true;
   } else if (mRouter && mRouter->isRoutingInProgress()) {
     // Just finish the current route, not exiting the whole tool.
@@ -299,6 +322,10 @@ bool BoardEditorState_RouteTrace::processGraphicsSceneLeftMouseButtonPressed(
   const SnappedCursor cursor = snapCursor();
   if (mRouter->isRoutingInProgress()) {
     fixRoute(cursor, false);
+  } else if (mTuningMode) {
+    // A tuning session takes the whole press: it needs the trace under the
+    // cursor and there is no drag or route to fall back to.
+    startTuning(cursor);
   } else if (isDraggable(cursor.item)) {
     // Whether this press starts a route or drags the object under it is not
     // known yet, so the decision waits for the first mouse move or for the
@@ -582,6 +609,86 @@ void BoardEditorState_RouteTrace::setDiffPairViaGap(
   emit diffPairViaGapChanged(!mDiffPairViaGap.has_value(), getDiffPairViaGap());
 
   updateRouterSettings();
+}
+
+void BoardEditorState_RouteTrace::setTuningMode(
+    const std::optional<BoardPnsTuningMode>& mode) noexcept {
+  if (mode == mTuningMode) return;
+
+  mTuningMode = mode;
+  emit tuningModeChanged(mTuningMode);
+
+  // Nothing is pushed into the router: the mode only decides which start
+  // method the next press calls, and a running session stays whatever it
+  // was started as, exactly like the differential pair toggle.
+}
+
+void BoardEditorState_RouteTrace::setTuningTarget(
+    const Length& target) noexcept {
+  if (target == mTuningTarget) return;
+
+  mTuningTarget = target;
+  emit tuningTargetChanged(mTuningTarget);
+
+  // The meander dimensions reach the router at the start of a session and
+  // it has no entry point to change them mid session, so a new value
+  // applies to the next one.
+}
+
+void BoardEditorState_RouteTrace::setTuningTolerance(
+    const PositiveLength& tolerance) noexcept {
+  if (tolerance == mTuningTolerance) return;
+
+  mTuningTolerance = tolerance;
+  emit tuningToleranceChanged(mTuningTolerance);
+}
+
+void BoardEditorState_RouteTrace::setTuningMinAmplitude(
+    const PositiveLength& amplitude) noexcept {
+  // The router's fitting loop steps the amplitude down from the maximum to
+  // the minimum, so an inverted pair would leave it nothing to try.
+  if (amplitude > mTuningMaxAmplitude) {
+    setTuningMaxAmplitude(amplitude);
+  }
+
+  if (amplitude == mTuningMinAmplitude) return;
+
+  mTuningMinAmplitude = amplitude;
+  emit tuningMinAmplitudeChanged(mTuningMinAmplitude);
+}
+
+void BoardEditorState_RouteTrace::setTuningMaxAmplitude(
+    const PositiveLength& amplitude) noexcept {
+  if (amplitude < mTuningMinAmplitude) {
+    setTuningMinAmplitude(amplitude);
+  }
+
+  if (amplitude == mTuningMaxAmplitude) return;
+
+  mTuningMaxAmplitude = amplitude;
+  emit tuningMaxAmplitudeChanged(mTuningMaxAmplitude);
+}
+
+void BoardEditorState_RouteTrace::setTuningSpacing(
+    const PositiveLength& spacing) noexcept {
+  if (spacing == mTuningSpacing) return;
+
+  mTuningSpacing = spacing;
+  emit tuningSpacingChanged(mTuningSpacing);
+}
+
+void BoardEditorState_RouteTrace::amplitudeStep(int sign) noexcept {
+  if ((!mRouter) || (!mRouter->amplitudeStep(sign))) return;
+
+  // The step produces no frame, so follow it with a move like the router's
+  // other hosts do; that is also what refreshes the status bar readout.
+  moveToCursor();
+}
+
+void BoardEditorState_RouteTrace::spacingStep(int sign) noexcept {
+  if ((!mRouter) || (!mRouter->spacingStep(sign))) return;
+
+  moveToCursor();
 }
 
 /*******************************************************************************
@@ -906,6 +1013,107 @@ void BoardEditorState_RouteTrace::startDragging(
   }
 }
 
+void BoardEditorState_RouteTrace::startTuning(
+    const SnappedCursor& cursor) noexcept {
+  if ((!mRouter) || (!mTuningMode)) return;
+
+  const BoardPnsRouter::StartResult result = mRouter->startTuning(
+      cursor.pos, cursor.item, *mTuningMode, getTuningSettings());
+  if (result != BoardPnsRouter::StartResult::Ok) {
+    mAdapter.fsmSetStatusBarMessage(getStartResultMessage(result), 3000);
+    return;
+  }
+
+  // The tuned trace decides the layer, like the start item of a route.
+  const Layer& layer = getStartLayer(cursor.item);
+  if (&layer != mCurrentLayer) {
+    mCurrentLayer = &layer;
+    makeLayerVisible(layer.getColorRole());
+  }
+  updateCurrentNetSignals();
+  emit layerChanged(getLayer());
+
+  // A session which has not moved yet meanders nothing and carries no
+  // readout, so this only takes the last route's leftovers off the scene.
+  if (mPreviewItems) {
+    mPreviewItems->update(mRouter->getPreview());
+  }
+}
+
+void BoardEditorState_RouteTrace::abortTuning() noexcept {
+  if ((!mRouter) || (!mRouter->isTuning())) return;
+
+  // Nothing was ever fixed, so there is nothing to commit and no new
+  // session to build: the router drops what it speculatively built and is
+  // idle again, exactly as an aborted drag does.
+  mRouter->abortRouting();
+  if (mPreviewItems) {
+    mPreviewItems->clear();
+  }
+  clearTuningReadout();
+  mCurrentNetSignals.clear();
+  mAdapter.fsmCrossProbe();
+}
+
+BoardPnsRouter::TuningSettings
+    BoardEditorState_RouteTrace::getTuningSettings() const noexcept {
+  BoardPnsRouter::TuningSettings settings;
+  settings.minAmplitude = mTuningMinAmplitude;
+  settings.maxAmplitude = mTuningMaxAmplitude;
+  settings.spacing = mTuningSpacing;
+  settings.target = mTuningTarget;
+  settings.tolerance = *mTuningTolerance;
+  return settings;
+}
+
+void BoardEditorState_RouteTrace::updateTuningReadout() noexcept {
+  if (!mRouter) return;
+
+  const std::optional<BoardPnsTuningInfo>& tuning =
+      mRouter->getPreview().tuning;
+  if (!tuning) return;
+
+  const LengthUnit& unit = getLengthUnit();
+  const QLocale locale;
+  QString status;
+  switch (tuning->status) {
+    case BoardPnsTuningStatus::TooShort:
+      status = tr("Too short by %1")
+                   .arg(unit.format(tuning->target.min - tuning->result,
+                                    locale));
+      break;
+    case BoardPnsTuningStatus::TooLong:
+      status = tr("Too long by %1")
+                   .arg(unit.format(tuning->result - tuning->target.max,
+                                    locale));
+      break;
+    case BoardPnsTuningStatus::Tuned:
+    default:
+      status = tr("Tuned");
+      break;
+  }
+
+  // In the skew mode the number the router reports is a skew and not a
+  // length, so it is named as one; a readout which called it a length
+  // would be wrong in one of the three modes.
+  const QString value = (tuning->mode == BoardPnsTuningMode::Skew)
+      ? tr("Skew: %1").arg(unit.format(tuning->skew.value_or(tuning->result),
+                                       locale))
+      : tr("Length: %1").arg(unit.format(tuning->result, locale));
+
+  mAdapter.fsmSetStatusBarMessage(
+      QString("%1. %2. %3")
+          .arg(status)
+          .arg(value)
+          .arg(tr("Amplitude %1, spacing %2")
+                   .arg(unit.format(*tuning->amplitude, locale))
+                   .arg(unit.format(*tuning->spacing, locale))));
+}
+
+void BoardEditorState_RouteTrace::clearTuningReadout() noexcept {
+  mAdapter.fsmSetStatusBarMessage(QString());
+}
+
 void BoardEditorState_RouteTrace::abortDragging() noexcept {
   if ((!mRouter) || (!mRouter->isDragging())) return;
 
@@ -929,6 +1137,10 @@ void BoardEditorState_RouteTrace::moveToCursor() noexcept {
   if (mPreviewItems) {
     mPreviewItems->update(mRouter->getPreview());
   }
+
+  // Every frame of a tuning session carries a fresh readout, and the
+  // meandered copper alone does not say whether it reached the target.
+  updateTuningReadout();
 }
 
 void BoardEditorState_RouteTrace::fixRoute(const SnappedCursor& cursor,
@@ -947,10 +1159,13 @@ void BoardEditorState_RouteTrace::fixRoute(const SnappedCursor& cursor,
     if (mPreviewItems) {
       mPreviewItems->clear();
     }
+    clearTuningReadout();
     mCurrentNetSignals.clear();
     mAdapter.fsmCrossProbe();
     applyCommit(commit);
     rebuildRouter();
+  } else {
+    updateTuningReadout();
   }
 }
 
@@ -961,6 +1176,7 @@ void BoardEditorState_RouteTrace::stopRouting() noexcept {
   if (mPreviewItems) {
     mPreviewItems->clear();
   }
+  clearTuningReadout();
   mCurrentNetSignals.clear();
   mAdapter.fsmCrossProbe();
   applyCommit(commit);
@@ -1048,6 +1264,28 @@ QString BoardEditorState_RouteTrace::getStartResultMessage(
     case BoardPnsRouter::StartResult::PairGapMismatch:
       return tr("These two traces are not spaced like the configured "
                 "differential pair.");
+    case BoardPnsRouter::StartResult::TuningNeedsStartItem:
+      return tr("Length tuning must be started on a trace, not in free "
+                "space.");
+    case BoardPnsRouter::StartResult::NotATrack:
+      return tr("Only a trace can be length tuned, not a pad, a via or a "
+                "hole.");
+    case BoardPnsRouter::StartResult::NoTuningPath:
+      return tr("There is no copper here to measure the length of.");
+    case BoardPnsRouter::StartResult::NotADiffPairForTuning:
+      return tr("This net is not part of a differential pair, so its length "
+                "cannot be tuned as one. Pairs are derived from the net "
+                "names, which have to differ only in a 'P'/'N' or '+'/'-' "
+                "suffix.");
+    case BoardPnsRouter::StartResult::NotADiffPairForSkew:
+      return tr("This net is not part of a differential pair, so it has no "
+                "skew to tune. Pairs are derived from the net names, which "
+                "have to differ only in a 'P'/'N' or '+'/'-' suffix.");
+    case BoardPnsRouter::StartResult::PairLaneHasNoSegments:
+      return tr("One of the two traces of the differential pair holds no "
+                "copper to meander.");
+    case BoardPnsRouter::StartResult::InvalidMeanderSettings:
+      return tr("The router refused these meander dimensions.");
     default:
       return tr("The router refused to start a trace here.");
   }

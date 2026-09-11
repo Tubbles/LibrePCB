@@ -4,6 +4,7 @@ import {
     NotificationType,
     ProjectAction,
     RouterMode,
+    RouterTuningMode,
     RuleCheckType,
     SchematicAction,
     TabAction,
@@ -120,6 +121,18 @@ export global Helpers {
             shove
         } else {
             mark-obstacles
+        }
+    }
+
+    pure public function get-next-router-tuning-mode(m: RouterTuningMode) -> RouterTuningMode {
+        if m == off {
+            single
+        } else if m == single {
+            diff-pair
+        } else if m == diff-pair {
+            skew
+        } else {
+            off
         }
     }
 

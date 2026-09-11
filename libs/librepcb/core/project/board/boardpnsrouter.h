@@ -133,6 +133,83 @@ struct BoardPnsMovedDevice final {
 };
 
 /**
+ * @brief Which of the three length tuning algorithms a session runs
+ */
+enum class BoardPnsTuningMode {
+  Single,  ///< One trace, lengthened to a target.
+  DiffPair,  ///< Both traces of a differential pair, lengthened together.
+  Skew,  ///< One trace of a pair, lengthened until the two match.
+};
+
+/**
+ * @brief How a tuned trace stands against its target
+ */
+enum class BoardPnsTuningStatus {
+  TooShort,  ///< The meanders ran out of trace before the target.
+  TooLong,  ///< Longer than the window allows, and no meander shortens it.
+  Tuned,  ///< Inside the window.
+};
+
+/**
+ * @brief A length the tuner aims for, with the window it accepts
+ */
+struct BoardPnsLengthTarget final {
+  Length min;  ///< Below it the status is #BoardPnsTuningStatus::TooShort.
+  Length opt;  ///< What the meanders aim for.
+  Length max;  ///< Above it the status is #BoardPnsTuningStatus::TooLong.
+};
+
+/**
+ * @brief The live readout of a length tuning session
+ *
+ * Refreshed by every event that produces a frame, which for a tuning
+ * session is the start, every move and the terminal fix.
+ *
+ * ::librepcb::BoardPnsTuningInfo::result is a **skew** rather than a length
+ * in ::librepcb::BoardPnsTuningMode::Skew, where the router overrides the
+ * accessor; the same number is in ::librepcb::BoardPnsTuningInfo::skew
+ * under its own name, so a caller can label it without knowing about the
+ * override.
+ */
+struct BoardPnsTuningInfo final {
+  BoardPnsTuningStatus status = BoardPnsTuningStatus::TooShort;
+  BoardPnsTuningMode mode = BoardPnsTuningMode::Single;
+
+  /// The length the last move produced, or the skew in the skew mode.
+  Length result;
+
+  /// How far #result has moved from the length the session started at, or
+  /// `std::nullopt` when the measured path was empty.
+  std::optional<Length> delta;
+
+  /// The window #status was decided against. Not the same thing as the
+  /// target the session was started with: an unset target is resolved to
+  /// the router's "anything goes" triple before the comparison.
+  BoardPnsLengthTarget target;
+
+  /// The difference in length between the two traces of a pair. Only the
+  /// skew mode measures one.
+  std::optional<Length> skew;
+
+  /// The skew window the session was aimed at. Only the skew mode has one;
+  /// #target is the **length** window the status was decided against,
+  /// which in the skew mode is this window plus #coupledLength.
+  std::optional<BoardPnsLengthTarget> skewTarget;
+
+  /// The other trace's total length, which the skew is measured against.
+  /// Only the skew mode reports one.
+  std::optional<Length> coupledLength;
+
+  /// The meander amplitude the session is running at, which
+  /// ::librepcb::BoardPnsRouter::amplitudeStep() moves.
+  PositiveLength amplitude = PositiveLength(Length(1));
+
+  /// The meander spacing the session is running at, which
+  /// ::librepcb::BoardPnsRouter::spacingStep() moves.
+  PositiveLength spacing = PositiveLength(Length(1));
+};
+
+/**
  * @brief Everything a host has to draw after one router event
  *
  * A whole frame replacement: the host clears what it drew last time and
@@ -169,6 +246,12 @@ struct BoardPnsPreview final {
   /// are in #hidden too, so a host which cannot draw them at the offset
   /// at least stops drawing them where they are.
   QVector<BoardPnsMovedDevice> movedDevices;
+
+  /// The live readout of a length tuning session, absent from every
+  /// routing and dragging frame. The meandered trace itself is in #items,
+  /// drawn like any other head, so a caller which only draws needs none of
+  /// this.
+  std::optional<BoardPnsTuningInfo> tuning;
 };
 
 /*******************************************************************************
@@ -342,6 +425,44 @@ public:
   };
 
   /**
+   * @brief The dimensions a length tuning session meanders to
+   *
+   * Separate from ::librepcb::BoardPnsRouter::Settings because they are
+   * per gesture rather than per session: #startTuning() takes them, and a
+   * session which is routing rather than tuning reads none of them.
+   *
+   * The defaults are the router's own, which are KiCad's.
+   */
+  struct TuningSettings final {
+    /// The shortest meander amplitude.
+    PositiveLength minAmplitude = PositiveLength(Length(200000));
+
+    /// The longest meander amplitude, which #amplitudeStep() moves.
+    PositiveLength maxAmplitude = PositiveLength(Length(1000000));
+
+    /// The distance between two meanders, which #spacingStep() moves.
+    PositiveLength spacing = PositiveLength(Length(600000));
+
+    /// How far one #amplitudeStep() or #spacingStep() moves.
+    PositiveLength step = PositiveLength(Length(50000));
+
+    /// What the meanders aim for: a length in
+    /// ::librepcb::BoardPnsTuningMode::Single and
+    /// ::librepcb::BoardPnsTuningMode::DiffPair, and a **skew** in
+    /// ::librepcb::BoardPnsTuningMode::Skew, which reads the other field
+    /// of the router's settings and ignores the length entirely.
+    ///
+    /// `std::nullopt` is the router's unconstrained target, against which
+    /// nothing is ever too long, so a session started without one only
+    /// ever reports ::librepcb::BoardPnsTuningStatus::TooShort.
+    std::optional<Length> target = std::nullopt;
+
+    /// How far either side of #target still counts as tuned, or
+    /// `std::nullopt` for the router's own 0.1 mm.
+    std::optional<Length> tolerance = std::nullopt;
+  };
+
+  /**
    * @brief Why a session refused to start
    *
    * ::librepcb::BoardPnsRouter::StartResult::NothingToDrag,
@@ -350,7 +471,9 @@ public:
    * out of #startDragging(); the six from
    * ::librepcb::BoardPnsRouter::StartResult::PairNeedsStartItem on can
    * only come out of #startRoutingDiffPair() and
-   * #isStartingPointRoutableDiffPair().
+   * #isStartingPointRoutableDiffPair(); and the seven from
+   * ::librepcb::BoardPnsRouter::StartResult::TuningNeedsStartItem on can
+   * only come out of #startTuning().
    */
   enum class StartResult {
     Ok,  ///< The point may be routed from.
@@ -377,6 +500,18 @@ public:
                                ///< minimum copper to copper clearance.
     PairGapMismatch,  ///< The two traces under the cursor are not spaced
                       ///< like the configured pair.
+    TuningNeedsStartItem,  ///< A tuning session was started in free space,
+                           ///< where there is nothing to lengthen.
+    NotATrack,  ///< The object to tune is a pad, a via or a hole.
+    NoTuningPath,  ///< The topology walk found no copper to measure.
+    NotADiffPairForTuning,  ///< The trace a pair length tuning session was
+                            ///< asked to tune is not half of a pair.
+    NotADiffPairForSkew,  ///< The same, from a skew tuning session.
+    PairLaneHasNoSegments,  ///< One trace of the recovered pair holds no
+                            ///< segment.
+    InvalidMeanderSettings,  ///< The router refused the meander
+                             ///< dimensions, which only a non positive
+                             ///< amplitude step can cause here.
   };
 
   /**
@@ -430,6 +565,17 @@ public:
    * ever commits through #fixRoute().
    */
   bool isDragging() const noexcept;
+
+  /**
+   * @brief Check whether a trace is being length tuned
+   *
+   * The other thing #isRoutingInProgress() cannot tell apart from a
+   * placement. A tuning session runs the same event methods as a route,
+   * but #undoLastSegment(), #switchLayer(), #toggleViaPlacement(),
+   * #flipPosture() and #finish() all do nothing during one, and its
+   * #fixRoute() is always terminal.
+   */
+  bool isTuning() const noexcept;
 
   /**
    * @brief Get the layer the route is being placed on
@@ -565,6 +711,68 @@ public:
    */
   StartResult startRoutingDiffPair(const Point& pos, quint64 startItem,
                                    const Layer& layer) noexcept;
+
+  /**
+   * @brief Begin length tuning the trace under a point
+   *
+   * Unlike a route there is no gate to ask first and no layer to pass: the
+   * router reads the layer off the clicked trace, and the only refusals
+   * are its own. A start object is required, a trace or an arc, so a 0
+   * answers ::librepcb::BoardPnsRouter::StartResult::TuningNeedsStartItem
+   * and a pad, a via or a hole answers
+   * ::librepcb::BoardPnsRouter::StartResult::NotATrack.
+   *
+   * The router assembles the whole run of copper the trace belongs to and
+   * measures it. Every #moveTo() then cuts that run in two at the cursor
+   * and fills the part between the start point and the cursor with
+   * meanders, so the cursor decides how much of the trace meanders. The
+   * readout is ::librepcb::BoardPnsPreview::tuning and the meandered trace
+   * is in ::librepcb::BoardPnsPreview::items like any other head.
+   *
+   * A tuning #fixRoute() is always terminal, whatever its force flag says:
+   * there is no second leg to tune.
+   *
+   * The two pair modes need both nets of the pair, which the router takes
+   * from the pair table of its snapshot exactly as
+   * #startRoutingDiffPair() does, and refuse a trace whose net has no
+   * partner. The skew mode meanders the trace that was clicked and only
+   * measures the other one, so clicking the longer trace of a pair and
+   * asking for zero skew reports
+   * ::librepcb::BoardPnsTuningStatus::TooLong and changes nothing; the
+   * remedy is to click the other one.
+   *
+   * @param pos         The already snapped point on the trace to tune.
+   * @param startItem   The host ID of that trace, which is required.
+   * @param mode        Which of the three algorithms to run.
+   * @param settings    The dimensions to meander to.
+   */
+  StartResult startTuning(const Point& pos, quint64 startItem,
+                          BoardPnsTuningMode mode,
+                          const TuningSettings& settings) noexcept;
+
+  /**
+   * @brief Nudge the meander amplitude of a running tuning session
+   *
+   * Produces no frame, so a caller follows it with a #moveTo() like the
+   * router's other hosts do.
+   *
+   * @param sign  A direction, not a distance: the distance is
+   *              ::librepcb::BoardPnsRouter::TuningSettings::step.
+   *
+   * @return Whether a tuning session took it, which is false whenever
+   *         #isTuning() is false.
+   */
+  bool amplitudeStep(int sign) noexcept;
+
+  /**
+   * @brief Nudge the meander spacing of a running tuning session
+   *
+   * The new spacing is floored by the tuned trace's width plus its
+   * clearance, so a decrease can be refused by the floor and still answer
+   * true: the answer is "a tuning session took this", not "the value
+   * changed". See #amplitudeStep() for the rest.
+   */
+  bool spacingStep(int sign) noexcept;
 
   /**
    * @brief Get the net signals the session is routing or dragging

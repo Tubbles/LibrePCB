@@ -120,14 +120,143 @@ static BoardPnsRouter::StartResult toStartResult(
       return BoardPnsRouter::StartResult::PairGapBelowMinClearance;
     case rs::PnsStartResult::PairGapMismatch:
       return BoardPnsRouter::StartResult::PairGapMismatch;
-    case rs::PnsStartResult::TuningRefused:
-      // Nothing here ever starts a length tuning session, so this is
-      // unreachable; it keeps the mapping total.
-      return BoardPnsRouter::StartResult::PlacerRefused;
+    case rs::PnsStartResult::TuningNeedsStartItem:
+      return BoardPnsRouter::StartResult::TuningNeedsStartItem;
+    case rs::PnsStartResult::NotATrack:
+      return BoardPnsRouter::StartResult::NotATrack;
+    case rs::PnsStartResult::NoTuningPath:
+      return BoardPnsRouter::StartResult::NoTuningPath;
+    case rs::PnsStartResult::NotADiffPairForTuning:
+      return BoardPnsRouter::StartResult::NotADiffPairForTuning;
+    case rs::PnsStartResult::NotADiffPairForSkew:
+      return BoardPnsRouter::StartResult::NotADiffPairForSkew;
+    case rs::PnsStartResult::PairLaneHasNoSegments:
+      return BoardPnsRouter::StartResult::PairLaneHasNoSegments;
+    case rs::PnsStartResult::InvalidMeanderSettings:
+      return BoardPnsRouter::StartResult::InvalidMeanderSettings;
     case rs::PnsStartResult::Ok:
     default:
       return BoardPnsRouter::StartResult::Ok;
   }
+}
+
+static rs::PnsTuningMode toFfi(BoardPnsTuningMode mode) noexcept {
+  switch (mode) {
+    case BoardPnsTuningMode::DiffPair:
+      return rs::PnsTuningMode::DiffPair;
+    case BoardPnsTuningMode::Skew:
+      return rs::PnsTuningMode::Skew;
+    case BoardPnsTuningMode::Single:
+    default:
+      return rs::PnsTuningMode::Single;
+  }
+}
+
+static BoardPnsTuningMode toTuningMode(rs::PnsTuningMode mode) noexcept {
+  switch (mode) {
+    case rs::PnsTuningMode::DiffPair:
+      return BoardPnsTuningMode::DiffPair;
+    case rs::PnsTuningMode::Skew:
+      return BoardPnsTuningMode::Skew;
+    case rs::PnsTuningMode::Single:
+    default:
+      return BoardPnsTuningMode::Single;
+  }
+}
+
+static BoardPnsTuningStatus toTuningStatus(rs::PnsTuningStatus s) noexcept {
+  switch (s) {
+    case rs::PnsTuningStatus::TooLong:
+      return BoardPnsTuningStatus::TooLong;
+    case rs::PnsTuningStatus::Tuned:
+      return BoardPnsTuningStatus::Tuned;
+    case rs::PnsTuningStatus::TooShort:
+    default:
+      return BoardPnsTuningStatus::TooShort;
+  }
+}
+
+/**
+ * The router's own length tolerance, KiCad's `DEFAULT_LENGTH_TOLERANCE`.
+ *
+ * Used when ::librepcb::BoardPnsRouter::TuningSettings carries no explicit
+ * one, so that the window is the same one the router would have built from
+ * a bare target.
+ */
+static const Length sDefaultLengthTolerance(100000);  // 0.1 mm.
+
+/**
+ * Turn the meander dimensions into the router's own settings.
+ *
+ * The single target of the host is a length in the two length modes and a
+ * skew in the skew mode, because the router reads one field in the two and
+ * the other field in the third; a toolbar with one target box whose meaning
+ * follows the mode is what a user wants either way.
+ */
+static rs::PnsMeanderSettings toFfi(
+    const BoardPnsRouter::TuningSettings& settings,
+    BoardPnsTuningMode mode) noexcept {
+  const Length tolerance =
+      settings.tolerance ? *settings.tolerance : sDefaultLengthTolerance;
+  const bool hasTarget = settings.target.has_value();
+  const Length target = settings.target.value_or(Length(0));
+  const bool skewMode = (mode == BoardPnsTuningMode::Skew);
+
+  return rs::PnsMeanderSettings{
+      (*settings.minAmplitude).toNm(),
+      (*settings.maxAmplitude).toNm(),
+      (*settings.spacing).toNm(),
+      (*settings.step).toNm(),
+      // The router's own default, which is KiCad's: a percentage of the
+      // half period, so 100 is a radius of exactly half the spacing.
+      80,
+      false,  // Meander to both sides of the trace.
+      // The router's own default. It flips the side itself when a meander
+      // only fits on the other one, and the flip is not carried back here:
+      // every gesture is one session started from the toolbar's values,
+      // where KiCad has a re-editable board item to carry it on.
+      rs::PnsMeanderSide::Left,
+      // KiCad's host forces this on, so that the ends of the tuned run
+      // stay where the untouched copper on either side of it expects them.
+      true,
+      hasTarget && (!skewMode),
+      (target - tolerance).toNm(),
+      target.toNm(),
+      (target + tolerance).toNm(),
+      hasTarget && skewMode,
+      (target - tolerance).toNm(),
+      target.toNm(),
+      (target + tolerance).toNm(),
+  };
+}
+
+static BoardPnsLengthTarget toLengthTarget(qint64 min, qint64 opt,
+                                           qint64 max) noexcept {
+  return BoardPnsLengthTarget{Length(min), Length(opt), Length(max)};
+}
+
+static BoardPnsTuningInfo toTuningInfo(const rs::PnsTuningInfo& raw) noexcept {
+  BoardPnsTuningInfo info;
+  info.status = toTuningStatus(raw.status);
+  info.mode = toTuningMode(raw.mode);
+  info.result = Length(raw.result);
+  if (raw.has_delta) {
+    info.delta = Length(raw.delta);
+  }
+  info.target = toLengthTarget(raw.target_min, raw.target_opt, raw.target_max);
+  if (raw.has_skew) {
+    info.skew = Length(raw.skew);
+  }
+  if (raw.has_skew_target) {
+    info.skewTarget = toLengthTarget(raw.skew_target_min, raw.skew_target_opt,
+                                     raw.skew_target_max);
+  }
+  if (raw.has_coupled_length) {
+    info.coupledLength = Length(raw.coupled_length);
+  }
+  info.amplitude = toPositiveLength(raw.amplitude);
+  info.spacing = toPositiveLength(raw.spacing);
+  return info;
 }
 
 static BoardPnsRouter::FixOutcome toFixOutcome(
@@ -232,6 +361,10 @@ bool BoardPnsRouter::isDragging() const noexcept {
   return rs::ffi_pnsrouter_is_dragging(*mHandle);
 }
 
+bool BoardPnsRouter::isTuning() const noexcept {
+  return rs::ffi_pnsrouter_is_tuning(*mHandle);
+}
+
 bool BoardPnsRouter::isPlacingVia() const noexcept {
   return rs::ffi_pnsrouter_placing_via(*mHandle);
 }
@@ -303,6 +436,24 @@ BoardPnsRouter::StartResult BoardPnsRouter::startRoutingDiffPair(
       *mHandle, toFfi(pos), startItem, denseLayer);
   updatePreview();
   return toStartResult(result);
+}
+
+BoardPnsRouter::StartResult BoardPnsRouter::startTuning(
+    const Point& pos, quint64 startItem, BoardPnsTuningMode mode,
+    const TuningSettings& settings) noexcept {
+  const rs::PnsMeanderSettings ffiSettings = toFfi(settings, mode);
+  const rs::PnsStartResult result = rs::ffi_pnsrouter_start_tuning(
+      *mHandle, toFfi(pos), startItem, toFfi(mode), &ffiSettings);
+  updatePreview();
+  return toStartResult(result);
+}
+
+bool BoardPnsRouter::amplitudeStep(int sign) noexcept {
+  return rs::ffi_pnsrouter_amplitude_step(*mHandle, sign);
+}
+
+bool BoardPnsRouter::spacingStep(int sign) noexcept {
+  return rs::ffi_pnsrouter_spacing_step(*mHandle, sign);
 }
 
 QVector<NetSignal*> BoardPnsRouter::getCurrentNets() const noexcept {
@@ -519,6 +670,11 @@ void BoardPnsRouter::updatePreview() noexcept {
     rs::ffi_pnsrouter_preview_moved_solid_at(*mHandle, i, &hostId, &offset);
     appendMovedDevice(mPreview.movedDevices, getHostRef(hostId),
                       toPoint(offset));
+  }
+
+  rs::PnsTuningInfo tuning = {};
+  if (rs::ffi_pnsrouter_preview_tuning(*mHandle, &tuning)) {
+    mPreview.tuning = toTuningInfo(tuning);
   }
 }
 

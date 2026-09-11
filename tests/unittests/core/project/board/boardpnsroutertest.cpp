@@ -810,6 +810,175 @@ static std::optional<DiffPairCase> findDiffPairCase(Project& project,
 }
 
 /*******************************************************************************
+ *  Length tuning helpers
+ ******************************************************************************/
+
+/**
+ * @brief A trace to tune, and a target it really reaches
+ */
+struct TuningCase {
+  const BI_NetLine* netLine = nullptr;
+  quint64 hostId = 0;
+
+  /// Where the session starts, which is one end of the trace.
+  Point start;
+
+  /// Where the cursor goes, which is the other end: everything between
+  /// the two meanders.
+  Point end;
+
+  /// The length the tuned run has before any meander is placed.
+  Length baseline;
+
+  /// A target above #baseline which the router really reaches.
+  Length target;
+};
+
+/// How far either side of a target still counts as tuned in these tests.
+static const Length sTuningTolerance(100000);  // 0.1 mm, the router's own.
+
+/**
+ * @brief Measure the tuned run of a trace before any meander is placed
+ *
+ * The readout's delta is measured against exactly that length, so one
+ * session with no target at all hands the baseline back as the difference
+ * between the two numbers, and no target has to be guessed first.
+ *
+ * @return `std::nullopt` if the router refuses to tune this trace at all,
+ *         or if it measured nothing, which is what an absent delta means.
+ */
+static std::optional<Length> tuningBaseline(const Board& board,
+                                            quint64 hostId, const Point& start,
+                                            const Point& end) {
+  BoardPnsRouter probe(board, makeSettings());
+  if (probe.startTuning(start, hostId, BoardPnsTuningMode::Single,
+                        BoardPnsRouter::TuningSettings{}) !=
+      BoardPnsRouter::StartResult::Ok) {
+    return std::nullopt;
+  }
+  probe.moveTo(end, 0);
+
+  const std::optional<BoardPnsTuningInfo>& tuning = probe.getPreview().tuning;
+  if ((!tuning) || (!tuning->delta)) {
+    return std::nullopt;
+  }
+  return tuning->result - *tuning->delta;
+}
+
+/**
+ * @brief The total length of the traces a commit takes off the board
+ */
+static Length removedCopperLength(const BoardPnsCommit& commit) noexcept {
+  Length total;
+  foreach (const BoardPnsHostRef& ref, commit.removed) {
+    if (ref.netLine) {
+      total += *ref.netLine->getLength();
+    }
+  }
+  for (const auto& pair : commit.updated) {
+    if (pair.first.netLine) {
+      total += *pair.first.netLine->getLength();
+    }
+  }
+  return total;
+}
+
+/**
+ * @brief The total length of the traces a commit puts on the board
+ */
+static Length addedCopperLength(const BoardPnsCommit& commit) noexcept {
+  Length total;
+  auto add = [&total](const BoardPnsNewItem& item) {
+    if (const BoardPnsNewSegment* segment = item.getSegment()) {
+      total += *(segment->end - segment->start).getLength();
+    }
+  };
+  foreach (const BoardPnsNewItem& item, commit.added) {
+    add(item);
+  }
+  for (const auto& pair : commit.updated) {
+    add(pair.second);
+  }
+  return total;
+}
+
+/**
+ * @brief Find a trace of the fixture the router lengthens to a target
+ *
+ * Which trace has room for meanders depends on the fixture's geometry,
+ * which is exactly what the tests must not depend on, so every trace is
+ * offered with a few targets above its own length and the first
+ * combination the router reports as tuned is picked. The targets are
+ * tried largest first, so that the case which is found leaves the most
+ * copper to assert on.
+ */
+static std::optional<TuningCase> findTuningCase(const Board& board) {
+  BoardPnsRouter probeRouter(board, makeSettings());
+  foreach (const BI_NetSegment* segment, board.getNetSegments()) {
+    foreach (const BI_NetLine* netLine, segment->getNetLines()) {
+      const quint64 hostId = probeRouter.getSnapshot().getHostId(*netLine);
+      if (hostId == 0) {
+        continue;
+      }
+      const Point start = netLine->getP1().getPosition();
+      const Point end = netLine->getP2().getPosition();
+      const std::optional<Length> baseline =
+          tuningBaseline(board, hostId, start, end);
+      if (!baseline) {
+        continue;
+      }
+
+      for (qint64 extra : {2000000LL, 1000000LL, 500000LL}) {  // 2, 1, 0.5 mm.
+        const Length target = *baseline + Length(extra);
+        BoardPnsRouter::TuningSettings settings;
+        settings.target = target;
+        settings.tolerance = sTuningTolerance;
+
+        BoardPnsRouter probe(board, makeSettings());
+        if (probe.startTuning(start, hostId, BoardPnsTuningMode::Single,
+                              settings) != BoardPnsRouter::StartResult::Ok) {
+          continue;
+        }
+        probe.moveTo(end, 0);
+        const std::optional<BoardPnsTuningInfo>& tuning =
+            probe.getPreview().tuning;
+        if ((!tuning) || (tuning->status != BoardPnsTuningStatus::Tuned)) {
+          continue;
+        }
+        return TuningCase{netLine, hostId, start, end, *baseline, target};
+      }
+    }
+  }
+  return std::nullopt;
+}
+
+/**
+ * @brief Find any trace of the fixture the router opens a session on
+ *
+ * For the tests which only need a running session, not a tuned one.
+ */
+static std::optional<TuningCase> findTunableTrace(const Board& board) {
+  BoardPnsRouter probeRouter(board, makeSettings());
+  foreach (const BI_NetSegment* segment, board.getNetSegments()) {
+    foreach (const BI_NetLine* netLine, segment->getNetLines()) {
+      const quint64 hostId = probeRouter.getSnapshot().getHostId(*netLine);
+      if (hostId == 0) {
+        continue;
+      }
+      const Point start = netLine->getP1().getPosition();
+      const Point end = netLine->getP2().getPosition();
+      const std::optional<Length> baseline =
+          tuningBaseline(board, hostId, start, end);
+      if (!baseline) {
+        continue;
+      }
+      return TuningCase{netLine, hostId, start, end, *baseline, *baseline};
+    }
+  }
+  return std::nullopt;
+}
+
+/*******************************************************************************
  *  Test Class
  ******************************************************************************/
 
@@ -1593,6 +1762,199 @@ TEST_F(BoardPnsRouterTest, testDiffPairGapBelowMinClearanceIsRefused) {
   EXPECT_EQ(router.isStartingPointRoutableDiffPair(start->pos, start->hostId,
                                                    Layer::topCopper()),
             BoardPnsRouter::StartResult::PairGapBelowMinClearance);
+}
+
+/*******************************************************************************
+ *  Length tuning
+ ******************************************************************************/
+
+TEST_F(BoardPnsRouterTest, testTuneTraceToALongerTarget) {
+  const std::optional<TuningCase> tuning = findTuningCase(*mBoard);
+  ASSERT_TRUE(tuning.has_value())
+      << "no trace of the fixture has room for meanders";
+  const Layer& layer = tuning->netLine->getLayer();
+  const NetSignal* net = tuning->netLine->getNetSegment().getNetSignal();
+
+  BoardPnsRouter::TuningSettings settings;
+  settings.target = tuning->target;
+  settings.tolerance = sTuningTolerance;
+
+  BoardPnsRouter router(*mBoard, makeSettings());
+  ASSERT_EQ(router.startTuning(tuning->start, tuning->hostId,
+                               BoardPnsTuningMode::Single, settings),
+            BoardPnsRouter::StartResult::Ok);
+  EXPECT_TRUE(router.isTuning());
+  EXPECT_TRUE(router.isRoutingInProgress());
+  EXPECT_FALSE(router.isDragging());
+
+  // The cursor decides how much of the trace meanders, so the readout only
+  // exists once the session has been moved.
+  router.moveTo(tuning->end, 0);
+  const std::optional<BoardPnsTuningInfo> readout = router.getPreview().tuning;
+  ASSERT_TRUE(readout.has_value());
+  EXPECT_EQ(readout->status, BoardPnsTuningStatus::Tuned);
+  EXPECT_EQ(readout->mode, BoardPnsTuningMode::Single);
+  EXPECT_GE(readout->result, tuning->target - sTuningTolerance);
+  EXPECT_LE(readout->result, tuning->target + sTuningTolerance);
+  EXPECT_EQ(readout->target.opt, tuning->target);
+  // A length session measures no skew and has no coupled trace.
+  EXPECT_FALSE(readout->skew.has_value());
+  EXPECT_FALSE(readout->skewTarget.has_value());
+  EXPECT_FALSE(readout->coupledLength.has_value());
+  EXPECT_EQ((*readout->amplitude).toNm(), 1000000);
+  EXPECT_EQ((*readout->spacing).toNm(), 600000);
+
+  // The meandered trace is drawn like any other head, so a caller which
+  // draws a route needs nothing new for a tuning session.
+  int headItems = 0;
+  foreach (const BoardPnsPreviewItem& item, router.getPreview().items) {
+    if (item.style == BoardPnsPreviewStyle::Head) {
+      ++headItems;
+      EXPECT_EQ(item.layer, &layer);
+      EXPECT_EQ(item.net, net);
+    }
+  }
+  EXPECT_GT(headItems, 0);
+
+  // A tuning fix is always terminal: there is no second leg to tune.
+  ASSERT_EQ(router.fixRoute(tuning->end, 0, false),
+            BoardPnsRouter::FixOutcome::Finished);
+  EXPECT_FALSE(router.isTuning());
+  EXPECT_FALSE(router.isRoutingInProgress());
+
+  // The commit replaces the tuned copper with the meandered chain, on the
+  // same net and the same layer, and there is more of it than there was.
+  const BoardPnsCommit commit = router.getCommit();
+  int segments = 0;
+  auto check = [&](const BoardPnsNewItem& item) {
+    const BoardPnsNewSegment* segment = item.getSegment();
+    ASSERT_NE(segment, nullptr);
+    ++segments;
+    EXPECT_EQ(segment->layer, &layer);
+    EXPECT_EQ(item.net, net);
+  };
+  foreach (const BoardPnsNewItem& item, commit.added) {
+    check(item);
+  }
+  for (const auto& pair : commit.updated) {
+    check(pair.second);
+  }
+  EXPECT_GT(segments, 1);
+  EXPECT_GT(addedCopperLength(commit), removedCopperLength(commit));
+
+  // The commit applier needs nothing new for a tuning session: the tuned
+  // trace goes away exactly as a dragged one does, either as a removal or
+  // as an update which kept its identity, and no device moves.
+  EXPECT_TRUE(dropsNetLine(commit, *tuning->netLine));
+  EXPECT_TRUE(commit.movedDevices.isEmpty());
+}
+
+TEST_F(BoardPnsRouterTest, testTuningOnAPadIsRefused) {
+  BoardPnsRouter router(*mBoard, makeSettings());
+  const std::optional<RouteStart> start = findStartPad(router, *mBoard);
+  ASSERT_TRUE(start.has_value()) << "no routable top layer pad with a net";
+
+  // Only a trace can be lengthened; a pad, a via or a hole is refused by
+  // its own name rather than by a catch-all.
+  EXPECT_EQ(router.startTuning(start->pos, start->hostId,
+                               BoardPnsTuningMode::Single,
+                               BoardPnsRouter::TuningSettings{}),
+            BoardPnsRouter::StartResult::NotATrack);
+  EXPECT_FALSE(router.isTuning());
+  EXPECT_FALSE(router.isRoutingInProgress());
+
+  // And a session needs something to lengthen, so free space is refused
+  // too, where a single trace placement may start there.
+  EXPECT_EQ(router.startTuning(start->pos, 0, BoardPnsTuningMode::Single,
+                               BoardPnsRouter::TuningSettings{}),
+            BoardPnsRouter::StartResult::TuningNeedsStartItem);
+  EXPECT_FALSE(router.isTuning());
+}
+
+TEST_F(BoardPnsRouterTest, testTuningOnAnUnpairedNetIsRefused) {
+  const std::optional<TuningCase> tuning = findTunableTrace(*mBoard);
+  ASSERT_TRUE(tuning.has_value()) << "no trace of the fixture can be tuned";
+
+  // No net of the fixture is half of a pair, so both pair modes refuse the
+  // very trace the single mode tunes, and each names its own mode.
+  BoardPnsRouter router(*mBoard, makeSettings());
+  EXPECT_EQ(router.startTuning(tuning->start, tuning->hostId,
+                               BoardPnsTuningMode::DiffPair,
+                               BoardPnsRouter::TuningSettings{}),
+            BoardPnsRouter::StartResult::NotADiffPairForTuning);
+  EXPECT_EQ(router.startTuning(tuning->start, tuning->hostId,
+                               BoardPnsTuningMode::Skew,
+                               BoardPnsRouter::TuningSettings{}),
+            BoardPnsRouter::StartResult::NotADiffPairForSkew);
+  EXPECT_EQ(router.startTuning(tuning->start, tuning->hostId,
+                               BoardPnsTuningMode::Single,
+                               BoardPnsRouter::TuningSettings{}),
+            BoardPnsRouter::StartResult::Ok);
+}
+
+TEST_F(BoardPnsRouterTest, testAmplitudeAndSpacingStepsChangeTheReadout) {
+  const std::optional<TuningCase> tuning = findTunableTrace(*mBoard);
+  ASSERT_TRUE(tuning.has_value()) << "no trace of the fixture can be tuned";
+
+  BoardPnsRouter::TuningSettings settings;
+  settings.target = tuning->baseline + Length(2000000);  // 2 mm more.
+  settings.tolerance = sTuningTolerance;
+
+  BoardPnsRouter router(*mBoard, makeSettings());
+  ASSERT_EQ(router.startTuning(tuning->start, tuning->hostId,
+                               BoardPnsTuningMode::Single, settings),
+            BoardPnsRouter::StartResult::Ok);
+  router.moveTo(tuning->end, 0);
+  ASSERT_TRUE(router.getPreview().tuning.has_value());
+  const Length amplitude = *router.getPreview().tuning->amplitude;
+  const Length spacing = *router.getPreview().tuning->spacing;
+  EXPECT_EQ(amplitude.toNm(), (*settings.maxAmplitude).toNm());
+  EXPECT_EQ(spacing.toNm(), (*settings.spacing).toNm());
+
+  // Neither step produces a frame of its own, so the readout only catches
+  // up on the next move, which is how the router's other hosts drive them.
+  EXPECT_TRUE(router.amplitudeStep(1));
+  router.moveTo(tuning->end, 0);
+  ASSERT_TRUE(router.getPreview().tuning.has_value());
+  EXPECT_EQ(*router.getPreview().tuning->amplitude,
+            amplitude + *settings.step);
+
+  // Down again, and the amplitude is back where it started.
+  EXPECT_TRUE(router.amplitudeStep(-1));
+  router.moveTo(tuning->end, 0);
+  ASSERT_TRUE(router.getPreview().tuning.has_value());
+  EXPECT_EQ(*router.getPreview().tuning->amplitude, amplitude);
+
+  // The spacing is floored by the tuned trace's width plus its clearance,
+  // and the fixture's traces are wide enough for that floor to swallow the
+  // first few steps, so it is taken well clear of the floor before the
+  // step size itself is asserted on.
+  for (int i = 0; i < 10; ++i) {
+    EXPECT_TRUE(router.spacingStep(1));
+  }
+  router.moveTo(tuning->end, 0);
+  ASSERT_TRUE(router.getPreview().tuning.has_value());
+  const Length wideSpacing = *router.getPreview().tuning->spacing;
+  EXPECT_GT(wideSpacing, spacing);
+
+  EXPECT_TRUE(router.spacingStep(1));
+  router.moveTo(tuning->end, 0);
+  ASSERT_TRUE(router.getPreview().tuning.has_value());
+  EXPECT_EQ(*router.getPreview().tuning->spacing,
+            wideSpacing + *settings.step);
+
+  EXPECT_TRUE(router.spacingStep(-1));
+  router.moveTo(tuning->end, 0);
+  ASSERT_TRUE(router.getPreview().tuning.has_value());
+  EXPECT_EQ(*router.getPreview().tuning->spacing, wideSpacing);
+
+  // Both refuse a session which is not tuning, which is every route and
+  // every drag.
+  router.abortRouting();
+  EXPECT_FALSE(router.isTuning());
+  EXPECT_FALSE(router.amplitudeStep(1));
+  EXPECT_FALSE(router.spacingStep(1));
+  EXPECT_FALSE(router.getPreview().tuning.has_value());
 }
 
 /*******************************************************************************

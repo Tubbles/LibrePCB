@@ -1039,6 +1039,21 @@ export global Shortcuts {
             } else if Backend.is-shortcut(event, Cmd.router-diff-pair-toggle) {
                 Data.current-section.board-2d-tabs[tab].tool-router-diff-pair = !Data.current-section.board-2d-tabs[tab].tool-router-diff-pair;
                 return true;
+            } else if Backend.is-shortcut(event, Cmd.router-tuning-mode-cycle) {
+                Data.current-section.board-2d-tabs[tab].tool-router-tuning-mode = Helpers.get-next-router-tuning-mode(Data.current-section.board-2d-tabs[tab].tool-router-tuning-mode);
+                return true;
+            } else if Backend.is-shortcut(event, Cmd.router-spacing-decrease) {
+                Backend.trigger-tab(section, tab, TabAction.router-spacing-decrease);
+                return true;
+            } else if Backend.is-shortcut(event, Cmd.router-spacing-increase) {
+                Backend.trigger-tab(section, tab, TabAction.router-spacing-increase);
+                return true;
+            } else if Backend.is-shortcut(event, Cmd.router-amplitude-decrease) {
+                Backend.trigger-tab(section, tab, TabAction.router-amplitude-decrease);
+                return true;
+            } else if Backend.is-shortcut(event, Cmd.router-amplitude-increase) {
+                Backend.trigger-tab(section, tab, TabAction.router-amplitude-increase);
+                return true;
             }
         } else if Data.current-section.board-2d-tabs[tab].tool == EditorTool.via {
             if Backend.is-shortcut(event, Cmd.size-increase) {

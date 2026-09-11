@@ -73,6 +73,12 @@ class PrimitivePathGraphicsItem;
  * made transparent for the lifetime of the frame and restored by the first
  * frame which does not name them, by #clear() and by the destructor.
  *
+ * A frame of a length tuning session needs nothing of its own: the router
+ * puts the meandered trace in ::librepcb::BoardPnsPreview::items like any
+ * other head, and the readout beside it is a status bar line rather than
+ * something to draw. KiCad's tuning pattern draws its own floating label,
+ * which belongs to a persistent board object LibrePCB has no counterpart to.
+ *
  * A frame of a footprint drag names the devices it is moving instead of
  * drawing their copper itself, because the router has no geometry for a pad
  * and the host already owns it. The device, its pads and its texts are drawn

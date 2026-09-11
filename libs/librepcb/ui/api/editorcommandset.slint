@@ -1484,6 +1484,56 @@ export global EditorCommandSet {
         key: "D",
     };
 
+    in property <EditorCommand> router-tuning-mode-cycle: {
+        id: "router_tuning_mode_cycle",
+        icon: @image-url(""),
+        text: "Cycle Length Tuning Mode",
+        status-tip: "Length tuning mode: Off, single trace, differential pair or differential pair skew",
+        shortcut: "Shift+T",
+        modifiers: { alt: false, control: false, shift: true, meta: false },
+        key: "T",
+    };
+
+    in property <EditorCommand> router-spacing-decrease: {
+        id: "router_spacing_decrease",
+        icon: @image-url(""),
+        text: "Decrease Meander Spacing",
+        status-tip: "Move the meanders of the tuned trace closer together",
+        shortcut: "Shift+1",
+        modifiers: { alt: false, control: false, shift: true, meta: false },
+        key: "1",
+    };
+
+    in property <EditorCommand> router-spacing-increase: {
+        id: "router_spacing_increase",
+        icon: @image-url(""),
+        text: "Increase Meander Spacing",
+        status-tip: "Move the meanders of the tuned trace further apart",
+        shortcut: "Shift+2",
+        modifiers: { alt: false, control: false, shift: true, meta: false },
+        key: "2",
+    };
+
+    in property <EditorCommand> router-amplitude-decrease: {
+        id: "router_amplitude_decrease",
+        icon: @image-url(""),
+        text: "Decrease Meander Amplitude",
+        status-tip: "Make the meanders of the tuned trace shallower",
+        shortcut: "Shift+3",
+        modifiers: { alt: false, control: false, shift: true, meta: false },
+        key: "3",
+    };
+
+    in property <EditorCommand> router-amplitude-increase: {
+        id: "router_amplitude_increase",
+        icon: @image-url(""),
+        text: "Increase Meander Amplitude",
+        status-tip: "Make the meanders of the tuned trace deeper",
+        shortcut: "Shift+4",
+        modifiers: { alt: false, control: false, shift: true, meta: false },
+        key: "4",
+    };
+
     in property <EditorCommand> shape-round: {
         id: "shape_round",
         icon: @image-url("../../../font-awesome/svgs/solid/circle.svg"),

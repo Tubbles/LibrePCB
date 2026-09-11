@@ -1519,6 +1519,52 @@ public:
       {QKeySequence(Qt::SHIFT | Qt::Key_D)},
       &categoryCommands,
   };
+  EditorCommand routerTuningModeCycle{
+      "router_tuning_mode_cycle",  // clang-format break
+      QT_TR_NOOP("Cycle Length Tuning Mode"),
+      QT_TR_NOOP("Length tuning mode: Off, single trace, differential pair "
+                 "or differential pair skew"),
+      nullptr,
+      EditorCommand::Flags(),
+      {QKeySequence(Qt::SHIFT | Qt::Key_T)},
+      &categoryCommands,
+  };
+  EditorCommand routerSpacingDecrease{
+      "router_spacing_decrease",  // clang-format break
+      QT_TR_NOOP("Decrease Meander Spacing"),
+      QT_TR_NOOP("Move the meanders of the tuned trace closer together"),
+      nullptr,
+      EditorCommand::Flags(),
+      {QKeySequence(Qt::SHIFT | Qt::Key_1)},
+      &categoryCommands,
+  };
+  EditorCommand routerSpacingIncrease{
+      "router_spacing_increase",  // clang-format break
+      QT_TR_NOOP("Increase Meander Spacing"),
+      QT_TR_NOOP("Move the meanders of the tuned trace further apart"),
+      nullptr,
+      EditorCommand::Flags(),
+      {QKeySequence(Qt::SHIFT | Qt::Key_2)},
+      &categoryCommands,
+  };
+  EditorCommand routerAmplitudeDecrease{
+      "router_amplitude_decrease",  // clang-format break
+      QT_TR_NOOP("Decrease Meander Amplitude"),
+      QT_TR_NOOP("Make the meanders of the tuned trace shallower"),
+      nullptr,
+      EditorCommand::Flags(),
+      {QKeySequence(Qt::SHIFT | Qt::Key_3)},
+      &categoryCommands,
+  };
+  EditorCommand routerAmplitudeIncrease{
+      "router_amplitude_increase",  // clang-format break
+      QT_TR_NOOP("Increase Meander Amplitude"),
+      QT_TR_NOOP("Make the meanders of the tuned trace deeper"),
+      nullptr,
+      EditorCommand::Flags(),
+      {QKeySequence(Qt::SHIFT | Qt::Key_4)},
+      &categoryCommands,
+  };
   EditorCommand shapeRound{
       "shape_round",  // clang-format break
       QT_TR_NOOP("Round"),

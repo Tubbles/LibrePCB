@@ -25,10 +25,15 @@ use pnsrouter::geometry::seg::Seg;
 use pnsrouter::geometry::shape::Shape;
 use pnsrouter::geometry::vec2::Vec2;
 use pnsrouter::item::{HostId, Kind, LayerRange, NetId, ViaType};
+use pnsrouter::meander::{
+  LengthTarget, MeanderSettings, MeanderSettingsRequest, MeanderSide,
+  MeanderStyle, TuningStatus,
+};
 use pnsrouter::node::World;
+use pnsrouter::placer::TuningMode;
 use pnsrouter::router::{
   CommitDiff, FixOutcome, NewGeometry, NewItem, PreviewFrame, PreviewStyle,
-  PreviewVia, RoutedNets, Router, RouterState, StartError,
+  PreviewVia, RoutedNets, Router, RouterState, StartError, TuningInfo,
 };
 use pnsrouter::rules::{
   Constraint, ConstraintType, ItemRef, Keepout, RuleResolver,
@@ -1654,9 +1659,31 @@ pub enum PnsStartResult {
   /// `StartError::PairGapMismatch`: the two tracks under the cursor are
   /// not spaced like the configured pair.
   PairGapMismatch = 14,
-  /// Any of the engine's length tuning refusals. This host never starts
-  /// a tuning session, so the value exists to keep the mapping total.
-  TuningRefused = 15,
+  /// `StartError::TuningNeedsStartItem`: a tuning session was asked for
+  /// in free space, where there is nothing to lengthen.
+  TuningNeedsStartItem = 15,
+  /// `StartError::NotATrack`: the object to tune is a pad, a via or a
+  /// hole rather than a track. The item id it names is dropped, like the
+  /// ids of the other naming variants.
+  NotATrack = 16,
+  /// `StartError::NoTuningPath`: the topology walk found no copper for
+  /// the session to measure.
+  NoTuningPath = 17,
+  /// `StartError::NotADiffPairForTuning`: the track a pair length tuning
+  /// session was asked to tune is not half of a pair.
+  NotADiffPairForTuning = 18,
+  /// `StartError::NotADiffPairForSkew`: the same, from a skew tuning
+  /// session, which the engine words differently.
+  NotADiffPairForSkew = 19,
+  /// `StartError::PairLaneHasNoSegments`: one lane of the recovered pair
+  /// holds no segment.
+  PairLaneHasNoSegments = 20,
+  /// Answered by the boundary, not by the engine:
+  /// `pnsrouter::meander::MeanderSettings::new` refused the meander
+  /// settings of a tuning start. It refuses a step which is not positive
+  /// and the round corner style, and this boundary never asks for round
+  /// corners, so only a non positive step can reach it.
+  InvalidMeanderSettings = 21,
 }
 
 /// What happened to a fix.
@@ -1782,6 +1809,177 @@ pub struct PnsNewItem {
   pub drill: i64,
   /// How far through the copper stack a via reaches.
   pub via_type: PnsViaType,
+}
+
+/// Which of the three length tuning algorithms a session runs.
+///
+/// Mirrors `pnsrouter::placer::TuningMode`. The engine has three separate
+/// entry points where this is one argument of
+/// [`ffi_pnsrouter_start_tuning`]: they take the same arguments and refuse
+/// for overlapping reasons, and the host's toolbar already holds the mode
+/// as one value, so folding them saves the C++ side three near identical
+/// wrappers.
+#[repr(C)]
+#[allow(dead_code)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum PnsTuningMode {
+  /// One track, lengthened to a target. `TuningMode::SingleLength`.
+  Single = 0,
+  /// Both lanes of a differential pair, lengthened together.
+  /// `TuningMode::PairLength`.
+  DiffPair = 1,
+  /// One lane of a differential pair, lengthened until the two match.
+  /// `TuningMode::PairSkew`.
+  Skew = 2,
+}
+
+/// How a tuned line stands against its target.
+///
+/// Mirrors `pnsrouter::meander::TuningStatus`.
+#[repr(C)]
+#[allow(dead_code)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum PnsTuningStatus {
+  /// The meanders ran out of baseline before the target.
+  TooShort = 0,
+  /// The line is longer than the window allows and no meander can
+  /// shorten it.
+  TooLong = 1,
+  /// Inside the window.
+  Tuned = 2,
+}
+
+/// Which side of the base line a tuned stretch meanders to first.
+///
+/// Mirrors `pnsrouter::meander::MeanderSide`, with the engine's own
+/// discriminants, which are KiCad's: the flip the shape generator makes is
+/// a negation, so the middle value is the one a negation leaves alone.
+#[repr(C)]
+#[allow(dead_code)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum PnsMeanderSide {
+  /// `MeanderSide::Left`, the engine's own default.
+  Left = -1,
+  /// `MeanderSide::Default`, which means "follow the cursor".
+  Default = 0,
+  /// `MeanderSide::Right`.
+  Right = 1,
+}
+
+/// The dimensions a tuning session meanders to.
+///
+/// Mirrors `pnsrouter::meander::MeanderSettingsRequest`, with its two
+/// `Option<LengthTarget>` spelled as a flag plus a min, opt and max triple
+/// so that the whole thing rides in a `#[repr(C)]` struct.
+///
+/// There is no corner style field: the engine draws chamfered corners only
+/// (`MeanderStyle::Round` needs arcs, which are on hold), and a value has
+/// to be expressible before it can be refused, so this boundary asks for
+/// `MeanderStyle::Chamfer` and never offers the other one.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct PnsMeanderSettings {
+  /// The shortest meander amplitude in nanometres.
+  pub min_amplitude: i64,
+  /// The longest meander amplitude in nanometres, which is what
+  /// [`ffi_pnsrouter_amplitude_step`] moves.
+  pub max_amplitude: i64,
+  /// The distance between two meanders in nanometres, which is what
+  /// [`ffi_pnsrouter_spacing_step`] moves.
+  pub spacing: i64,
+  /// How far one amplitude or spacing step moves, in nanometres. Must be
+  /// positive or the start is
+  /// [`PnsStartResult::InvalidMeanderSettings`].
+  pub step: i64,
+  /// The corner radius as a percentage of the half period, so 100 is a
+  /// radius of exactly half the spacing.
+  pub corner_radius_percentage: i32,
+  /// Whether every meander goes to the same side of the base line.
+  pub single_sided: bool,
+  /// Which side the first meander goes to.
+  pub initial_side: PnsMeanderSide,
+  /// Whether the reassembly keeps the ends of the tuned run where they
+  /// are. KiCad's host forces this on.
+  pub keep_endpoints: bool,
+  /// Whether the four `target_length_*` fields below mean anything. False
+  /// is the engine's unconstrained target, against which nothing is ever
+  /// too long.
+  pub has_target_length: bool,
+  /// The shortest accepted length in nanometres.
+  pub target_length_min: i64,
+  /// The length the meanders aim for, in nanometres.
+  pub target_length_opt: i64,
+  /// The longest accepted length in nanometres.
+  pub target_length_max: i64,
+  /// Whether the three `target_skew_*` fields below mean anything. Only
+  /// [`PnsTuningMode::Skew`] reads them.
+  pub has_target_skew: bool,
+  /// The smallest accepted skew in nanometres.
+  pub target_skew_min: i64,
+  /// The skew the meanders aim for, in nanometres.
+  pub target_skew_opt: i64,
+  /// The largest accepted skew in nanometres.
+  pub target_skew_max: i64,
+}
+
+/// What a host shows during a length tuning session.
+///
+/// Mirrors `pnsrouter::router::TuningInfo`, with its options spelled as a
+/// flag plus a value and its whole `MeanderSettings` reduced to the two
+/// numbers [`ffi_pnsrouter_amplitude_step`] and
+/// [`ffi_pnsrouter_spacing_step`] move, which are the only ones that
+/// change while a session runs.
+///
+/// The engine also hands back the initial side, which it flips when a
+/// meander only fits on the other side of the base line. It is not here:
+/// KiCad carries that flip onto a persistent board item so that re editing
+/// the same pattern draws the same shape, and this host has no such
+/// object. Every tuning gesture is one session started from the toolbar's
+/// own settings.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct PnsTuningInfo {
+  /// How the tuned line stands against the window in `target_*`.
+  pub status: PnsTuningStatus,
+  /// Which of the three modes produced this readout.
+  pub mode: PnsTuningMode,
+  /// The length the last move produced, in nanometres. It is a **skew**
+  /// in [`PnsTuningMode::Skew`], where it is the same number as
+  /// [`PnsTuningInfo::skew`].
+  pub result: i64,
+  /// Whether [`PnsTuningInfo::delta`] means anything.
+  pub has_delta: bool,
+  /// How far [`PnsTuningInfo::result`] has moved from the length the
+  /// session started at, in nanometres.
+  pub delta: i64,
+  /// The shortest length the status was decided against, in nanometres.
+  pub target_min: i64,
+  /// The length the meanders aimed for, in nanometres.
+  pub target_opt: i64,
+  /// The longest length the status was decided against, in nanometres.
+  pub target_max: i64,
+  /// Whether [`PnsTuningInfo::skew`] means anything, which it does in
+  /// [`PnsTuningMode::Skew`] only.
+  pub has_skew: bool,
+  /// The difference in length between the two lanes, in nanometres.
+  pub skew: i64,
+  /// Whether the three `skew_target_*` fields mean anything.
+  pub has_skew_target: bool,
+  /// The smallest accepted skew in nanometres.
+  pub skew_target_min: i64,
+  /// The skew the meanders aimed for, in nanometres.
+  pub skew_target_opt: i64,
+  /// The largest accepted skew in nanometres.
+  pub skew_target_max: i64,
+  /// Whether [`PnsTuningInfo::coupled_length`] means anything.
+  pub has_coupled_length: bool,
+  /// The coupled lane's total length in nanometres, which is what the
+  /// skew is measured against.
+  pub coupled_length: i64,
+  /// The meander amplitude the session is running at, in nanometres.
+  pub amplitude: i64,
+  /// The meander spacing the session is running at, in nanometres.
+  pub spacing: i64,
 }
 
 /// A routing session over one board snapshot.
@@ -2179,6 +2377,98 @@ extern "C" fn ffi_pnsrouter_start_routing_diff_pair(
       to_start_result(Err(error))
     }
   }
+}
+
+/// Begin length tuning the track under a point.
+///
+/// Wraps `pnsrouter::router::Router::start_tuning`,
+/// `start_tuning_diff_pair` and `start_tuning_skew`, told apart by `mode`.
+/// Unlike a track placement there is no start gate to ask first and no
+/// layer argument: the engine reads the layer off the clicked track, and
+/// the only refusals are the placer's own.
+///
+/// `host_id` is required; a zero is
+/// [`PnsStartResult::TuningNeedsStartItem`]. On success the session holds
+/// the frame of a tuning which has not been moved yet, so the cursor has
+/// consumed none of the track, and on failure it holds an empty one.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_start_tuning(
+  obj: &mut PnsRouter,
+  at: PnsPoint,
+  host_id: u64,
+  mode: PnsTuningMode,
+  settings: &PnsMeanderSettings,
+) -> PnsStartResult {
+  let Some(host) = to_host_id(host_id) else {
+    return PnsStartResult::TuningNeedsStartItem;
+  };
+  let Ok(meander) = MeanderSettings::new(to_meander_request(settings)) else {
+    return PnsStartResult::InvalidMeanderSettings;
+  };
+
+  let cursor = to_cursor(at);
+  let result = match mode {
+    PnsTuningMode::Single => obj.router.start_tuning(cursor, host, meander),
+    PnsTuningMode::DiffPair => {
+      obj.router.start_tuning_diff_pair(cursor, host, meander)
+    }
+    PnsTuningMode::Skew => obj.router.start_tuning_skew(cursor, host, meander),
+  };
+
+  match result {
+    Ok(frame) => {
+      obj.set_frame(frame);
+
+      PnsStartResult::Ok
+    }
+    Err(error) => {
+      obj.set_frame(PreviewFrame::default());
+
+      to_start_result(Err(error))
+    }
+  }
+}
+
+/// Whether one of the three length tuning modes is running.
+///
+/// Wraps `pnsrouter::router::RouterState::is_tuning`. A tuning session is
+/// also a routing session for [`ffi_pnsrouter_routing_in_progress`],
+/// because the same move, fix, stop and abort entry points drive it.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_is_tuning(obj: &PnsRouter) -> bool {
+  obj.router.state().is_tuning()
+}
+
+/// Nudge the meander amplitude by one step.
+///
+/// Wraps `pnsrouter::router::Router::amplitude_step`. `sign` is a
+/// direction and not a distance; the distance is
+/// [`PnsMeanderSettings::step`]. This produces no frame, so a host follows
+/// it with a [`ffi_pnsrouter_move_to`] at the same point, which is what
+/// makes the preview follow.
+///
+/// False when no tuning session is running.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_amplitude_step(
+  obj: &mut PnsRouter,
+  sign: i32,
+) -> bool {
+  obj.router.amplitude_step(sign)
+}
+
+/// Nudge the meander spacing by one step.
+///
+/// Wraps `pnsrouter::router::Router::spacing_step`. The new spacing is
+/// floored by the tuned track's width plus its clearance, so a decrease
+/// can be refused by the floor and still answer true: the answer is "a
+/// tuning session took this", not "the value changed". See
+/// [`ffi_pnsrouter_amplitude_step`] for the rest.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_spacing_step(
+  obj: &mut PnsRouter,
+  sign: i32,
+) -> bool {
+  obj.router.spacing_step(sign)
 }
 
 /// The nets the session is routing or dragging.
@@ -2670,6 +2960,25 @@ extern "C" fn ffi_pnsrouter_preview_hidden_at(
   host.0
 }
 
+/// The tuning readout of the latest frame.
+///
+/// `PreviewFrame::tuning`, which every move of a tuning session refreshes
+/// and which is absent from every routing and dragging frame. False when
+/// there is none, in which case `out` is not written.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_tuning(
+  obj: &PnsRouter,
+  out: &mut PnsTuningInfo,
+) -> bool {
+  let Some(tuning) = obj.frame.tuning.as_ref() else {
+    return false;
+  };
+
+  *out = to_ffi_tuning(tuning);
+
+  true
+}
+
 /// How many board objects the host must draw at an offset.
 ///
 /// One entry per pad a component drag is moving, and empty for every
@@ -2958,13 +3267,105 @@ fn to_start_result(result: Result<(), StartError>) -> PnsStartResult {
       PnsStartResult::PairGapBelowMinClearance
     }
     Err(StartError::PairGapMismatch) => PnsStartResult::PairGapMismatch,
-    Err(
-      StartError::TuningNeedsStartItem
-      | StartError::NotATrack(_)
-      | StartError::NoTuningPath
-      | StartError::NotADiffPairForTuning
-      | StartError::NotADiffPairForSkew
-      | StartError::PairLaneHasNoSegments,
-    ) => PnsStartResult::TuningRefused,
+    Err(StartError::TuningNeedsStartItem) => {
+      PnsStartResult::TuningNeedsStartItem
+    }
+    Err(StartError::NotATrack(_)) => PnsStartResult::NotATrack,
+    Err(StartError::NoTuningPath) => PnsStartResult::NoTuningPath,
+    Err(StartError::NotADiffPairForTuning) => {
+      PnsStartResult::NotADiffPairForTuning
+    }
+    Err(StartError::NotADiffPairForSkew) => PnsStartResult::NotADiffPairForSkew,
+    Err(StartError::PairLaneHasNoSegments) => {
+      PnsStartResult::PairLaneHasNoSegments
+    }
+  }
+}
+
+/// Narrow one host length into the engine's `i32` nanometres, clamped.
+///
+/// The meander dimensions are cursor-like rather than board-like: they are
+/// toolbar numbers and there is no board item to name in an error, so an
+/// absurd one is clamped the way [`to_cursor`] clamps a cursor instead of
+/// refusing the whole start.
+fn to_meander_length(value: i64) -> i32 {
+  value.clamp(-MAX_COORDINATE, MAX_COORDINATE) as i32 // Never truncates.
+}
+
+/// Turn a flag plus a min, opt and max triple into a length target.
+fn to_length_target(
+  present: bool,
+  min: i64,
+  opt: i64,
+  max: i64,
+) -> Option<LengthTarget> {
+  present.then(|| LengthTarget::explicit(min, opt, max))
+}
+
+/// Turn the host's meander settings into the engine's request.
+fn to_meander_request(settings: &PnsMeanderSettings) -> MeanderSettingsRequest {
+  MeanderSettingsRequest {
+    min_amplitude: to_meander_length(settings.min_amplitude),
+    max_amplitude: to_meander_length(settings.max_amplitude),
+    spacing: to_meander_length(settings.spacing),
+    step: to_meander_length(settings.step),
+    // The one style the engine can draw; see [`PnsMeanderSettings`].
+    corner_style: MeanderStyle::Chamfer,
+    corner_radius_percentage: settings.corner_radius_percentage,
+    single_sided: settings.single_sided,
+    initial_side: match settings.initial_side {
+      PnsMeanderSide::Left => MeanderSide::Left,
+      PnsMeanderSide::Default => MeanderSide::Default,
+      PnsMeanderSide::Right => MeanderSide::Right,
+    },
+    keep_endpoints: settings.keep_endpoints,
+    target_length: to_length_target(
+      settings.has_target_length,
+      settings.target_length_min,
+      settings.target_length_opt,
+      settings.target_length_max,
+    ),
+    target_skew: to_length_target(
+      settings.has_target_skew,
+      settings.target_skew_min,
+      settings.target_skew_opt,
+      settings.target_skew_max,
+    ),
+  }
+}
+
+/// Turn one engine tuning readout into its FFI value.
+fn to_ffi_tuning(tuning: &TuningInfo) -> PnsTuningInfo {
+  let skew_target = tuning
+    .skew_target
+    .unwrap_or(LengthTarget::explicit(0, 0, 0));
+
+  PnsTuningInfo {
+    status: match tuning.status {
+      TuningStatus::TooShort => PnsTuningStatus::TooShort,
+      TuningStatus::TooLong => PnsTuningStatus::TooLong,
+      TuningStatus::Tuned => PnsTuningStatus::Tuned,
+    },
+    mode: match tuning.mode {
+      TuningMode::SingleLength => PnsTuningMode::Single,
+      TuningMode::PairLength => PnsTuningMode::DiffPair,
+      TuningMode::PairSkew => PnsTuningMode::Skew,
+    },
+    result: tuning.result,
+    has_delta: tuning.delta.is_some(),
+    delta: tuning.delta.unwrap_or(0),
+    target_min: tuning.target.min,
+    target_opt: tuning.target.opt,
+    target_max: tuning.target.max,
+    has_skew: tuning.skew.is_some(),
+    skew: tuning.skew.unwrap_or(0),
+    has_skew_target: tuning.skew_target.is_some(),
+    skew_target_min: skew_target.min,
+    skew_target_opt: skew_target.opt,
+    skew_target_max: skew_target.max,
+    has_coupled_length: tuning.coupled_length.is_some(),
+    coupled_length: tuning.coupled_length.unwrap_or(0),
+    amplitude: i64::from(tuning.settings.max_amplitude()),
+    spacing: i64::from(tuning.settings.spacing()),
   }
 }

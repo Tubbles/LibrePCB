@@ -92,6 +92,16 @@ class BoardPnsPreviewItems;
  * drag gesture is unchanged, there is no differential pair dragger, a user
  * selects both traces and uses the multi drag instead.
  *
+ * While a length tuning mode is selected, a press on a trace starts a tuning
+ * session on it instead of a route or a drag, the cursor then decides how
+ * much of the trace meanders, the next click fixes and commits, and escape
+ * throws the session away rather than keeping it. Every frame refreshes a
+ * status bar readout naming how far the trace still is from its target,
+ * because the meandered copper alone does not say whether it got there.
+ * A press anywhere else is refused with a sentence, exactly as a pair start
+ * is, and the two pair tuning modes need the same net name derived pairs
+ * that pair routing does.
+ *
  * Which objects go into the drag is #collectDragItems(): a pressed pad drags
  * its whole device, a pressed trace which is part of a selection of several
  * traces drags all of them, and anything else drags itself. The router
@@ -171,6 +181,36 @@ public:
   }
   PositiveLength getDiffPairViaGap() const noexcept;
   void setDiffPairViaGap(const std::optional<PositiveLength>& gap) noexcept;
+  /// Which length tuning session a press starts, or `std::nullopt` for the
+  /// ordinary routing tool.
+  const std::optional<BoardPnsTuningMode>& getTuningMode() const noexcept {
+    return mTuningMode;
+  }
+  void setTuningMode(const std::optional<BoardPnsTuningMode>& mode) noexcept;
+  /// What the meanders aim for: a length in the two length modes, and a
+  /// skew in ::librepcb::BoardPnsTuningMode::Skew.
+  const Length& getTuningTarget() const noexcept { return mTuningTarget; }
+  void setTuningTarget(const Length& target) noexcept;
+  const PositiveLength& getTuningTolerance() const noexcept {
+    return mTuningTolerance;
+  }
+  void setTuningTolerance(const PositiveLength& tolerance) noexcept;
+  const PositiveLength& getTuningMinAmplitude() const noexcept {
+    return mTuningMinAmplitude;
+  }
+  void setTuningMinAmplitude(const PositiveLength& amplitude) noexcept;
+  const PositiveLength& getTuningMaxAmplitude() const noexcept {
+    return mTuningMaxAmplitude;
+  }
+  void setTuningMaxAmplitude(const PositiveLength& amplitude) noexcept;
+  const PositiveLength& getTuningSpacing() const noexcept {
+    return mTuningSpacing;
+  }
+  void setTuningSpacing(const PositiveLength& spacing) noexcept;
+  /// Nudge the meander amplitude of a running tuning session.
+  void amplitudeStep(int sign) noexcept;
+  /// Nudge the meander spacing of a running tuning session.
+  void spacingStep(int sign) noexcept;
 
   // Operator Overloadings
   BoardEditorState_RouteTrace& operator=(
@@ -187,6 +227,12 @@ signals:
   void diffPairWidthChanged(const PositiveLength& width);
   void diffPairGapChanged(const PositiveLength& gap);
   void diffPairViaGapChanged(bool autoGap, const PositiveLength& gap);
+  void tuningModeChanged(const std::optional<BoardPnsTuningMode>& mode);
+  void tuningTargetChanged(const Length& target);
+  void tuningToleranceChanged(const PositiveLength& tolerance);
+  void tuningMinAmplitudeChanged(const PositiveLength& amplitude);
+  void tuningMaxAmplitudeChanged(const PositiveLength& amplitude);
+  void tuningSpacingChanged(const PositiveLength& spacing);
 
 private:  // Types
   /**
@@ -367,6 +413,43 @@ private:  // Methods
   void startDragging(const SnappedCursor& cursor) noexcept;
 
   /**
+   * @brief Begin length tuning the trace under the cursor
+   *
+   * The tuning mode decides which of the three algorithms runs, and the
+   * refusal is what the status bar shows: there is no silent fall back to
+   * a route, for the same reason the differential pair toggle has none.
+   */
+  void startTuning(const SnappedCursor& cursor) noexcept;
+
+  /**
+   * @brief Throw a running tuning session away
+   *
+   * What escape does while tuning. Unlike a route, nothing of a tuning
+   * session is ever fixed before its one terminal fix, so there is nothing
+   * to keep and the board is left exactly as it was.
+   */
+  void abortTuning() noexcept;
+
+  /**
+   * @brief Get the meander dimensions a tuning session starts with
+   */
+  BoardPnsRouter::TuningSettings getTuningSettings() const noexcept;
+
+  /**
+   * @brief Show the live tuning readout of the last frame in the status bar
+   *
+   * Called after every event which produces a frame, so the numbers follow
+   * the cursor. The message has no timeout: it stands until the next frame
+   * replaces it or the session ends and #clearTuningReadout() wipes it.
+   */
+  void updateTuningReadout() noexcept;
+
+  /**
+   * @brief Take the tuning readout off the status bar
+   */
+  void clearTuningReadout() noexcept;
+
+  /**
    * @brief Throw a running drag away and put the board back as it was
    *
    * Nothing is applied and no new session is built: a drag which was never
@@ -485,6 +568,21 @@ private:  // Data
   /// The gap between the two vias of a pair, or `std::nullopt` to follow
   /// #mDiffPairGap.
   std::optional<PositiveLength> mDiffPairViaGap;
+
+  /// Which length tuning session a press starts, or `std::nullopt` for the
+  /// ordinary routing tool. Remembered across sessions like the mode is.
+  std::optional<BoardPnsTuningMode> mTuningMode;
+
+  /// What the meanders aim for, which is a skew in
+  /// ::librepcb::BoardPnsTuningMode::Skew. Signed and allowed to be zero,
+  /// which is the value a skew session wants, and which in the two length
+  /// modes reports every trace as too long until the user types a target.
+  Length mTuningTarget;
+
+  PositiveLength mTuningTolerance;  ///< how far off #mTuningTarget is tuned
+  PositiveLength mTuningMinAmplitude;  ///< the shallowest meander
+  PositiveLength mTuningMaxAmplitude;  ///< the deepest meander
+  PositiveLength mTuningSpacing;  ///< the distance between two meanders
 
   Point mCursorPos;  ///< the current cursor position, not snapped
   bool mSnapActive;  ///< whether the cursor snaps to board objects

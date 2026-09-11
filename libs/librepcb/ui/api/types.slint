@@ -390,6 +390,17 @@ export enum RouterMode {
     shove,
 }
 
+// Which length tuning algorithm the push & shove router runs, if any.
+//
+// 'off' is the ordinary routing tool: a press starts a trace or a drag.
+// Any other value makes a press on a trace start a tuning session instead.
+export enum RouterTuningMode {
+    off,
+    single,
+    diff-pair,
+    skew,
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // Library Editor
 ////////////////////////////////////////////////////////////////////////////////
@@ -886,6 +897,10 @@ export enum TabAction {
     // Push & shove router
     router-flip-posture,
     router-via-toggle,
+    router-spacing-decrease,
+    router-spacing-increase,
+    router-amplitude-decrease,
+    router-amplitude-increase,
 }
 
 // Window tab base data
@@ -1387,6 +1402,7 @@ export struct Board2dTabData {
     tool-router-mode: RouterMode,
     tool-router-corner-mode: bool,  // True for 90°, false for 45° corners
     tool-router-diff-pair: bool,  // True to route differential pairs
+    tool-router-tuning-mode: RouterTuningMode,
     tool-net: ComboBoxData,
     tool-netclass-name: string,  // Read-only, empty if not in routing state
     tool-layer: ComboBoxData,
@@ -1397,6 +1413,11 @@ export struct Board2dTabData {
     tool-diff-pair-gap: LengthEditData,
     tool-diff-pair-via-gap: LengthEditData,
     tool-diff-pair-via-gap-auto: bool,  // True if the via gap is the trace gap
+    tool-tuning-target: LengthEditData,  // Length, or skew in the skew mode
+    tool-tuning-tolerance: LengthEditData,
+    tool-tuning-min-amplitude: LengthEditData,
+    tool-tuning-max-amplitude: LengthEditData,
+    tool-tuning-spacing: LengthEditData,
     tool-angle: AngleEditData,
     tool-filled: bool,  // Also used for 'auto' trace width
     tool-mirrored: bool,  // Also used for 'auto' via size

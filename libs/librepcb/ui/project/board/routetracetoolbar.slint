@@ -9,6 +9,7 @@ import {
     Backend,
     Board2dTabData,
     RouterMode,
+    RouterTuningMode,
     TabAction,
     WindowSectionData,
 } from "../../api.slint";
@@ -17,8 +18,9 @@ import {
 //
 // The first four widgets are the ones the draw trace toolbar has too, bound
 // to the same generic tool properties. The router-specific ones follow:
-// the routing mode, the corner mode, the posture, the via placement and the
-// differential pair switch with the three pair sizes it reveals.
+// the routing mode, the corner mode, the posture, the via placement, the
+// differential pair switch with the three pair sizes it reveals, and the
+// length tuning mode with the five meander dimensions it reveals.
 export component RouteTraceToolBar inherits HorizontalLayout {
     in property <int> section-index;
     in-out property <WindowSectionData> section;
@@ -282,6 +284,167 @@ export component RouteTraceToolBar inherits HorizontalLayout {
 
         auto-toggled(checked) => {
             tabs[section.current-tab-index].tool-diff-pair-via-gap-auto = checked;
+        }
+    }
+
+    // Off is the routing tool; any other value makes a press on a trace
+    // start a length tuning session instead of a route or a drag. Clicking
+    // the checked button turns the selector back off, which is what keeps
+    // four values in three buttons.
+    tuning-selector := ToolBarWidget {
+        ToolBarSelectorButton {
+            icon: @image-url("../../../../font-awesome/svgs/solid/ruler-horizontal.svg");
+            tooltip: @tr("Tune Trace Length");
+            status-tip: @tr("Length tuning: Meander one trace up to a target length");
+            checked: tabs[section.current-tab-index].tool-router-tuning-mode == RouterTuningMode.single;
+
+            clicked => {
+                tabs[section.current-tab-index].tool-router-tuning-mode = self.checked ? RouterTuningMode.off : RouterTuningMode.single;
+            }
+        }
+
+        ToolBarSelectorButton {
+            icon: @image-url("../../../../font-awesome/svgs/solid/ruler-combined.svg");
+            tooltip: @tr("Tune Differential Pair Length");
+            status-tip: @tr("Length tuning: Meander both traces of a differential pair up to a target length");
+            checked: tabs[section.current-tab-index].tool-router-tuning-mode == RouterTuningMode.diff-pair;
+
+            clicked => {
+                tabs[section.current-tab-index].tool-router-tuning-mode = self.checked ? RouterTuningMode.off : RouterTuningMode.diff-pair;
+            }
+        }
+
+        ToolBarSelectorButton {
+            icon: @image-url("../../../../font-awesome/svgs/solid/scale-balanced.svg");
+            tooltip: @tr("Tune Differential Pair Skew");
+            status-tip: @tr("Length tuning: Meander the clicked trace of a differential pair until the two match");
+            checked: tabs[section.current-tab-index].tool-router-tuning-mode == RouterTuningMode.skew;
+
+            clicked => {
+                tabs[section.current-tab-index].tool-router-tuning-mode = self.checked ? RouterTuningMode.off : RouterTuningMode.skew;
+            }
+        }
+    }
+
+    // The five meander dimensions only make sense while a tuning mode is
+    // on, and the toolbar is crowded enough without them.
+    property <bool> tuning: tabs[section.current-tab-index].tool-router-tuning-mode != RouterTuningMode.off;
+    property <bool> skew: tabs[section.current-tab-index].tool-router-tuning-mode == RouterTuningMode.skew;
+
+    // The target is a length in the two length modes and a skew in the skew
+    // mode, because that is the field the router reads in each of them.
+    if tuning: tuning-target-edt := LengthEdit {
+        data: tabs[section.current-tab-index].tool-tuning-target;
+        icon: @image-url("../../../../bootstrap-icons/icons/rulers.svg");
+        tooltip: skew ? @tr("Target Skew") : @tr("Target Length");
+        min-width-text: "1.234";
+
+        value-changed(v) => {
+            tabs[section.current-tab-index].tool-tuning-target.value = v;
+        }
+
+        unit-changed(u) => {
+            tabs[section.current-tab-index].tool-tuning-target.unit = u;
+        }
+
+        increase-triggered => {
+            tabs[section.current-tab-index].tool-tuning-target.increase = true;
+        }
+
+        decrease-triggered => {
+            tabs[section.current-tab-index].tool-tuning-target.decrease = true;
+        }
+    }
+
+    if tuning: tuning-tolerance-edt := LengthEdit {
+        data: tabs[section.current-tab-index].tool-tuning-tolerance;
+        icon: @image-url("../../../../font-awesome/svgs/solid/plus-minus.svg");
+        tooltip: @tr("Target Tolerance");
+        min-width-text: "1.234";
+
+        value-changed(v) => {
+            tabs[section.current-tab-index].tool-tuning-tolerance.value = v;
+        }
+
+        unit-changed(u) => {
+            tabs[section.current-tab-index].tool-tuning-tolerance.unit = u;
+        }
+
+        increase-triggered => {
+            tabs[section.current-tab-index].tool-tuning-tolerance.increase = true;
+        }
+
+        decrease-triggered => {
+            tabs[section.current-tab-index].tool-tuning-tolerance.decrease = true;
+        }
+    }
+
+    if tuning: tuning-min-amplitude-edt := LengthEdit {
+        data: tabs[section.current-tab-index].tool-tuning-min-amplitude;
+        icon: @image-url("../../../../bootstrap-icons/icons/arrows-collapse.svg");
+        tooltip: @tr("Minimum Meander Amplitude");
+        min-width-text: "1.234";
+
+        value-changed(v) => {
+            tabs[section.current-tab-index].tool-tuning-min-amplitude.value = v;
+        }
+
+        unit-changed(u) => {
+            tabs[section.current-tab-index].tool-tuning-min-amplitude.unit = u;
+        }
+
+        increase-triggered => {
+            tabs[section.current-tab-index].tool-tuning-min-amplitude.increase = true;
+        }
+
+        decrease-triggered => {
+            tabs[section.current-tab-index].tool-tuning-min-amplitude.decrease = true;
+        }
+    }
+
+    if tuning: tuning-max-amplitude-edt := LengthEdit {
+        data: tabs[section.current-tab-index].tool-tuning-max-amplitude;
+        icon: @image-url("../../../../bootstrap-icons/icons/arrows-expand.svg");
+        tooltip: @tr("Maximum Meander Amplitude");
+        min-width-text: "1.234";
+
+        value-changed(v) => {
+            tabs[section.current-tab-index].tool-tuning-max-amplitude.value = v;
+        }
+
+        unit-changed(u) => {
+            tabs[section.current-tab-index].tool-tuning-max-amplitude.unit = u;
+        }
+
+        increase-triggered => {
+            tabs[section.current-tab-index].tool-tuning-max-amplitude.increase = true;
+        }
+
+        decrease-triggered => {
+            tabs[section.current-tab-index].tool-tuning-max-amplitude.decrease = true;
+        }
+    }
+
+    if tuning: tuning-spacing-edt := LengthEdit {
+        data: tabs[section.current-tab-index].tool-tuning-spacing;
+        icon: @image-url("../../../../bootstrap-icons/icons/distribute-horizontal.svg");
+        tooltip: @tr("Meander Spacing");
+        min-width-text: "1.234";
+
+        value-changed(v) => {
+            tabs[section.current-tab-index].tool-tuning-spacing.value = v;
+        }
+
+        unit-changed(u) => {
+            tabs[section.current-tab-index].tool-tuning-spacing.unit = u;
+        }
+
+        increase-triggered => {
+            tabs[section.current-tab-index].tool-tuning-spacing.increase = true;
+        }
+
+        decrease-triggered => {
+            tabs[section.current-tab-index].tool-tuning-spacing.decrease = true;
         }
     }
 }

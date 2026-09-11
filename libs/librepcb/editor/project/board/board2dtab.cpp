@@ -165,6 +165,31 @@ static BoardPnsRouter::Mode s2l(ui::RouterMode v) noexcept {
   }
 }
 
+static ui::RouterTuningMode l2s(
+    const std::optional<BoardPnsTuningMode>& v) noexcept {
+  if (v == BoardPnsTuningMode::Single) {
+    return ui::RouterTuningMode::Single;
+  } else if (v == BoardPnsTuningMode::DiffPair) {
+    return ui::RouterTuningMode::DiffPair;
+  } else if (v == BoardPnsTuningMode::Skew) {
+    return ui::RouterTuningMode::Skew;
+  } else {
+    return ui::RouterTuningMode::Off;
+  }
+}
+
+static std::optional<BoardPnsTuningMode> s2l(ui::RouterTuningMode v) noexcept {
+  if (v == ui::RouterTuningMode::Single) {
+    return BoardPnsTuningMode::Single;
+  } else if (v == ui::RouterTuningMode::DiffPair) {
+    return BoardPnsTuningMode::DiffPair;
+  } else if (v == ui::RouterTuningMode::Skew) {
+    return BoardPnsTuningMode::Skew;
+  } else {
+    return std::nullopt;
+  }
+}
+
 /*******************************************************************************
  *  Constructors / Destructor
  ******************************************************************************/
@@ -199,6 +224,7 @@ Board2dTab::Board2dTab(GuiApplication& app, BoardEditor& editor,
     mToolRouterMode(ui::RouterMode::Walkaround),
     mToolRouterCornerMode(false),
     mToolRouterDiffPair(false),
+    mToolRouterTuningMode(ui::RouterTuningMode::Off),
     mToolNets(std::make_shared<slint::VectorModel<slint::SharedString>>()),
     mToolNet({true, std::nullopt}),
     mToolLayers(std::make_shared<slint::VectorModel<slint::SharedString>>()),
@@ -210,6 +236,11 @@ Board2dTab::Board2dTab(GuiApplication& app, BoardEditor& editor,
     mToolDiffPairGap(app.getWorkspace().getSettings()),
     mToolDiffPairViaGap(app.getWorkspace().getSettings()),
     mToolDiffPairViaGapAuto(true),
+    mToolTuningTarget(app.getWorkspace().getSettings()),
+    mToolTuningTolerance(app.getWorkspace().getSettings()),
+    mToolTuningMinAmplitude(app.getWorkspace().getSettings()),
+    mToolTuningMaxAmplitude(app.getWorkspace().getSettings()),
+    mToolTuningSpacing(app.getWorkspace().getSettings()),
     mToolFilled(false),
     mToolMirrored(false),
     mToolValueSuggestions(
@@ -438,6 +469,7 @@ ui::Board2dTabData Board2dTab::getDerivedUiData() const noexcept {
       mToolRouterMode,  // Tool router mode
       mToolRouterCornerMode,  // Tool router corner mode
       mToolRouterDiffPair,  // Tool router differential pair
+      mToolRouterTuningMode,  // Tool router length tuning mode
       ui::ComboBoxData{
           // Tool net
           mToolNets,  // Items,
@@ -456,6 +488,11 @@ ui::Board2dTabData Board2dTab::getDerivedUiData() const noexcept {
       mToolDiffPairGap.getUiData(),  // Tool differential pair gap
       mToolDiffPairViaGap.getUiData(),  // Tool differential pair via gap
       mToolDiffPairViaGapAuto,  // Tool differential pair via gap "auto"
+      mToolTuningTarget.getUiData(),  // Tool tuning target
+      mToolTuningTolerance.getUiData(),  // Tool tuning tolerance
+      mToolTuningMinAmplitude.getUiData(),  // Tool tuning min amplitude
+      mToolTuningMaxAmplitude.getUiData(),  // Tool tuning max amplitude
+      mToolTuningSpacing.getUiData(),  // Tool tuning spacing
       ui::AngleEditData{
           // Tool angle
           l2s(mToolAngle),  // Angle
@@ -566,6 +603,14 @@ void Board2dTab::setDerivedUiData(const ui::Board2dTabData& data) noexcept {
   emit routerModeRequested(s2l(data.tool_router_mode));
   emit routerCornerModeRequested(data.tool_router_corner_mode);
   emit routerDiffPairRequested(data.tool_router_diff_pair);
+  emit routerTuningModeRequested(s2l(data.tool_router_tuning_mode));
+
+  // Tool length tuning dimensions
+  mToolTuningTarget.setUiData(data.tool_tuning_target);
+  mToolTuningTolerance.setUiData(data.tool_tuning_tolerance);
+  mToolTuningMinAmplitude.setUiData(data.tool_tuning_min_amplitude);
+  mToolTuningMaxAmplitude.setUiData(data.tool_tuning_max_amplitude);
+  mToolTuningSpacing.setUiData(data.tool_tuning_spacing);
 
   // Tool differential pair sizes
   mToolDiffPairWidth.setUiData(data.tool_diff_pair_width);
@@ -1085,6 +1130,22 @@ void Board2dTab::trigger(ui::TabAction a) noexcept {
       emit routerViaToggleRequested();  // Connected to current FSM state.
       break;
     }
+    case ui::TabAction::RouterSpacingDecrease: {
+      emit routerSpacingStepRequested(-1);  // Connected to current FSM state.
+      break;
+    }
+    case ui::TabAction::RouterSpacingIncrease: {
+      emit routerSpacingStepRequested(1);
+      break;
+    }
+    case ui::TabAction::RouterAmplitudeDecrease: {
+      emit routerAmplitudeStepRequested(-1);
+      break;
+    }
+    case ui::TabAction::RouterAmplitudeIncrease: {
+      emit routerAmplitudeStepRequested(1);
+      break;
+    }
     case ui::TabAction::ToolbarTraceWidthSaveInBoard: {
       emit saveTraceWidthInBoardRequested();
       break;
@@ -1541,6 +1602,85 @@ void Board2dTab::fsmToolEnter(BoardEditorState_RouteTrace& state) noexcept {
   mFsmStateConnections.append(
       connect(this, &Board2dTab::diffPairViaGapRequested, &state,
               &BoardEditorState_RouteTrace::setDiffPairViaGap));
+
+  // Length tuning mode
+  auto setTuningMode = [this](const std::optional<BoardPnsTuningMode>& mode) {
+    mToolRouterTuningMode = l2s(mode);
+    onDerivedUiDataChanged.notify();
+  };
+  setTuningMode(state.getTuningMode());
+  mFsmStateConnections.append(
+      connect(&state, &BoardEditorState_RouteTrace::tuningModeChanged, this,
+              setTuningMode));
+  mFsmStateConnections.append(
+      connect(this, &Board2dTab::routerTuningModeRequested, &state,
+              &BoardEditorState_RouteTrace::setTuningMode));
+
+  // The two live meander adjustments, which have no toolbar control: the
+  // keys are the only way to reach them, like the posture flip.
+  mFsmStateConnections.append(
+      connect(this, &Board2dTab::routerAmplitudeStepRequested, &state,
+              &BoardEditorState_RouteTrace::amplitudeStep));
+  mFsmStateConnections.append(
+      connect(this, &Board2dTab::routerSpacingStepRequested, &state,
+              &BoardEditorState_RouteTrace::spacingStep));
+
+  // Length tuning target, which is a skew in the skew mode and may be zero
+  // or negative, so it is the signed editor rather than the positive one.
+  mToolTuningTarget.configure(state.getTuningTarget(),
+                              LengthEditContext::Steps::generic(),
+                              "board_editor/route_trace/tuning_target");
+  mFsmStateConnections.append(
+      connect(&state, &BoardEditorState_RouteTrace::tuningTargetChanged,
+              &mToolTuningTarget, &LengthEditContext::setValue));
+  mFsmStateConnections.append(
+      connect(&mToolTuningTarget, &LengthEditContext::valueChanged, &state,
+              &BoardEditorState_RouteTrace::setTuningTarget));
+
+  // Length tuning tolerance
+  mToolTuningTolerance.configure(state.getTuningTolerance(),
+                                 LengthEditContext::Steps::generic(),
+                                 "board_editor/route_trace/tuning_tolerance");
+  mFsmStateConnections.append(
+      connect(&state, &BoardEditorState_RouteTrace::tuningToleranceChanged,
+              &mToolTuningTolerance, &LengthEditContext::setValuePositive));
+  mFsmStateConnections.append(
+      connect(&mToolTuningTolerance, &LengthEditContext::valueChangedPositive,
+              &state, &BoardEditorState_RouteTrace::setTuningTolerance));
+
+  // Meander amplitude range
+  mToolTuningMinAmplitude.configure(
+      state.getTuningMinAmplitude(), LengthEditContext::Steps::generic(),
+      "board_editor/route_trace/tuning_min_amplitude");
+  mFsmStateConnections.append(
+      connect(&state, &BoardEditorState_RouteTrace::tuningMinAmplitudeChanged,
+              &mToolTuningMinAmplitude, &LengthEditContext::setValuePositive));
+  mFsmStateConnections.append(
+      connect(&mToolTuningMinAmplitude,
+              &LengthEditContext::valueChangedPositive, &state,
+              &BoardEditorState_RouteTrace::setTuningMinAmplitude));
+
+  mToolTuningMaxAmplitude.configure(
+      state.getTuningMaxAmplitude(), LengthEditContext::Steps::generic(),
+      "board_editor/route_trace/tuning_max_amplitude");
+  mFsmStateConnections.append(
+      connect(&state, &BoardEditorState_RouteTrace::tuningMaxAmplitudeChanged,
+              &mToolTuningMaxAmplitude, &LengthEditContext::setValuePositive));
+  mFsmStateConnections.append(
+      connect(&mToolTuningMaxAmplitude,
+              &LengthEditContext::valueChangedPositive, &state,
+              &BoardEditorState_RouteTrace::setTuningMaxAmplitude));
+
+  // Meander spacing
+  mToolTuningSpacing.configure(state.getTuningSpacing(),
+                               LengthEditContext::Steps::generic(),
+                               "board_editor/route_trace/tuning_spacing");
+  mFsmStateConnections.append(
+      connect(&state, &BoardEditorState_RouteTrace::tuningSpacingChanged,
+              &mToolTuningSpacing, &LengthEditContext::setValuePositive));
+  mFsmStateConnections.append(
+      connect(&mToolTuningSpacing, &LengthEditContext::valueChangedPositive,
+              &state, &BoardEditorState_RouteTrace::setTuningSpacing));
 
   // Trace width
   mToolLineWidth.configure(state.getWidth(),
