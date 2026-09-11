@@ -414,6 +414,8 @@ add_library(
   project/circuit/componentinstance.h
   project/circuit/componentsignalinstance.cpp
   project/circuit/componentsignalinstance.h
+  project/circuit/differentialpairs.cpp
+  project/circuit/differentialpairs.h
   project/circuit/netclass.cpp
   project/circuit/netclass.h
   project/circuit/netsignal.cpp
