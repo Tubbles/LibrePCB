@@ -277,6 +277,166 @@ static std::optional<DragCase> findDragCase(const Board& board) {
 }
 
 /**
+ * @brief Every pad of a device the snapshot gave a host ID to
+ *
+ * A pad with no copper on any copper layer is not synced, so it is not part
+ * of a footprint drag and must not make one look incomplete either.
+ */
+static QVector<quint64> syncedPadsOf(const BoardPnsRouter& router,
+                                     const BI_Device& device) noexcept {
+  QVector<quint64> hostIds;
+  foreach (const BI_Pad* pad, device.getPads()) {
+    if (const quint64 hostId = router.getSnapshot().getHostId(*pad)) {
+      hostIds.append(hostId);
+    }
+  }
+  return hostIds;
+}
+
+/**
+ * @brief A device to drag by its pads, and where to drag it to
+ */
+struct FootprintDragCase {
+  const BI_Device* device = nullptr;
+
+  /// Every pad of the device the router knows, which is what makes the
+  /// drag a footprint drag rather than a refused half of one.
+  QVector<quint64> pads;
+
+  /// Where the drag starts, which is the position of one of the pads.
+  Point pos;
+
+  /// One millimetre away from there.
+  Point target;
+};
+
+/**
+ * @brief Find a device the router moves one millimetre and commits
+ *
+ * Which device that is depends on the fixture's geometry, which is exactly
+ * what the tests must not depend on, so every device and four directions are
+ * offered and the first combination that commits is picked. Each attempt
+ * gets its own session because a successful one commits.
+ */
+static std::optional<FootprintDragCase> findFootprintDragCase(
+    const Board& board) {
+  static const int directions[4][2] = {{0, 1}, {0, -1}, {1, 0}, {-1, 0}};
+  BoardPnsRouter probeRouter(board, makeSettings());
+  foreach (const BI_Device* device, board.getDeviceInstances()) {
+    const QVector<quint64> pads = syncedPadsOf(probeRouter, *device);
+    if (pads.isEmpty()) {
+      continue;
+    }
+    const BoardPnsHostRef ref = probeRouter.getHostRef(pads.first());
+    if (!ref.pad) {
+      continue;
+    }
+    const Point pos = ref.pad->getPosition();
+    for (const auto& direction : directions) {
+      const Point target =
+          pos + Point(Length(1000000LL * direction[0]),
+                      Length(1000000LL * direction[1]));  // 1 mm.
+      BoardPnsRouter probe(board, makeSettings());
+      if (probe.startDragging(pos, pads, false) !=
+          BoardPnsRouter::StartResult::Ok) {
+        continue;
+      }
+      probe.moveTo(target, 0);
+      if (probe.fixRoute(target, 0, true) !=
+          BoardPnsRouter::FixOutcome::Finished) {
+        continue;
+      }
+      if (probe.getCommit().movedDevices.isEmpty()) {
+        continue;
+      }
+      return FootprintDragCase{device, pads, pos, target};
+    }
+  }
+  return std::nullopt;
+}
+
+/**
+ * @brief Two net lines to drag together, and where to drag them to
+ */
+struct MultiDragCase {
+  const BI_NetLine* primary = nullptr;
+  const BI_NetLine* other = nullptr;
+
+  /// The host IDs of both, which is what a multi drag is: a set the router
+  /// finds more than one track in.
+  QVector<quint64> hostIds;
+
+  /// The middle of the primary net line, which is where the cursor is.
+  Point pos;
+
+  /// One millimetre away from there.
+  Point target;
+};
+
+/**
+ * @brief Find two net lines the router drags together and commits
+ *
+ * The router's multi drag moves the line the cursor is on and takes the
+ * others along, and it leaves behind whatever does not run parallel to the
+ * primary, so which pair works depends on the fixture's geometry. Every
+ * ordered pair on one layer and four directions are offered and the first
+ * combination that drops both is picked.
+ *
+ * The pair this fixture answers with is two pieces of one chain, because no
+ * two of its traces in different net segments run parallel; the multi
+ * dragger's own geometry is the router crate's business anyway, and what is
+ * checked here is the host side of it: a set of several host IDs crosses the
+ * wrapper and the FFI, the router takes its multi drag path, and everything
+ * the set named comes back replaced.
+ */
+static std::optional<MultiDragCase> findMultiDragCase(const Board& board) {
+  static const int directions[4][2] = {{0, 1}, {0, -1}, {1, 0}, {-1, 0}};
+  BoardPnsRouter probeRouter(board, makeSettings());
+
+  QVector<const BI_NetLine*> netLines;
+  foreach (const BI_NetSegment* segment, board.getNetSegments()) {
+    foreach (const BI_NetLine* netLine, segment->getNetLines()) {
+      if (probeRouter.getSnapshot().getHostId(*netLine) != 0) {
+        netLines.append(netLine);
+      }
+    }
+  }
+
+  foreach (const BI_NetLine* primary, netLines) {
+    const Point pos = middleOf(*primary);
+    const quint64 primaryId = probeRouter.getSnapshot().getHostId(*primary);
+    foreach (const BI_NetLine* other, netLines) {
+      if ((other == primary) || (&other->getLayer() != &primary->getLayer())) {
+        continue;
+      }
+      const QVector<quint64> hostIds{
+          primaryId, probeRouter.getSnapshot().getHostId(*other)};
+      for (const auto& direction : directions) {
+        const Point target =
+            pos + Point(Length(1000000LL * direction[0]),
+                        Length(1000000LL * direction[1]));  // 1 mm.
+        BoardPnsRouter probe(board, makeSettings());
+        if (probe.startDragging(pos, hostIds, false) !=
+            BoardPnsRouter::StartResult::Ok) {
+          continue;
+        }
+        probe.moveTo(target, 0);
+        if (probe.fixRoute(target, 0, true) !=
+            BoardPnsRouter::FixOutcome::Finished) {
+          continue;
+        }
+        if ((!dropsNetLine(probe.getCommit(), *primary)) ||
+            (!dropsNetLine(probe.getCommit(), *other))) {
+          continue;
+        }
+        return MultiDragCase{primary, other, hostIds, pos, target};
+      }
+    }
+  }
+  return std::nullopt;
+}
+
+/**
  * @brief Add a square keepout zone on the top layer to a board
  *
  * The board takes ownership: ::librepcb::Board::~Board() deletes every zone
@@ -675,20 +835,99 @@ TEST_F(BoardPnsRouterTest, testDragNetLineAside) {
   EXPECT_GT(segments, 0);
 }
 
-TEST_F(BoardPnsRouterTest, testDragOnAPadIsRefused) {
-  BoardPnsRouter router(*mBoard, makeSettings());
-  const std::optional<RouteStart> start = findStartPad(router, *mBoard);
-  ASSERT_TRUE(start.has_value()) << "no routable top layer pad with a net";
+TEST_F(BoardPnsRouterTest, testDragTwoNetLinesTogether) {
+  const std::optional<MultiDragCase> drag = findMultiDragCase(*mBoard);
+  ASSERT_TRUE(drag.has_value()) << "no pair of net lines the router drags";
 
-  // A selection of nothing but pads is a component drag to the router,
-  // which this host does not offer yet.
-  EXPECT_EQ(router.startDragging(start->pos, start->hostId, false),
-            BoardPnsRouter::StartResult::ComponentDragUnsupported);
+  BoardPnsRouter router(*mBoard, makeSettings());
+  ASSERT_EQ(router.startDragging(drag->pos, drag->hostIds, false),
+            BoardPnsRouter::StartResult::Ok);
+  EXPECT_TRUE(router.isDragging());
+
+  router.moveTo(drag->target, 0);
+  EXPECT_FALSE(router.getPreview().items.isEmpty());
+
+  ASSERT_EQ(router.fixRoute(drag->target, 0, true),
+            BoardPnsRouter::FixOutcome::Finished);
+
+  // Both net lines are replaced, which is what makes this one gesture
+  // rather than two drags: the router moved the set it was given.
+  const BoardPnsCommit commit = router.getCommit();
+  EXPECT_TRUE(dropsNetLine(commit, *drag->primary));
+  EXPECT_TRUE(dropsNetLine(commit, *drag->other));
+  EXPECT_TRUE(commit.movedDevices.isEmpty());
+  EXPECT_FALSE(commit.added.isEmpty() && commit.updated.isEmpty());
+}
+
+TEST_F(BoardPnsRouterTest, testDragDeviceByItsPads) {
+  const std::optional<FootprintDragCase> drag = findFootprintDragCase(*mBoard);
+  ASSERT_TRUE(drag.has_value()) << "no device the router moves 1 mm aside";
+  const Point offset = drag->target - drag->pos;
+
+  BoardPnsRouter router(*mBoard, makeSettings());
+  ASSERT_EQ(router.startDragging(drag->pos, drag->pads, false),
+            BoardPnsRouter::StartResult::Ok);
+  EXPECT_TRUE(router.isDragging());
+  EXPECT_TRUE(router.isRoutingInProgress());
+
+  // The preview names the device rather than drawing its copper, because
+  // the router has no geometry for a pad and the host owns it already.
+  router.moveTo(drag->target, 0);
+  ASSERT_EQ(router.getPreview().movedDevices.count(), 1);
+  EXPECT_EQ(router.getPreview().movedDevices.first().device, drag->device);
+  EXPECT_EQ(router.getPreview().movedDevices.first().offset, offset);
+
+  ASSERT_EQ(router.fixRoute(drag->target, 0, true),
+            BoardPnsRouter::FixOutcome::Finished);
+  EXPECT_FALSE(router.isDragging());
+
+  // One entry per device and not one per pad, which is what the host has
+  // to apply: the pads themselves are never removed or added.
+  const BoardPnsCommit commit = router.getCommit();
+  ASSERT_EQ(commit.movedDevices.count(), 1);
+  EXPECT_EQ(commit.movedDevices.first().device, drag->device);
+  EXPECT_EQ(commit.movedDevices.first().offset, offset);
+  foreach (const BoardPnsHostRef& ref, commit.removed) {
+    EXPECT_EQ(ref.pad, nullptr);
+  }
+  foreach (const BoardPnsNewItem& item, commit.added) {
+    EXPECT_EQ(item.source.pad, nullptr);
+  }
+}
+
+TEST_F(BoardPnsRouterTest, testDragOnOnePadOfADeviceIsRefused) {
+  BoardPnsRouter router(*mBoard, makeSettings());
+
+  // A device is dragged by all of its pads or not at all: the router moves
+  // the pads it is given while the host moves the device as a whole, so a
+  // pad left out would keep its traces where the copper no longer is.
+  QVector<quint64> pads;
+  Point pos;
+  foreach (const BI_Device* device, mBoard->getDeviceInstances()) {
+    const QVector<quint64> candidate = syncedPadsOf(router, *device);
+    if (candidate.count() >= 2) {
+      pads = candidate;
+      pos = router.getHostRef(candidate.first()).pad->getPosition();
+      break;
+    }
+  }
+  ASSERT_GE(pads.count(), 2) << "no device with two pads the router knows";
+
+  EXPECT_EQ(router.startDragging(pos, pads.first(), false),
+            BoardPnsRouter::StartResult::IncompleteDeviceDrag);
   EXPECT_FALSE(router.isDragging());
   EXPECT_FALSE(router.isRoutingInProgress());
 
+  // A pad mixed with a trace is not a drag this host can apply either.
+  const std::optional<DragCase> netLineDrag = findDragCase(*mBoard);
+  ASSERT_TRUE(netLineDrag.has_value()) << "no net line the router drags";
+  QVector<quint64> mixed = pads;
+  mixed.append(netLineDrag->hostId);
+  EXPECT_EQ(router.startDragging(pos, mixed, false),
+            BoardPnsRouter::StartResult::IncompleteDeviceDrag);
+
   // And nothing at all is not something to drag either.
-  EXPECT_EQ(router.startDragging(start->pos, 0, false),
+  EXPECT_EQ(router.startDragging(pos, 0, false),
             BoardPnsRouter::StartResult::NothingToDrag);
 }
 

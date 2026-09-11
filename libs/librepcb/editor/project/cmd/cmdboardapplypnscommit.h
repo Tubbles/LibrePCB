@@ -36,6 +36,7 @@
  ******************************************************************************/
 namespace librepcb {
 
+class BI_Device;
 class BI_NetLine;
 class BI_NetLineAnchor;
 class BI_NetPoint;
@@ -72,6 +73,9 @@ class CmdBoardNetSegmentAddElements;
  * lookups would all run against the unmodified board.
  *
  * The work is done in this order:
+ *   -# The devices a footprint drag moved are moved, because their pads are
+ *      net line anchors and everything below is anchored against the board
+ *      as it is at that moment.
  *   -# A via the router only moved keeps its identity and is moved in place,
  *      which matters because its UUID is part of the file format.
  *   -# Everything else the router removed or replaced is removed, through

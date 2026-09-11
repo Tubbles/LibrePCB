@@ -711,6 +711,62 @@ static std::optional<Point> findFreeTarget(const Board& board,
   return std::nullopt;
 }
 
+TEST_F(CmdBoardApplyPnsCommitTest, testMovedDeviceWithItsTrace) {
+  BI_Pad* pad = findFreePadWithNet();
+  ASSERT_NE(pad, nullptr) << "no unconnected top layer pad with a net";
+  BI_Device* device = pad->getDevice();
+  ASSERT_NE(device, nullptr) << "the pad belongs to no device";
+  const Point devicePos = device->getPosition();
+  const Point padPos = pad->getPosition();
+  const Point end = padPos + mm(300, 300);
+
+  // The trace a footprint drag is going to re-shape, anchored on the pad.
+  BoardPnsCommit setup;
+  setup.added.append(
+      makeSegment(padPos, end, Layer::topCopper(), pad->getNetSignal()));
+  ASSERT_TRUE(mUndoStack->execCmd(new CmdBoardApplyPnsCommit(*mBoard, setup)));
+  BI_NetLine* original = netLineBetween(*mBoard, padPos, end);
+  ASSERT_NE(original, nullptr);
+
+  const int segments = netSegmentCount();
+  const int lines = netLineCount();
+
+  // What a footprint drag commits: the device moves, and the traces on its
+  // pads come back with the endpoints the router computed, which are the
+  // pad's new anchor positions. The device therefore has to move before
+  // the endpoints are resolved, which is what this test is about.
+  const Point offset = mm(1, 0);
+  BoardPnsHostRef removed;
+  removed.netLine = original;
+  BoardPnsCommit commit;
+  commit.movedDevices.append(BoardPnsMovedDevice{device, offset});
+  commit.removed.append(removed);
+  commit.added.append(makeSegment(padPos + offset, end, Layer::topCopper(),
+                                  pad->getNetSignal()));
+  ASSERT_TRUE(mUndoStack->execCmd(new CmdBoardApplyPnsCommit(*mBoard, commit)));
+
+  EXPECT_EQ(device->getPosition(), devicePos + offset);
+  EXPECT_EQ(pad->getPosition(), padPos + offset);
+  EXPECT_EQ(netSegmentCount(), segments);
+  EXPECT_EQ(netLineCount(), lines);
+  BI_NetLine* moved = netLineBetween(*mBoard, padPos + offset, end);
+  ASSERT_NE(moved, nullptr) << "the trace did not follow the pad";
+  EXPECT_TRUE((&moved->getP1() == pad) || (&moved->getP2() == pad));
+
+  mUndoStack->undo();
+  EXPECT_EQ(device->getPosition(), devicePos);
+  EXPECT_EQ(pad->getPosition(), padPos);
+  EXPECT_EQ(netLineBetween(*mBoard, padPos + offset, end), nullptr);
+  BI_NetLine* restored = netLineBetween(*mBoard, padPos, end);
+  ASSERT_NE(restored, nullptr);
+  EXPECT_TRUE((&restored->getP1() == pad) || (&restored->getP2() == pad));
+
+  mUndoStack->redo();
+  EXPECT_EQ(device->getPosition(), devicePos + offset);
+  EXPECT_EQ(netLineCount(), lines);
+  ASSERT_NE(netLineBetween(*mBoard, padPos + offset, end), nullptr);
+}
+
 TEST_F(CmdBoardApplyPnsCommitTest, testRoutedCommitFromPadIntoFreeSpace) {
   BoardPnsRouter probeRouter(*mBoard, routerSettings());
   const std::optional<RouteStart> start = findStartPad(probeRouter, *mBoard);

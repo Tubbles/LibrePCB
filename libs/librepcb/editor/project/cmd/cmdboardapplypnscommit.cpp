@@ -27,6 +27,7 @@
 #include "cmdboardsplitnetline.h"
 #include "cmdboardviaedit.h"
 #include "cmdcombineboardnetsegments.h"
+#include "cmddeviceinstanceedit.h"
 #include "cmdremoveboarditems.h"
 #include "cmdsimplifyboardnetsegments.h"
 
@@ -76,6 +77,22 @@ bool CmdBoardApplyPnsCommit::performExecute() {
   QVector<BoardPnsNewItem> additions = mCommit.added;
   QSet<BI_NetLine*> netLinesToRemove;
   QSet<BI_Via*> viasToRemove;
+
+  // A footprint drag moves the devices whose pads were dragged, and it has
+  // to happen before anything else: a pad is a net line anchor, the traces
+  // below already end where the router put the pads, and every anchor is
+  // resolved against the board as it is at that moment. The router names
+  // one pad per entry and this list is already folded onto the devices,
+  // which is KiCad's `processedFootprints` set.
+  foreach (const BoardPnsMovedDevice& moved, mCommit.movedDevices) {
+    if ((!moved.device) || (!moved.device->isAddedToBoard())) {
+      continue;
+    }
+    std::unique_ptr<CmdDeviceInstanceEdit> cmd(
+        new CmdDeviceInstanceEdit(*moved.device));
+    cmd->setPosition(moved.device->getPosition() + moved.offset, true);
+    execNewChildCmd(cmd.release());  // can throw
+  }
 
   // A via the router only shoved keeps its identity, which matters because
   // its UUID is in the file format. Anything else the router updated is a

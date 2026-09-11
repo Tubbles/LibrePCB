@@ -29,6 +29,7 @@
 #include <QtWidgets>
 
 #include <memory>
+#include <utility>
 #include <vector>
 
 /*******************************************************************************
@@ -36,6 +37,7 @@
  ******************************************************************************/
 namespace librepcb {
 
+class BI_Device;
 class BI_NetLine;
 class BI_Pad;
 class BI_Via;
@@ -70,6 +72,13 @@ class PrimitivePathGraphicsItem;
  * how a shoved trace is shown at its new place rather than at both. Those are
  * made transparent for the lifetime of the frame and restored by the first
  * frame which does not name them, by #clear() and by the destructor.
+ *
+ * A frame of a footprint drag names the devices it is moving instead of
+ * drawing their copper itself, because the router has no geometry for a pad
+ * and the host already owns it. The device, its pads and its texts are drawn
+ * at the offset for the lifetime of the frame and put back the same way the
+ * hidden objects are, so the footprint follows the cursor while the traces
+ * hanging off its pads are drawn as any other dragged trace is.
  *
  * @note The scene owns every ::QGraphicsItem added to it and deletes what is
  *       left in it. Board2dTab destroys the scene before the tool state which
@@ -128,6 +137,13 @@ public:
    */
   int getHiddenBoardItemCount() const noexcept;
 
+  /**
+   * @brief Get how many graphics items are drawn at an offset right now
+   */
+  int getMovedBoardItemCount() const noexcept {
+    return static_cast<int>(mMovedItems.size());
+  }
+
   // General Methods
 
   /**
@@ -183,6 +199,14 @@ private:  // Methods
   void applyHiddenBoardItems(const BoardPnsPreview& preview) noexcept;
 
   /**
+   * @brief Draw the devices a footprint drag moves at their offset
+   *
+   * Puts everything the last frame moved back first, so a frame which
+   * moves nothing restores the board's own layout.
+   */
+  void applyMovedBoardItems(const BoardPnsPreview& preview) noexcept;
+
+  /**
    * @brief Get the graphics layer one preview style is drawn on
    *
    * @param style   The style the router asked for.
@@ -236,6 +260,13 @@ private:  // Data
   QSet<const BI_NetLine*> mHiddenNetLines;
   QSet<const BI_Via*> mHiddenVias;
   QSet<const BI_Pad*> mHiddenPads;
+
+  /// The graphics items which are drawn somewhere else right now, each
+  /// with the position it had before. Held as shared pointers rather than
+  /// as board objects, because a device, its pads and its texts are three
+  /// unrelated types with one thing in common, and because an item the
+  /// board dropped in the meantime is still there to be put back.
+  std::vector<std::pair<std::shared_ptr<QGraphicsItem>, QPointF>> mMovedItems;
 };
 
 /*******************************************************************************

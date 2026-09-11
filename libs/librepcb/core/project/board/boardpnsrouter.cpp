@@ -25,12 +25,15 @@
 #include "../../exceptions.h"
 #include "../../types/layer.h"
 #include "board.h"
+#include "items/bi_device.h"
+#include "items/bi_pad.h"
 
 #include <librepcb/rust-core/ffi.h>
 
 #include <QtCore>
 
 #include <algorithm>
+#include <vector>
 
 /*******************************************************************************
  *  Namespace
@@ -101,8 +104,8 @@ static BoardPnsRouter::StartResult toStartResult(
       return BoardPnsRouter::StartResult::PlacerRefused;
     case rs::PnsStartResult::NothingToDrag:
       return BoardPnsRouter::StartResult::NothingToDrag;
-    case rs::PnsStartResult::ComponentDragUnsupported:
-      return BoardPnsRouter::StartResult::ComponentDragUnsupported;
+    case rs::PnsStartResult::IncompleteDeviceDrag:
+      return BoardPnsRouter::StartResult::IncompleteDeviceDrag;
     case rs::PnsStartResult::NotDraggable:
       return BoardPnsRouter::StartResult::NotDraggable;
     case rs::PnsStartResult::DiffPairRefused:
@@ -125,6 +128,23 @@ static BoardPnsRouter::FixOutcome toFixOutcome(
     default:
       return BoardPnsRouter::FixOutcome::Continue;
   }
+}
+
+/**
+ * Count the pads of a device the snapshot gave a host ID to.
+ *
+ * A pad with no copper on any copper layer is not synced, so it can never
+ * be part of a drag and must not make a whole footprint look incomplete.
+ */
+static int countSyncedPads(const BoardPnsSnapshot& snapshot,
+                           const BI_Device& device) noexcept {
+  int count = 0;
+  foreach (const BI_Pad* pad, device.getPads()) {
+    if (snapshot.getHostId(*pad) != 0) {
+      ++count;
+    }
+  }
+  return count;
 }
 
 static rs::PnsRouterSettings toFfi(
@@ -251,20 +271,31 @@ BoardPnsRouter::StartResult BoardPnsRouter::startRouting(
 }
 
 BoardPnsRouter::StartResult BoardPnsRouter::startDragging(
-    const Point& pos, quint64 hostId, bool freeAngle) noexcept {
-  // The router drags a pad as a component drag, which moves the whole
-  // footprint, and this host applies no footprint move yet. Holes and
-  // copper graphics are obstacles the router never moves.
-  const BoardPnsHostRef ref = getHostRef(hostId);
-  if (ref.pad) {
-    return StartResult::ComponentDragUnsupported;
-  } else if (ref.hole || ref.polygon) {
-    return StartResult::NotDraggable;
+    const Point& pos, const QVector<quint64>& items, bool freeAngle) noexcept {
+  const StartResult check = checkDraggableItems(items);
+  if (check != StartResult::Ok) {
+    return check;
   }
-  const rs::PnsStartResult result =
-      rs::ffi_pnsrouter_start_dragging(*mHandle, toFfi(pos), hostId, freeAngle);
+
+  // The router takes the IDs as a pointer and a count. They are copied
+  // rather than handed over in place because quint64 and uint64_t are two
+  // distinct 64 bit types on this platform, which converts value by value
+  // and not pointer by pointer. An empty vector may answer a null pointer,
+  // which the router side reads as the empty set and refuses.
+  std::vector<uint64_t> ids;
+  ids.reserve(static_cast<std::size_t>(items.count()));
+  foreach (const quint64 hostId, items) {
+    ids.push_back(hostId);
+  }
+  const rs::PnsStartResult result = rs::ffi_pnsrouter_start_dragging(
+      *mHandle, toFfi(pos), ids.data(), ids.size(), freeAngle);
   updatePreview();
   return toStartResult(result);
+}
+
+BoardPnsRouter::StartResult BoardPnsRouter::startDragging(
+    const Point& pos, quint64 hostId, bool freeAngle) noexcept {
+  return startDragging(pos, QVector<quint64>{hostId}, freeAngle);
 }
 
 void BoardPnsRouter::moveTo(const Point& pos, quint64 endItem) noexcept {
@@ -415,6 +446,16 @@ void BoardPnsRouter::updatePreview() noexcept {
     mPreview.hidden.append(
         getHostRef(rs::ffi_pnsrouter_preview_hidden_at(*mHandle, i)));
   }
+
+  const std::size_t movedCount =
+      rs::ffi_pnsrouter_preview_moved_solid_count(*mHandle);
+  for (std::size_t i = 0; i < movedCount; ++i) {
+    uint64_t hostId = 0;
+    rs::PnsPoint offset = {};
+    rs::ffi_pnsrouter_preview_moved_solid_at(*mHandle, i, &hostId, &offset);
+    appendMovedDevice(mPreview.movedDevices, getHostRef(hostId),
+                      toPoint(offset));
+  }
 }
 
 void BoardPnsRouter::updateCommit() noexcept {
@@ -445,6 +486,79 @@ void BoardPnsRouter::updateCommit() noexcept {
     rs::ffi_pnsrouter_commit_updated_at(*mHandle, i, &hostId, &raw);
     mCommit.updated.append(qMakePair(getHostRef(hostId), toNewItem(raw)));
   }
+
+  const std::size_t movedCount =
+      rs::ffi_pnsrouter_commit_moved_solid_count(*mHandle);
+  for (std::size_t i = 0; i < movedCount; ++i) {
+    uint64_t hostId = 0;
+    rs::PnsPoint offset = {};
+    rs::ffi_pnsrouter_commit_moved_solid_at(*mHandle, i, &hostId, &offset);
+    appendMovedDevice(mCommit.movedDevices, getHostRef(hostId),
+                      toPoint(offset));
+  }
+}
+
+BoardPnsRouter::StartResult BoardPnsRouter::checkDraggableItems(
+    const QVector<quint64>& items) const noexcept {
+  // The router moves pads, the host moves the devices which own them, so a
+  // set of pads is only a drag this host can apply if it holds every pad
+  // of every device it names and nothing else. Holes, copper graphics and
+  // keepout zones are obstacles the router never moves at all.
+  QHash<BI_Device*, QSet<const BI_Pad*>> padsByDevice;
+  int others = 0;
+  foreach (const quint64 hostId, items) {
+    if (hostId == 0) {
+      continue;  // Dropped on the router side too.
+    }
+    const BoardPnsHostRef ref = getHostRef(hostId);
+    if (ref.hole || ref.polygon || ref.zone) {
+      return StartResult::NotDraggable;
+    } else if (ref.pad) {
+      BI_Device* device = ref.pad->getDevice();
+      if (!device) {
+        return StartResult::NotDraggable;  // A board pad moves with nothing.
+      }
+      padsByDevice[device].insert(ref.pad);
+    } else {
+      ++others;
+    }
+  }
+
+  if (padsByDevice.isEmpty()) {
+    return StartResult::Ok;  // A trace or via drag, which needs no gate.
+  } else if (others > 0) {
+    return StartResult::IncompleteDeviceDrag;  // A pad among traces.
+  }
+  for (auto it = padsByDevice.begin(); it != padsByDevice.end(); ++it) {
+    if (it.value().count() != countSyncedPads(*mSnapshot, *it.key())) {
+      return StartResult::IncompleteDeviceDrag;
+    }
+  }
+  return StartResult::Ok;
+}
+
+void BoardPnsRouter::appendMovedDevice(QVector<BoardPnsMovedDevice>& devices,
+                                       const BoardPnsHostRef& ref,
+                                       const Point& offset) noexcept {
+  BI_Device* device = ref.pad ? ref.pad->getDevice() : nullptr;
+  if (!device) {
+    return;  // Not a pad of a device, so there is nothing to move.
+  }
+
+  for (BoardPnsMovedDevice& moved : devices) {
+    if (moved.device == device) {
+      // Every pad of one device is moved by the same vector, so a second
+      // answer which disagrees is a router bug rather than a second move.
+      // The first one is kept, because dropping the drag is worse.
+      if (moved.offset != offset) {
+        qWarning() << "The router moved the pads of one device by different "
+                      "offsets:"
+                   << moved.offset << "and" << offset;
+      }
+      return;
+    }
+  }
+  devices.append(BoardPnsMovedDevice{device, offset});
 }
 
 BoardPnsPreviewVia BoardPnsRouter::toPreviewVia(

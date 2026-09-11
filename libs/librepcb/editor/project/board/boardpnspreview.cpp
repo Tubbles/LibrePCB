@@ -29,8 +29,11 @@
 #include "boardgraphicsscene.h"
 #include "graphicsitems/bgi_netline.h"
 #include "graphicsitems/bgi_pad.h"
+#include "graphicsitems/bgi_stroketext.h"
 #include "graphicsitems/bgi_via.h"
 
+#include <librepcb/core/project/board/items/bi_device.h>
+#include <librepcb/core/project/board/items/bi_pad.h>
 #include <librepcb/core/types/point.h>
 #include <librepcb/core/workspace/colorrole.h>
 
@@ -90,7 +93,8 @@ BoardPnsPreviewItems::BoardPnsPreviewItems(
     mUsedCircleItems(0),
     mHiddenNetLines(),
     mHiddenVias(),
-    mHiddenPads() {
+    mHiddenPads(),
+    mMovedItems() {
 }
 
 BoardPnsPreviewItems::~BoardPnsPreviewItems() noexcept {
@@ -146,6 +150,7 @@ void BoardPnsPreviewItems::update(const BoardPnsPreview& preview) noexcept {
   }
 
   parkUnusedItems();
+  applyMovedBoardItems(preview);
   applyHiddenBoardItems(preview);
 }
 
@@ -155,6 +160,7 @@ void BoardPnsPreviewItems::clear() noexcept {
   if (mScene) {
     parkUnusedItems();
   }
+  applyMovedBoardItems(BoardPnsPreview());
   applyHiddenBoardItems(BoardPnsPreview());
 }
 
@@ -256,13 +262,27 @@ void BoardPnsPreviewItems::parkUnusedItems() noexcept {
 
 void BoardPnsPreviewItems::applyHiddenBoardItems(
     const BoardPnsPreview& preview) noexcept {
+  // The pads of a footprint drag are hidden and moved at once by the
+  // router, which has no geometry to draw them with; here they are drawn
+  // at the offset by applyMovedBoardItems() instead, so hiding them too
+  // would take the copper of the dragged footprint off the screen.
+  QSet<const BI_Device*> movedDevices;
+  foreach (const BoardPnsMovedDevice& moved, preview.movedDevices) {
+    movedDevices.insert(moved.device);
+  }
+
   QSet<const BI_NetLine*> netLines;
   QSet<const BI_Via*> vias;
   QSet<const BI_Pad*> pads;
-  auto collect = [&netLines, &vias, &pads](const BoardPnsHostRef& ref) {
+  auto collect = [&netLines, &vias, &pads,
+                  &movedDevices](const BoardPnsHostRef& ref) {
     if (ref.netLine) netLines.insert(ref.netLine);
     if (ref.via) vias.insert(ref.via);
-    if (ref.pad) pads.insert(ref.pad);
+    // The reference comes from the frame which is being drawn, so the pad
+    // is a live board object and asking it for its device is safe.
+    if (ref.pad && (!movedDevices.contains(ref.pad->getDevice()))) {
+      pads.insert(ref.pad);
+    }
   };
   foreach (const BoardPnsHostRef& ref, preview.hidden) {
     collect(ref);
@@ -292,6 +312,41 @@ void BoardPnsPreviewItems::applyHiddenBoardItems(
   mHiddenNetLines = netLines;
   mHiddenVias = vias;
   mHiddenPads = pads;
+}
+
+void BoardPnsPreviewItems::applyMovedBoardItems(
+    const BoardPnsPreview& preview) noexcept {
+  // Put back what the last frame moved, then move what this one asks for.
+  // Restoring everything first keeps the bookkeeping to one list: a frame
+  // is a whole replacement, so there is nothing to carry over.
+  for (const auto& moved : mMovedItems) {
+    moved.first->setPos(moved.second);
+  }
+  mMovedItems.clear();
+  if (!mScene) {
+    return;  // The scene is gone, so there is nothing left to move.
+  }
+
+  auto move = [this](std::shared_ptr<QGraphicsItem> item,
+                     const QPointF& offset) {
+    if (!item) return;
+    mMovedItems.push_back(std::make_pair(item, item->pos()));
+    item->setPos(item->pos() + offset);
+  };
+  foreach (const BoardPnsMovedDevice& moved, preview.movedDevices) {
+    if (!moved.device) continue;
+    // Note: The pads and the texts of a device are graphics items of their
+    // own rather than children of its item, so each one has to follow the
+    // device by itself.
+    const QPointF offset = moved.offset.toPxQPointF();
+    move(mScene->getDevices().value(moved.device), offset);
+    foreach (BI_Pad* pad, moved.device->getPads()) {
+      move(mScene->getPads().value(pad), offset);
+    }
+    foreach (BI_StrokeText* text, moved.device->getStrokeTexts()) {
+      move(mScene->getStrokeTexts().value(text), offset);
+    }
+  }
 }
 
 std::shared_ptr<const GraphicsLayer> BoardPnsPreviewItems::getLayerOfStyle(

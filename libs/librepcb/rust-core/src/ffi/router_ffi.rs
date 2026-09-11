@@ -1461,10 +1461,11 @@ pub enum PnsStartResult {
   PlacerRefused = 5,
   /// `StartError::NothingToDrag`.
   NothingToDrag = 6,
-  /// Answered by the host, not by the engine: a pad would start KiCad's
-  /// component drag, which moves the footprint, and this host applies no
-  /// footprint move yet.
-  ComponentDragUnsupported = 7,
+  /// Answered by the host, not by the engine: a set of pads the host
+  /// cannot turn into a device move, which is a pad mixed with tracks or
+  /// only some of the pads of a device. The engine would drag those pads
+  /// happily and leave the traces of the pads left out behind.
+  IncompleteDeviceDrag = 7,
   /// `StartError::NotDraggable`.
   NotDraggable = 8,
   /// Any of the engine's differential pair refusals. This host never
@@ -1913,38 +1914,46 @@ extern "C" fn ffi_pnsrouter_start_routing(
   }
 }
 
-/// Begin dragging an existing track or via.
+/// Begin dragging existing board objects.
 ///
-/// Wraps `pnsrouter::router::Router::start_dragging`. `host_id` is the
-/// board object to drag, or zero for none, which is
-/// [`PnsStartResult::NothingToDrag`]. The crate takes a slice and drags
-/// several traces at once when it gets several, and a set of nothing but
-/// pads is KiCad's component drag, which moves the footprint. One host id
-/// is what crosses here today, so a multi drag waits for a host gesture
-/// that selects several traces, and the C++ side refuses a pad before it
-/// reaches here because it applies no footprint move yet.
+/// Wraps `pnsrouter::router::Router::start_dragging`. `host_ids` points at
+/// `host_id_count` board objects to drag; a zero in the list is dropped,
+/// and an empty set is [`PnsStartResult::NothingToDrag`]. The crate picks
+/// the algorithm from the shape of the set: nothing but pads is KiCad's
+/// component drag, which moves the whole footprint and reports the offset
+/// through [`ffi_pnsrouter_commit_moved_solid_at`], more than one track is
+/// a multi drag, and anything else is a single drag.
 ///
-/// `free_angle` drags the clicked corner without the 45 degree
-/// constraint; every other drag mode is decided by the crate from the
-/// clicked object and the click position.
+/// `free_angle` reaches the single dragger only and drags the clicked
+/// corner without the 45 degree constraint; every other drag mode is
+/// decided by the crate from the clicked object and the click position.
 ///
 /// On success the session holds the frame of a drag that has not moved
 /// yet, which is empty, so a host follows this with a move exactly as
 /// KiCad's does.
+///
+/// # Safety
+///
+/// `host_ids` must point at `host_id_count` readable `u64` for the
+/// duration of the call, or be null when the count is zero.
 #[no_mangle]
-extern "C" fn ffi_pnsrouter_start_dragging(
+unsafe extern "C" fn ffi_pnsrouter_start_dragging(
   obj: &mut PnsRouter,
   at: PnsPoint,
-  host_id: u64,
+  host_ids: *const u64,
+  host_id_count: usize,
   free_angle: bool,
 ) -> PnsStartResult {
-  let host = to_host_id(host_id);
-  let items: &[HostId] = match &host {
-    Some(host) => std::slice::from_ref(host),
-    None => &[],
+  let raw: &[u64] = if host_ids.is_null() || host_id_count == 0 {
+    &[]
+  } else {
+    // SAFETY: the caller promises the pointer and the count agree.
+    unsafe { std::slice::from_raw_parts(host_ids, host_id_count) }
   };
+  let items: Vec<HostId> =
+    raw.iter().filter_map(|id| to_host_id(*id)).collect();
 
-  match obj.router.start_dragging(to_cursor(at), items, free_angle) {
+  match obj.router.start_dragging(to_cursor(at), &items, free_angle) {
     Ok(frame) => {
       obj.set_frame(frame);
 
@@ -2300,6 +2309,38 @@ extern "C" fn ffi_pnsrouter_preview_hidden_at(
   host.0
 }
 
+/// How many board objects the host must draw at an offset.
+///
+/// One entry per pad a component drag is moving, and empty for every
+/// other session.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_moved_solid_count(
+  obj: &PnsRouter,
+) -> usize {
+  obj.frame.moved_solids.len()
+}
+
+/// One board object the host must draw at an offset, and the offset.
+///
+/// The pad is also in [`ffi_pnsrouter_preview_hidden_at`], because a host
+/// that cannot draw it moved must at least stop drawing it where it is.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_moved_solid_at(
+  obj: &PnsRouter,
+  index: usize,
+  out_host: &mut u64,
+  out_offset: &mut PnsPoint,
+) {
+  let Some((host, offset)) = obj.frame.moved_solids.get(index) else {
+    debug_assert!(false, "moved solid index {index} is out of range");
+
+    return;
+  };
+
+  *out_host = host.0;
+  *out_offset = to_ffi_point(*offset);
+}
+
 // ---------------------------------------------------------------------
 // Reading the latest commit
 // ---------------------------------------------------------------------
@@ -2370,6 +2411,38 @@ extern "C" fn ffi_pnsrouter_commit_updated_at(
 
   *out_host = host.0;
   *out_item = to_ffi_new_item(item);
+}
+
+/// How many pads the latest commit moved.
+///
+/// One entry per pad of the device a component drag moved, and empty for
+/// every other session.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_commit_moved_solid_count(obj: &PnsRouter) -> usize {
+  obj.diff.moved_solids.len()
+}
+
+/// One pad the latest commit moved, and how far it moved.
+///
+/// The pad itself is not in any of the other three lists: the host moves
+/// whatever owns the pad by the offset instead, once per owner, and the
+/// traces the drag re-shaped arrive as ordinary removals and additions
+/// whose endpoints are already the pad's new anchor positions.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_commit_moved_solid_at(
+  obj: &PnsRouter,
+  index: usize,
+  out_host: &mut u64,
+  out_offset: &mut PnsPoint,
+) {
+  let Some((host, offset)) = obj.diff.moved_solids.get(index) else {
+    debug_assert!(false, "moved solid index {index} is out of range");
+
+    return;
+  };
+
+  *out_host = host.0;
+  *out_offset = to_ffi_point(*offset);
 }
 
 // ---------------------------------------------------------------------

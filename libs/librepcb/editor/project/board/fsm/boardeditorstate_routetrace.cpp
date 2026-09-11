@@ -26,6 +26,7 @@
 #include "../../cmd/cmdboardapplypnscommit.h"
 #include "../boardgraphicsscene.h"
 #include "../boardpnspreview.h"
+#include "../boardselectionquery.h"
 #include "../graphicsitems/bgi_netline.h"
 #include "../graphicsitems/bgi_netpoint.h"
 #include "../graphicsitems/bgi_pad.h"
@@ -35,6 +36,7 @@
 #include <librepcb/core/geometry/via.h>
 #include <librepcb/core/project/board/board.h>
 #include <librepcb/core/project/board/boarddesignrules.h>
+#include <librepcb/core/project/board/items/bi_device.h>
 #include <librepcb/core/project/board/items/bi_netline.h>
 #include <librepcb/core/project/board/items/bi_netpoint.h>
 #include <librepcb/core/project/board/items/bi_netsegment.h>
@@ -662,7 +664,54 @@ bool BoardEditorState_RouteTrace::isDraggable(quint64 hostId) const noexcept {
   if (!mRouter) return false;
 
   const BoardPnsHostRef ref = mRouter->getHostRef(hostId);
-  return ref.netLine || ref.via;
+  return ref.netLine || ref.via || (ref.pad && ref.pad->getDevice());
+}
+
+QVector<quint64> BoardEditorState_RouteTrace::collectDragItems(
+    quint64 hostId) noexcept {
+  QVector<quint64> items{hostId};
+  if (!mRouter) return items;
+
+  const BoardPnsSnapshot& snapshot = mRouter->getSnapshot();
+  const BoardPnsHostRef ref = mRouter->getHostRef(hostId);
+  if (const BI_Pad* pad = ref.pad) {
+    // A footprint drag moves the device, so the router has to be given
+    // every pad of it: a pad left out would keep its traces where they
+    // are while the copper under them moves away.
+    items.clear();
+    if (const BI_Device* device = pad->getDevice()) {
+      foreach (const BI_Pad* devicePad, device->getPads()) {
+        if (const quint64 id = snapshot.getHostId(*devicePad)) {
+          items.append(id);
+        }
+      }
+    }
+    return items;
+  }
+
+  if (!ref.netLine) {
+    return items;  // A via drags whatever the router finds on it.
+  }
+
+  // A trace which the user selected together with other traces drags the
+  // whole selection, which is the router's multi drag. The selection is
+  // the board's own, so the gesture is "select, then drag one of them".
+  BoardGraphicsScene* scene = getActiveBoardScene();
+  if (!scene) return items;
+  BoardSelectionQuery query(*scene, true);
+  query.addSelectedNetLines();
+  const QSet<BI_NetLine*>& selected = query.getNetLines();
+  if ((selected.count() < 2) || (!selected.contains(ref.netLine))) {
+    return items;  // Not a selection, or a press next to one.
+  }
+
+  items.clear();
+  foreach (const BI_NetLine* netLine, selected) {
+    if (const quint64 id = snapshot.getHostId(*netLine)) {
+      items.append(id);
+    }
+  }
+  return items;
 }
 
 bool BoardEditorState_RouteTrace::exceedsDragThreshold(
@@ -713,7 +762,7 @@ void BoardEditorState_RouteTrace::startDragging(
   // between a corner drag and a segment drag from the clicked object and
   // from where on it the drag began, and keeps the 45 degree constraint.
   const BoardPnsRouter::StartResult result =
-      mRouter->startDragging(cursor.pos, cursor.item, false);
+      mRouter->startDragging(cursor.pos, collectDragItems(cursor.item), false);
   if (result != BoardPnsRouter::StartResult::Ok) {
     mAdapter.fsmSetStatusBarMessage(getStartResultMessage(result), 3000);
     return;
@@ -854,8 +903,8 @@ QString BoardEditorState_RouteTrace::getStartResultMessage(
       return tr("The router could not start a trace here.");
     case BoardPnsRouter::StartResult::NothingToDrag:
       return tr("There is nothing to drag here.");
-    case BoardPnsRouter::StartResult::ComponentDragUnsupported:
-      return tr("Footprints cannot be dragged with the router yet.");
+    case BoardPnsRouter::StartResult::IncompleteDeviceDrag:
+      return tr("A device can only be dragged by all of its pads.");
     case BoardPnsRouter::StartResult::NotDraggable:
       return tr("This object cannot be dragged.");
     default:

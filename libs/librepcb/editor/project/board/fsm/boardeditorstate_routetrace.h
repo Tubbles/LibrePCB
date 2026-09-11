@@ -77,12 +77,18 @@ class BoardPnsPreviewItems;
  * The tool has two gestures, told apart by whether the mouse travels while
  * the left button is down, which is what KiCad's router tool does too:
  *   - A click starts a route, and every further click fixes one leg of it.
- *   - Pressing on an existing trace or via and then moving further than
- *     #exceedsDragThreshold() drags that object with the router: every move
- *     takes it to the cursor, the release commits the drag where the cursor
- *     is, and escape throws it away. A press on a pad or on empty space is
- *     never a drag, and a drag ends the way a route commit does, with the
- *     board edited and a new session built over it.
+ *   - Pressing on an existing trace, via or pad and then moving further than
+ *     #exceedsDragThreshold() drags with the router: every move takes it to
+ *     the cursor, the release commits the drag where the cursor is, and
+ *     escape throws it away. A press on empty space is never a drag, and a
+ *     drag ends the way a route commit does, with the board edited and a new
+ *     session built over it.
+ *
+ * Which objects go into the drag is #collectDragItems(): a pressed pad drags
+ * its whole device, a pressed trace which is part of a selection of several
+ * traces drags all of them, and anything else drags itself. The router
+ * decides what that set means, which is a footprint drag, a multi drag or a
+ * single drag respectively.
  *
  * While ::librepcb::editor::PnsSessionRecorder is recording, every session
  * records what it is driven with and hands the recording to the recorder
@@ -266,11 +272,27 @@ private:  // Methods
   /**
    * @brief Check whether a board object is one the router can drag
    *
-   * Traces and vias are, the pads, holes and copper graphics the router
-   * only knows as obstacles are not. The router refuses the others itself;
-   * this is what keeps a press on one of them an ordinary click.
+   * Traces, vias and the pads of a device are; the holes, copper graphics
+   * and keepout zones the router only knows as obstacles are not, and
+   * neither is a board pad, which belongs to no device the drag could
+   * move. The router refuses the others itself; this is what keeps a press
+   * on one of them an ordinary click.
    */
   bool isDraggable(quint64 hostId) const noexcept;
+
+  /**
+   * @brief Get every board object one press drags
+   *
+   * A pad drags every pad of its device, which is what the router needs to
+   * make a footprint drag of it: it moves the pads it is given and the
+   * host moves the device as a whole. A trace which is selected together
+   * with other traces drags all of them, which is the router's multi drag.
+   * Everything else drags only itself.
+   *
+   * @return The host IDs, the pressed object included, or just the pressed
+   *         object if there is nothing to go with it.
+   */
+  QVector<quint64> collectDragItems(quint64 hostId) noexcept;
 
   /**
    * @brief Check whether the cursor left the press position far enough

@@ -39,6 +39,7 @@
  ******************************************************************************/
 namespace librepcb {
 
+class BI_Device;
 class Board;
 class Layer;
 class NetSignal;
@@ -114,6 +115,24 @@ struct BoardPnsViolation final {
 };
 
 /**
+ * @brief One device a footprint drag moves, and how far it moves
+ *
+ * The router names the pads it moved, one entry per pad, and every pad of
+ * one device carries the same offset; this is that list folded onto the
+ * board objects which actually move, which is what the host has to edit.
+ * The device is not const for the same reason
+ * ::librepcb::BoardPnsHostRef's pointers are not: the whole point of the
+ * answer is that ::librepcb::editor::CmdBoardApplyPnsCommit moves it.
+ */
+struct BoardPnsMovedDevice final {
+  BI_Device* device = nullptr;
+
+  /// How far the device has to move, which is a translation only: the
+  /// router never rotates or mirrors anything.
+  Point offset;
+};
+
+/**
  * @brief Everything a host has to draw after one router event
  *
  * A whole frame replacement: the host clears what it drew last time and
@@ -135,6 +154,11 @@ struct BoardPnsPreview final {
 
   /// Board objects the host must stop drawing while the session runs.
   QVector<BoardPnsHostRef> hidden;
+
+  /// The devices a footprint drag is moving, and by how much. Their pads
+  /// are in #hidden too, so a host which cannot draw them at the offset
+  /// at least stops drawing them where they are.
+  QVector<BoardPnsMovedDevice> movedDevices;
 };
 
 /*******************************************************************************
@@ -207,9 +231,15 @@ struct BoardPnsCommit final {
   QVector<BoardPnsNewItem> added;
   QVector<QPair<BoardPnsHostRef, BoardPnsNewItem>> updated;
 
+  /// The devices a footprint drag moved. They have to be moved before the
+  /// three lists above are applied, because the traces in them already end
+  /// on the pads' new positions.
+  QVector<BoardPnsMovedDevice> movedDevices;
+
   /// @brief Check whether the commit changes nothing at all
   bool isEmpty() const noexcept {
-    return removed.isEmpty() && added.isEmpty() && updated.isEmpty();
+    return removed.isEmpty() && added.isEmpty() && updated.isEmpty() &&
+        movedDevices.isEmpty();
   }
 };
 
@@ -295,9 +325,11 @@ public:
     StartPointViolatesRules,  ///< Even a minimum width trace collides here.
     PlacerRefused,  ///< The router could not build a placement.
     NothingToDrag,  ///< No object was named to drag.
-    ComponentDragUnsupported,  ///< A pad: the router would move the footprint.
-    NotDraggable,  ///< A pad, a hole or anything else which is not copper
-                   ///< the router owns.
+    IncompleteDeviceDrag,  ///< Pads which are not one whole device, which
+                           ///< would leave the traces of the pads left out
+                           ///< behind.
+    NotDraggable,  ///< A hole, a copper graphic, a keepout zone or a pad
+                   ///< of no device: obstacles the router never moves.
   };
 
   /**
@@ -446,21 +478,42 @@ public:
                            const Layer& layer) noexcept;
 
   /**
-   * @brief Begin dragging an existing trace or via
+   * @brief Begin dragging existing board objects
    *
    * Which kind of drag it becomes is the router's decision, taken from the
-   * object and from where on it the drag began: a click near an end of a
-   * trace drags that corner, a click in the middle drags the segment, and
-   * a via is dragged with whatever is connected to it. The algorithm is
-   * the mode the session was built with, exactly as for a route.
+   * shape of the set and from where on it the drag began: nothing but pads
+   * is a footprint drag, which moves the devices which own them and pulls
+   * the traces on their pads along; more than one trace is a multi drag,
+   * which moves every one of them; and a single trace or via is a plain
+   * drag, where a click near an end drags that corner and a click in the
+   * middle drags the segment. The algorithm is the mode the session was
+   * built with, exactly as for a route.
+   *
+   * The caller has to hand in a whole device's pads for a footprint drag,
+   * because the router moves only the pads it is given while the device
+   * moves as a whole: a set which is neither all the pads of the devices
+   * it names nor free of pads is refused with
+   * ::librepcb::BoardPnsRouter::StartResult::IncompleteDeviceDrag.
    *
    * The session holds the frame of a drag which has not moved yet, which
    * is empty, so a caller follows this with a #moveTo().
    *
    * @param pos         The already snapped point the drag starts at.
-   * @param hostId      The host ID of the object to drag.
+   * @param items       The host IDs of the objects to drag. Zeros are
+   *                    ignored, so an empty set and a set of nothing but
+   *                    zeros both answer
+   *                    ::librepcb::BoardPnsRouter::StartResult::NothingToDrag.
    * @param freeAngle   Whether to drag the clicked corner without the 45
-   *                    degree constraint.
+   *                    degree constraint. Reaches a single drag only.
+   */
+  StartResult startDragging(const Point& pos, const QVector<quint64>& items,
+                            bool freeAngle) noexcept;
+
+  /**
+   * @brief Begin dragging one existing trace or via
+   *
+   * The one object overload of #startDragging(), which is every gesture
+   * but the footprint drag and the multi drag.
    */
   StartResult startDragging(const Point& pos, quint64 hostId,
                             bool freeAngle) noexcept;
@@ -594,6 +647,29 @@ private:  // Methods
    * @brief Rebuild #mCommit from the commit the session holds
    */
   void updateCommit() noexcept;
+
+  /**
+   * @brief Check whether a set of board objects may be dragged at all
+   *
+   * The host's own gate in front of the router's: it decides what a set of
+   * pads means, because the router moves pads and the host moves devices.
+   *
+   * @return ::librepcb::BoardPnsRouter::StartResult::Ok if the router
+   *         should be asked.
+   */
+  StartResult checkDraggableItems(const QVector<quint64>& items) const noexcept;
+
+  /**
+   * @brief Add one moved pad to a list of moved devices
+   *
+   * The router reports one entry per pad and the host moves the device
+   * which owns it, so the pads of one device fold into one entry. A pad of
+   * no device is dropped: #checkDraggableItems() refuses to start such a
+   * drag, so this can only be reached by a caller which bypassed it.
+   */
+  static void appendMovedDevice(QVector<BoardPnsMovedDevice>& devices,
+                                const BoardPnsHostRef& ref,
+                                const Point& offset) noexcept;
 
   /**
    * @brief Convert one router preview via into board vocabulary
