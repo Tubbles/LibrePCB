@@ -141,6 +141,8 @@ static rs::PnsRouterSettings toFfi(
       (*settings.viaDiameter).toNm(),
       (*settings.viaDrill).toNm(),
       settings.shoveIterationLimit,
+      settings.allowDrcViolations,
+      settings.cornerMode90,
       settings.recordSession,
   };
 }
@@ -315,10 +317,6 @@ void BoardPnsRouter::flipPosture() noexcept {
   rs::ffi_pnsrouter_flip_posture(*mHandle);
 }
 
-void BoardPnsRouter::toggleCornerMode() noexcept {
-  rs::ffi_pnsrouter_toggle_corner_mode(*mHandle);
-}
-
 BoardPnsCommit BoardPnsRouter::stopRouting() noexcept {
   rs::ffi_pnsrouter_stop_routing(*mHandle);
   updatePreview();
@@ -469,20 +467,22 @@ BoardPnsNewItem BoardPnsRouter::toNewItem(
   result.net = toNetSignal(item.net);
   result.source = getHostRef(item.source);
   if (item.kind == rs::PnsNewGeometryKind::Via) {
-    result.kind = BoardPnsNewItem::Kind::Via;
-    result.position = toPoint(item.pos);
-    result.diameter = toPositiveLength(item.diameter);
-    result.drill = toPositiveLength(item.drill);
-    result.startLayer = toLayer(item.layer_start);
-    result.endLayer = toLayer(item.layer_end);
+    BoardPnsNewVia via;
+    via.position = toPoint(item.pos);
+    via.diameter = toPositiveLength(item.diameter);
+    via.drill = toPositiveLength(item.drill);
+    via.startLayer = toLayer(item.layer_start);
+    via.endLayer = toLayer(item.layer_end);
+    result.geometry = via;
   } else {
-    result.kind = BoardPnsNewItem::Kind::Segment;
-    result.start = toPoint(item.p1);
-    result.end = toPoint(item.p2);
-    result.width = toPositiveLength(item.width);
+    BoardPnsNewSegment segment;
+    segment.start = toPoint(item.p1);
+    segment.end = toPoint(item.p2);
+    segment.width = toPositiveLength(item.width);
     // A trace occupies exactly one layer, so both ends of the router's
     // layer range are the same.
-    result.layer = toLayer(item.layer_start);
+    segment.layer = toLayer(item.layer_start);
+    result.geometry = segment;
   }
   return result;
 }
@@ -491,7 +491,7 @@ const Layer* BoardPnsRouter::toLayer(int denseIndex) const noexcept {
   return BoardPnsSnapshot::fromDenseLayerIndex(denseIndex, mInnerLayerCount);
 }
 
-const NetSignal* BoardPnsRouter::toNetSignal(quint32 netNumber) const noexcept {
+NetSignal* BoardPnsRouter::toNetSignal(quint32 netNumber) const noexcept {
   return mSnapshot->getNetSignal(netNumber);
 }
 

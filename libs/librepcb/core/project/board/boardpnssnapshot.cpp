@@ -368,8 +368,7 @@ quint32 BoardPnsSnapshot::getNetNumber(const NetSignal* net) const noexcept {
   return net ? mNetNumbers.value(net, 0) : 0;
 }
 
-const NetSignal* BoardPnsSnapshot::getNetSignal(
-    quint32 netNumber) const noexcept {
+NetSignal* BoardPnsSnapshot::getNetSignal(quint32 netNumber) const noexcept {
   if ((netNumber == 0) ||
       (netNumber > static_cast<quint32>(mNetSignals.count()))) {
     return nullptr;
@@ -471,7 +470,7 @@ void BoardPnsSnapshot::addNets(const Board& board) {
         rs::ffi_pnsrouter_snapshot_add_net_class(*mHandle, &ffiRules));
   }
 
-  foreach (const NetSignal* net, circuit.getNetSignals()) {
+  foreach (NetSignal* net, circuit.getNetSignals()) {
     const std::size_t index = netClassIndex.value(&net->getNetClass(), 0);
     const quint32 number = rs::ffi_pnsrouter_snapshot_add_net(*mHandle, index);
     mNetNumbers.insert(net, number);
@@ -483,10 +482,10 @@ void BoardPnsSnapshot::addNets(const Board& board) {
 }
 
 void BoardPnsSnapshot::addTracesAndVias(const Board& board) {
-  foreach (const BI_NetSegment* segment, board.getNetSegments()) {
+  foreach (BI_NetSegment* segment, board.getNetSegments()) {
     const quint32 net = getNetNumber(segment->getNetSignal());
 
-    foreach (const BI_NetLine* netLine, segment->getNetLines()) {
+    foreach (BI_NetLine* netLine, segment->getNetLines()) {
       const int layer =
           toDenseLayerIndex(netLine->getLayer(), mInnerLayerCount);
       if (layer < 0) {
@@ -507,7 +506,7 @@ void BoardPnsSnapshot::addTracesAndVias(const Board& board) {
             QString("trace %1").arg(netLine->getUuid().toStr()));
     }
 
-    foreach (const BI_Via* via, segment->getVias()) {
+    foreach (BI_Via* via, segment->getVias()) {
       const int start =
           toDenseLayerIndex(via->getVia().getStartLayer(), mInnerLayerCount);
       const int end =
@@ -543,19 +542,19 @@ void BoardPnsSnapshot::addTracesAndVias(const Board& board) {
 }
 
 void BoardPnsSnapshot::addPads(const Board& board) {
-  foreach (const BI_NetSegment* segment, board.getNetSegments()) {
-    foreach (const BI_Pad* pad, segment->getPads()) {
+  foreach (BI_NetSegment* segment, board.getNetSegments()) {
+    foreach (BI_Pad* pad, segment->getPads()) {
       addPad(*pad, mInnerLayerCount);
     }
   }
   foreach (const BI_Device* device, board.getDeviceInstances()) {
-    foreach (const BI_Pad* pad, device->getPads()) {
+    foreach (BI_Pad* pad, device->getPads()) {
       addPad(*pad, mInnerLayerCount);
     }
   }
 }
 
-void BoardPnsSnapshot::addPad(const BI_Pad& pad, int innerLayerCount) {
+void BoardPnsSnapshot::addPad(BI_Pad& pad, int innerLayerCount) {
   if (mHostIds.contains(&pad)) {
     return;  // A pad reachable from both a net segment and a device.
   }
@@ -685,7 +684,7 @@ void BoardPnsSnapshot::addPad(const BI_Pad& pad, int innerLayerCount) {
 }
 
 void BoardPnsSnapshot::addHoles(const Board& board) {
-  foreach (const BI_Hole* hole, board.getHoles()) {
+  foreach (BI_Hole* hole, board.getHoles()) {
     BoardPnsHostRef ref;
     ref.hole = hole;
     rs::PnsItemHeader header =
@@ -702,7 +701,7 @@ void BoardPnsSnapshot::addHoles(const Board& board) {
 }
 
 void BoardPnsSnapshot::addPolygons(const Board& board) {
-  foreach (const BI_Polygon* polygon, board.getPolygons()) {
+  foreach (BI_Polygon* polygon, board.getPolygons()) {
     const Layer& layer = polygon->getData().getLayer();
     const bool boardEdge = layer.isBoardEdge();
     const int denseLayer = toDenseLayerIndex(layer, mInnerLayerCount);
@@ -735,7 +734,7 @@ void BoardPnsSnapshot::addPolygons(const Board& board) {
   }
 }
 
-void BoardPnsSnapshot::addBoardEdge(const BI_Polygon& polygon, quint64 id) {
+void BoardPnsSnapshot::addBoardEdge(BI_Polygon& polygon, quint64 id) {
   const Path path = polygon.getData()
                         .getPath()
                         .flattenedArcs(maxArcTolerance())
@@ -768,12 +767,12 @@ void BoardPnsSnapshot::addBoardEdge(const BI_Polygon& polygon, quint64 id) {
 }
 
 void BoardPnsSnapshot::addZones(const Board& board) {
-  foreach (const BI_Zone* zone, board.getZones()) {
+  foreach (BI_Zone* zone, board.getZones()) {
     addZone(*zone);
   }
 }
 
-void BoardPnsSnapshot::addZone(const BI_Zone& zone) {
+void BoardPnsSnapshot::addZone(BI_Zone& zone) {
   const BoardZoneData& data = zone.getData();
 
   // Only the no copper rule keeps the router out. The other three are about

@@ -136,28 +136,28 @@
          </property>
         </widget>
        </item>
-       <item row="5" column="0">
+       <item row="6" column="0">
         <widget class="QLabel" name="label_10">
          <property name="text">
           <string>Rendering Method:</string>
          </property>
         </widget>
        </item>
-       <item row="6" column="0">
+       <item row="7" column="0">
         <widget class="QLabel" name="lblDesktopIntegration">
          <property name="text">
           <string>Desktop Integration:</string>
          </property>
         </widget>
        </item>
-       <item row="7" column="0">
+       <item row="8" column="0">
         <widget class="QLabel" name="label">
          <property name="text">
           <string>Dismissed Messages:</string>
          </property>
         </widget>
        </item>
-       <item row="7" column="1">
+       <item row="8" column="1">
         <widget class="QPushButton" name="btnResetDismissedMessages">
          <property name="sizePolicy">
           <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
@@ -218,14 +218,34 @@
          </item>
         </layout>
        </item>
+       <item row="5" column="0">
+        <widget class="QLabel" name="lblPnsAllowDrcViolations">
+         <property name="toolTip">
+          <string>Only the router's "mark obstacles" mode is affected. With this on, a route which collides with something is committed anyway and the design rule check reports it afterwards. Off by default, which refuses such a route instead.</string>
+         </property>
+         <property name="text">
+          <string>Allow DRC Violations:</string>
+         </property>
+        </widget>
+       </item>
        <item row="5" column="1">
+        <widget class="QCheckBox" name="cbxPnsAllowDrcViolations">
+         <property name="toolTip">
+          <string>Only the router's "mark obstacles" mode is affected. With this on, a route which collides with something is committed anyway and the design rule check reports it afterwards. Off by default, which refuses such a route instead.</string>
+         </property>
+         <property name="text">
+          <string>Commit Routes Which Break Design Rules</string>
+         </property>
+        </widget>
+       </item>
+       <item row="6" column="1">
         <widget class="QCheckBox" name="cbxUseOpenGl">
          <property name="text">
           <string>Use OpenGL Hardware Acceleration</string>
          </property>
         </widget>
        </item>
-       <item row="6" column="1">
+       <item row="7" column="1">
         <layout class="QVBoxLayout" name="verticalLayout_8">
          <property name="spacing">
           <number>3</number>

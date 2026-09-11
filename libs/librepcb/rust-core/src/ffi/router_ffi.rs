@@ -19,6 +19,7 @@
 //! C++ builder turns that into a `RuntimeError` naming the board item.
 
 use super::cpp_ffi::{qstring_set, QString};
+use pnsrouter::geometry::direction45::CornerMode;
 use pnsrouter::geometry::line_chain::LineChain;
 use pnsrouter::geometry::seg::Seg;
 use pnsrouter::geometry::shape::Shape;
@@ -373,6 +374,19 @@ pub struct PnsRouterSettings {
   /// 250. The host is expected to keep it in a sane range. Zero would make
   /// every shove fail immediately.
   pub shove_iteration_limit: u32,
+  /// Whether a route which breaks a rule may be committed anyway.
+  ///
+  /// `RoutingSettings::allow_drc_violations`, KiCad's "Allow DRC
+  /// violations". The engine only honours it in mark obstacles mode, which
+  /// is the mode whose job is to show what a route breaks, so it changes
+  /// nothing in the other two.
+  pub allow_drc_violations: bool,
+  /// Whether corners are built at 90 degrees instead of 45.
+  ///
+  /// `RoutingSettings::corner_mode`, of which the engine has the two
+  /// mitered ones: false is `CornerMode::Mitered45` and true is
+  /// `CornerMode::Mitered90`.
+  pub corner_mode_90: bool,
   /// Whether the session records everything it is driven with.
   ///
   /// Read by [`ffi_pnsrouter_new`] only, because a recording has to start
@@ -1635,8 +1649,8 @@ impl PnsRouter {
 ///
 /// `base` is the settings to change, which is
 /// `RoutingSettings::default()` for a fresh session and the session's own
-/// settings for an update, so that a corner mode the user cycled survives
-/// a width change.
+/// settings for an update, so that everything the host has no control for
+/// survives a change to the values it does control.
 fn derive_settings(
   base: RoutingSettings,
   rules: &LibrePcbRules,
@@ -1650,6 +1664,12 @@ fn derive_settings(
       _ => RouterMode::Walkaround,
     },
     shove_iteration_limit: settings.shove_iteration_limit,
+    allow_drc_violations: settings.allow_drc_violations,
+    corner_mode: if settings.corner_mode_90 {
+      CornerMode::Mitered90
+    } else {
+      CornerMode::Mitered45
+    },
     ..base
   };
 
@@ -2074,13 +2094,11 @@ extern "C" fn ffi_pnsrouter_flip_posture(obj: &mut PnsRouter) {
   obj.router.flip_posture();
 }
 
-/// Cycle between the 45 and the 90 degree corner mode.
-///
-/// Wraps `pnsrouter::router::Router::toggle_corner_mode`.
-#[no_mangle]
-extern "C" fn ffi_pnsrouter_toggle_corner_mode(obj: &mut PnsRouter) {
-  obj.router.toggle_corner_mode();
-}
+// The corner mode has no entry point of its own: it is
+// `PnsRouterSettings::corner_mode_90`, which the host sets absolutely
+// rather than cycling, so that a rebuilt session starts on the mode the
+// user left. `pnsrouter::router::Router::toggle_corner_mode` is the
+// engine's own cycle and is not wrapped.
 
 /// Commit what was routed and end the session.
 ///

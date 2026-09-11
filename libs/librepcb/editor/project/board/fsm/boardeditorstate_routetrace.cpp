@@ -73,8 +73,12 @@ BoardEditorState_RouteTrace::BoardEditorState_RouteTrace(
     mPendingDrag(std::nullopt),
     mCurrentNetSignal(nullptr) {
   // The workspace settings dialog stays usable while the tool is open, so
-  // a new iteration limit has to reach the running session too.
+  // a new iteration limit, and a new answer to whether a colliding route
+  // may be committed, have to reach the running session too.
   connect(&mContext.workspace.getSettings().pnsShoveIterationLimit,
+          &WorkspaceSettingsItem::edited, this,
+          &BoardEditorState_RouteTrace::updateRouterSettings);
+  connect(&mContext.workspace.getSettings().pnsAllowDrcViolations,
           &WorkspaceSettingsItem::edited, this,
           &BoardEditorState_RouteTrace::updateRouterSettings);
 
@@ -391,12 +395,11 @@ void BoardEditorState_RouteTrace::setCornerMode(bool corners90) noexcept {
   if (corners90 == mCornerMode90) return;
 
   mCornerMode90 = corners90;
-  if (mRouter) {
-    mRouter->toggleCornerMode();
-  }
   emit cornerModeChanged(mCornerMode90);
 
-  // The toggle produces no frame, so follow it with a move.
+  // Like the mode, the corner mode may change in the middle of a route; the
+  // router applies it from the next move on.
+  updateRouterSettings();
   moveToCursor();
 }
 
@@ -509,13 +512,10 @@ bool BoardEditorState_RouteTrace::createRouter() noexcept {
             getViaSize(),
             getViaDrillDiameter(),
             getShoveIterationLimit(),
+            getAllowDrcViolations(),
+            mCornerMode90,
             mContext.pnsRecorder.isRecording(),
         }));
-    if (mCornerMode90) {
-      // Every session starts on 45 degree corners because the corner mode is
-      // not part of the settings, so re-apply it here.
-      mRouter->toggleCornerMode();
-    }
     return true;
   } catch (const Exception& e) {
     QMessageBox::critical(parentWidget(), tr("Error"), e.getMsg());
@@ -538,12 +538,18 @@ void BoardEditorState_RouteTrace::updateRouterSettings() noexcept {
       getViaSize(),
       getViaDrillDiameter(),
       getShoveIterationLimit(),
+      getAllowDrcViolations(),
+      mCornerMode90,
   });
 }
 
 uint BoardEditorState_RouteTrace::getShoveIterationLimit() const noexcept {
   const WorkspaceSettings& settings = mContext.workspace.getSettings();
   return qBound(1U, settings.pnsShoveIterationLimit.get(), 10000U);
+}
+
+bool BoardEditorState_RouteTrace::getAllowDrcViolations() const noexcept {
+  return mContext.workspace.getSettings().pnsAllowDrcViolations.get();
 }
 
 BoardEditorState_RouteTrace::SnappedCursor
@@ -767,7 +773,6 @@ void BoardEditorState_RouteTrace::fixRoute(const SnappedCursor& cursor,
   }
 
   if (outcome == BoardPnsRouter::FixOutcome::Finished) {
-    // Copy, the session which owns it is replaced below.
     const BoardPnsCommit commit = mRouter->getCommit();
     if (mPreviewItems) {
       mPreviewItems->clear();
@@ -794,8 +799,7 @@ void BoardEditorState_RouteTrace::stopRouting() noexcept {
 
 void BoardEditorState_RouteTrace::applyCommit(
     const BoardPnsCommit& commit) noexcept {
-  if (commit.removed.isEmpty() && commit.added.isEmpty() &&
-      commit.updated.isEmpty()) {
+  if (commit.isEmpty()) {
     return;
   }
 

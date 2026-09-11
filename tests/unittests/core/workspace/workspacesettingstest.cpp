@@ -78,6 +78,7 @@ TEST_F(WorkspaceSettingsTest, testLoadFromSExpression) {
       " (schematic_grid_style dots)\n"
       " (board_grid_style none)\n"
       " (pns_shove_iteration_limit 50)\n"
+      " (pns_allow_drc_violations true)\n"
       " (dismissed_messages\n"
       "  (message \"SOME_MESSAGE: foo\")\n"
       "  (message \"SOME_MESSAGE: bar\")\n"
@@ -109,6 +110,7 @@ TEST_F(WorkspaceSettingsTest, testLoadFromSExpression) {
   EXPECT_EQ(GridStyle::Dots, obj.schematicGridStyle.get());
   EXPECT_EQ(GridStyle::None, obj.boardGridStyle.get());
   EXPECT_EQ(50U, obj.pnsShoveIterationLimit.get());
+  EXPECT_EQ(true, obj.pnsAllowDrcViolations.get());
   EXPECT_EQ((QSet<QString>{"SOME_MESSAGE: foo", "SOME_MESSAGE: bar"}),
             obj.dismissedMessages.get());
 }
@@ -134,6 +136,7 @@ TEST_F(WorkspaceSettingsTest, testStoreAndLoad) {
   obj1.schematicGridStyle.set(GridStyle::None);
   obj1.boardGridStyle.set(GridStyle::Lines);
   obj1.pnsShoveIterationLimit.set(50);
+  obj1.pnsAllowDrcViolations.set(!obj1.pnsAllowDrcViolations.get());
   obj1.dismissedMessages.set({"foo", "bar"});
   const std::unique_ptr<const SExpression> root1 = obj1.serialize();
 
@@ -162,6 +165,8 @@ TEST_F(WorkspaceSettingsTest, testStoreAndLoad) {
   EXPECT_EQ(obj1.boardGridStyle.get(), obj2.boardGridStyle.get());
   EXPECT_EQ(obj1.pnsShoveIterationLimit.get(),
             obj2.pnsShoveIterationLimit.get());
+  EXPECT_EQ(obj1.pnsAllowDrcViolations.get(),
+            obj2.pnsAllowDrcViolations.get());
   EXPECT_EQ(obj1.dismissedMessages.get(), obj2.dismissedMessages.get());
   const std::unique_ptr<const SExpression> root2 = obj2.serialize();
 

@@ -111,6 +111,7 @@ WorkspaceSettings::WorkspaceSettings(QObject* parent)
     schematicGridStyle("schematic_grid_style", GridStyle::Lines, this),
     boardGridStyle("board_grid_style", GridStyle::Lines, this),
     pnsShoveIterationLimit("pns_shove_iteration_limit", 250U, this),
+    pnsAllowDrcViolations("pns_allow_drc_violations", false, this),
     schematicColorSchemes(WorkspaceSettingsItem_ColorSchemes::Kind::sSchematic,
                           this),
     boardColorSchemes(WorkspaceSettingsItem_ColorSchemes::Kind::sBoard, this),

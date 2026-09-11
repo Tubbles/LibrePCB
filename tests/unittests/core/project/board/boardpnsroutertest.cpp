@@ -64,13 +64,16 @@ static std::unique_ptr<Project> openGerberTestProject() {
 }
 
 static BoardPnsRouter::Settings makeSettings(
-    BoardPnsRouter::Mode mode = BoardPnsRouter::Mode::Walkaround) noexcept {
-  return BoardPnsRouter::Settings{
+    BoardPnsRouter::Mode mode = BoardPnsRouter::Mode::Walkaround,
+    bool allowDrcViolations = false) noexcept {
+  BoardPnsRouter::Settings settings{
       mode,
       PositiveLength(Length(250000)),  // 0.25 mm trace, above the minimum.
       PositiveLength(Length(700000)),  // 0.7 mm via.
       PositiveLength(Length(300000)),  // 0.3 mm via drill.
   };
+  settings.allowDrcViolations = allowDrcViolations;
+  return settings;
 }
 
 static bool isNull(const BoardPnsHostRef& ref) noexcept {
@@ -313,8 +316,9 @@ static bool isInZone(const Point& p1, const Point& p2,
 
 static bool isCopperInZone(const BoardPnsNewItem& item,
                            const Path& outline) noexcept {
-  return (item.kind == BoardPnsNewItem::Kind::Segment) &&
-      isInZone(item.start, item.end, item.width, outline);
+  const BoardPnsNewSegment* segment = item.getSegment();
+  return segment &&
+      isInZone(segment->start, segment->end, segment->width, outline);
 }
 
 /**
@@ -329,6 +333,45 @@ static int piecesInZone(const BoardPnsPreviewItem& item,
     }
   }
   return count;
+}
+
+/**
+ * @brief Find a point on the fixture's own copper a route cannot be fixed on
+ *
+ * The position of a top layer pad of another net, which is copper the route
+ * has to end inside of. Which pad that is depends on the fixture's geometry,
+ * which is exactly what the tests must not depend on, so every candidate is
+ * offered and the first one whose route mark obstacles mode refuses to fix is
+ * picked. Each attempt gets its own session because a fix ends one.
+ */
+static std::optional<Point> findCollidingTarget(const Board& board,
+                                                const RouteStart& start) {
+  foreach (const BI_Device* device, board.getDeviceInstances()) {
+    foreach (const BI_Pad* pad, device->getPads()) {
+      if (pad->getNetSignal() == start.pad->getNetSignal()) {
+        continue;  // Same net, so its copper is no obstacle to this route.
+      }
+      if (pad->getGeometries().value(&Layer::topCopper()).isEmpty()) {
+        continue;
+      }
+      BoardPnsRouter probe(board,
+                           makeSettings(BoardPnsRouter::Mode::MarkObstacles));
+      if (probe.startRouting(start.pos, start.hostId, Layer::topCopper()) !=
+          BoardPnsRouter::StartResult::Ok) {
+        continue;
+      }
+      probe.moveTo(pad->getPosition(), 0);
+      if (probe.getPreview().violations.isEmpty()) {
+        continue;  // Nothing in the way, so there is nothing to allow.
+      }
+      if (probe.fixRoute(pad->getPosition(), 0, true) !=
+          BoardPnsRouter::FixOutcome::Continue) {
+        continue;
+      }
+      return pad->getPosition();
+    }
+  }
+  return std::nullopt;
 }
 
 /**
@@ -389,15 +432,17 @@ static std::optional<Point> longestSegmentMiddle(
   std::optional<Point> middle;
   Length longest(0);
   foreach (const BoardPnsNewItem& item, items) {
-    if (item.kind != BoardPnsNewItem::Kind::Segment) {
+    const BoardPnsNewSegment* segment = item.getSegment();
+    if (!segment) {
       continue;
     }
-    const Length length = *(item.end - item.start).getLength();
+    const Point& start = segment->start;
+    const Point& end = segment->end;
+    const Length length = *(end - start).getLength();
     if (length > longest) {
       longest = length;
-      middle = Point(
-          Length((item.start.getX().toNm() + item.end.getX().toNm()) / 2),
-          Length((item.start.getY().toNm() + item.end.getY().toNm()) / 2));
+      middle = Point(Length((start.getX().toNm() + end.getX().toNm()) / 2),
+                     Length((start.getY().toNm() + end.getY().toNm()) / 2));
     }
   }
   return middle;
@@ -465,15 +510,16 @@ TEST_F(BoardPnsRouterTest, testRouteFromPadIntoFreeSpace) {
 
   // The commit is the whole point: the route becomes traces on the layer it
   // was placed on, on the pad's net, at the width the session was given.
-  const BoardPnsCommit& commit = router.getCommit();
+  const BoardPnsCommit commit = router.getCommit();
   EXPECT_TRUE(commit.removed.isEmpty());
   int segments = 0;
   foreach (const BoardPnsNewItem& item, commit.added) {
-    ASSERT_EQ(item.kind, BoardPnsNewItem::Kind::Segment);
+    const BoardPnsNewSegment* segment = item.getSegment();
+    ASSERT_NE(segment, nullptr);
     ++segments;
-    EXPECT_EQ(item.layer, &Layer::topCopper());
+    EXPECT_EQ(segment->layer, &Layer::topCopper());
     EXPECT_EQ(item.net, start->pad->getNetSignal());
-    EXPECT_EQ((*item.width).toNm(), 250000);
+    EXPECT_EQ((*segment->width).toNm(), 250000);
     EXPECT_TRUE(isNull(item.source));
   }
   EXPECT_GT(segments, 0);
@@ -609,19 +655,21 @@ TEST_F(BoardPnsRouterTest, testDragNetLineAside) {
 
   // The dragged trace is gone and what replaces it is on its layer and on
   // its net, which is what makes this a move rather than a new route.
-  const BoardPnsCommit& commit = router.getCommit();
+  const BoardPnsCommit commit = router.getCommit();
   EXPECT_TRUE(dropsNetLine(commit, *drag->netLine));
   int segments = 0;
   foreach (const BoardPnsNewItem& item, commit.added) {
-    ASSERT_EQ(item.kind, BoardPnsNewItem::Kind::Segment);
+    const BoardPnsNewSegment* segment = item.getSegment();
+    ASSERT_NE(segment, nullptr);
     ++segments;
-    EXPECT_EQ(item.layer, &layer);
+    EXPECT_EQ(segment->layer, &layer);
     EXPECT_EQ(item.net, net);
   }
   for (const auto& pair : commit.updated) {
-    ASSERT_EQ(pair.second.kind, BoardPnsNewItem::Kind::Segment);
+    const BoardPnsNewSegment* segment = pair.second.getSegment();
+    ASSERT_NE(segment, nullptr);
     ++segments;
-    EXPECT_EQ(pair.second.layer, &layer);
+    EXPECT_EQ(segment->layer, &layer);
     EXPECT_EQ(pair.second.net, net);
   }
   EXPECT_GT(segments, 0);
@@ -760,6 +808,35 @@ TEST_F(BoardPnsRouterTest, testShoveIterationLimitReachesTheEngine) {
 }
 
 /*******************************************************************************
+ *  Corner mode
+ ******************************************************************************/
+
+/**
+ * @brief The corner mode is part of the settings, not a command
+ *
+ * Which is what lets a session rebuilt after a commit start on the mode the
+ * user left, without the tool state re-toggling it. The session recording is
+ * the only read back of the engine's settings.
+ */
+TEST_F(BoardPnsRouterTest, testCornerModeReachesTheEngine) {
+  EXPECT_FALSE(makeSettings().cornerMode90);  // 45 degrees by default.
+
+  BoardPnsRouter::Settings settings = makeSettings();
+  settings.recordSession = true;
+  {
+    BoardPnsRouter router(*mBoard, settings);
+    EXPECT_TRUE(router.takeRecording().contains(
+        "\nsettings 0 corner-mode mitered-45\n"));
+  }
+
+  settings.cornerMode90 = true;
+  BoardPnsRouter router(*mBoard, settings);
+  const QString recording = router.takeRecording();
+  EXPECT_TRUE(recording.contains("\nsettings 0 corner-mode mitered-90\n"))
+      << recording.left(400).toStdString();
+}
+
+/*******************************************************************************
  *  Keepout zones
  ******************************************************************************/
 
@@ -799,12 +876,16 @@ TEST_F(BoardPnsRouterTest, testRouteWalksAroundAKeepoutZone) {
   ASSERT_EQ(router.fixRoute(*target, 0, true),
             BoardPnsRouter::FixOutcome::Finished);
 
-  const BoardPnsCommit& commit = router.getCommit();
+  const BoardPnsCommit commit = router.getCommit();
   ASSERT_FALSE(commit.added.isEmpty());
   foreach (const BoardPnsNewItem& item, commit.added) {
+    const BoardPnsNewSegment* segment = item.getSegment();
+    if (!segment) {
+      continue;  // isCopperInZone() answers false for a via anyway.
+    }
     EXPECT_FALSE(isCopperInZone(item, outline))
-        << "a segment ending at " << item.end.getX().toNm() << ", "
-        << item.end.getY().toNm() << " nm is in the zone";
+        << "a segment ending at " << segment->end.getX().toNm() << ", "
+        << segment->end.getY().toNm() << " nm is in the zone";
   }
 }
 
@@ -840,11 +921,11 @@ TEST_F(BoardPnsRouterTest, testStartInsideAKeepoutZoneIsRefused) {
  * than bending the route the way ::testRouteWalksAroundAKeepoutZone expects
  * of the walkaround, and rather than stopping the session.
  *
- * Whether a route which breaks a rule may then be committed is the router's
- * own `allow_drc_violations` setting, KiCad's "Allow DRC violations" switch.
- * This host does not expose it, so a colliding fix is refused in this mode
- * whatever it collided with; the keepout is no different from the copper the
- * fixture already has in the way.
+ * Whether a route which breaks a rule may then be committed is
+ * ::librepcb::BoardPnsRouter::Settings::allowDrcViolations, which is off
+ * here, so a colliding fix is refused whatever it collided with; the keepout
+ * is no different from the copper the fixture already has in the way. The
+ * switch itself is ::testAllowDrcViolationsCommitsACollidingRoute.
  */
 TEST_F(BoardPnsRouterTest, testMarkObstaclesReportsAKeepoutZone) {
   BoardPnsRouter probeRouter(*mBoard, makeSettings());
@@ -898,6 +979,56 @@ TEST_F(BoardPnsRouterTest, testMarkObstaclesReportsAKeepoutZone) {
     }
   }
   EXPECT_GT(through, 0);
+}
+
+/*******************************************************************************
+ *  Allow DRC violations
+ ******************************************************************************/
+
+/**
+ * @brief The DRC violation switch decides whether a colliding route commits
+ *
+ * KiCad's "Allow DRC violations", which only mark obstacles mode acts on: the
+ * mode puts the trace where the user pointed whatever is there, and this is
+ * what says whether the user may then keep it. LibrePCB's own design rule
+ * check reports the collision afterwards either way.
+ */
+TEST_F(BoardPnsRouterTest, testAllowDrcViolationsCommitsACollidingRoute) {
+  BoardPnsRouter probeRouter(*mBoard, makeSettings());
+  const std::optional<RouteStart> start = findStartPad(probeRouter, *mBoard);
+  ASSERT_TRUE(start.has_value()) << "no routable top layer pad with a net";
+  const std::optional<Point> target = findCollidingTarget(*mBoard, *start);
+  ASSERT_TRUE(target.has_value()) << "no copper of another net to route into";
+
+  // The control: with the switch off the fix is refused and the session
+  // carries on placing, so nothing reaches the board.
+  {
+    BoardPnsRouter router(*mBoard,
+                          makeSettings(BoardPnsRouter::Mode::MarkObstacles));
+    ASSERT_EQ(
+        router.startRouting(start->pos, start->hostId, Layer::topCopper()),
+        BoardPnsRouter::StartResult::Ok);
+    router.moveTo(*target, 0);
+    EXPECT_FALSE(router.getPreview().violations.isEmpty());
+    EXPECT_EQ(router.fixRoute(*target, 0, true),
+              BoardPnsRouter::FixOutcome::Continue);
+    EXPECT_TRUE(router.isRoutingInProgress());
+    EXPECT_TRUE(router.getCommit().isEmpty());
+  }
+
+  // The same route with the switch on is committed, collision and all.
+  BoardPnsRouter router(
+      *mBoard, makeSettings(BoardPnsRouter::Mode::MarkObstacles, true));
+  ASSERT_EQ(router.startRouting(start->pos, start->hostId, Layer::topCopper()),
+            BoardPnsRouter::StartResult::Ok);
+  router.moveTo(*target, 0);
+  EXPECT_FALSE(router.getPreview().violations.isEmpty());
+  ASSERT_EQ(router.fixRoute(*target, 0, true),
+            BoardPnsRouter::FixOutcome::Finished);
+  EXPECT_FALSE(router.isRoutingInProgress());
+  const BoardPnsCommit commit = router.getCommit();
+  EXPECT_FALSE(commit.isEmpty());
+  EXPECT_FALSE(commit.added.isEmpty());
 }
 
 /*******************************************************************************

@@ -350,6 +350,18 @@ public:
   WorkspaceSettingsItem_GenericValue<uint> pnsShoveIterationLimit;
 
   /**
+   * @brief Push & shove router: commit routes which break design rules
+   *
+   * KiCad's "Allow DRC violations". Only the router's "mark obstacles" mode
+   * acts on it: that mode puts the trace where the user pointed and marks
+   * what it runs into, and this decides whether such a trace may then be
+   * committed. The design rule check reports it afterwards either way.
+   *
+   * Default: false
+   */
+  WorkspaceSettingsItem_GenericValue<bool> pnsAllowDrcViolations;
+
+  /**
    * @brief Schematic color schemes
    *
    * @see ::librepcb::WorkspaceSettingsItem_ColorSchemes

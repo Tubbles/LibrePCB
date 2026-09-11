@@ -205,7 +205,7 @@ private:  // Methods
    * @brief Push the current width, via size, via drill and workspace
    *        settings into the session
    *
-   * Also connected to the workspace setting the router reads, so that a
+   * Also connected to the workspace settings the router reads, so that a
    * change made while the tool is open reaches the running session. Does
    * nothing when no session is open.
    */
@@ -219,6 +219,15 @@ private:  // Methods
    * time the user waits for.
    */
   uint getShoveIterationLimit() const noexcept;
+
+  /**
+   * @brief Get whether a colliding route may be committed
+   *
+   * The workspace setting behind KiCad's "Allow DRC violations", which only
+   * ::librepcb::BoardPnsRouter::Mode::MarkObstacles acts on. Any value is
+   * valid, so unlike the iteration limit there is nothing to clamp.
+   */
+  bool getAllowDrcViolations() const noexcept;
 
   /**
    * @brief Snap the cursor to the grid and to the board object under it
@@ -382,8 +391,8 @@ private:  // Data
   BoardPnsRouter::Mode mCurrentMode;
 
   /// Whether the router builds 90 degree corners instead of 45 degree ones.
-  /// Not part of ::librepcb::BoardPnsRouter::Settings, so it has to be
-  /// re-applied to every new session.
+  /// Part of ::librepcb::BoardPnsRouter::Settings, so a session rebuilt
+  /// after a commit starts on it without being re-toggled.
   bool mCornerMode90;
 
   PositiveLength mCurrentWidth;  ///< the current trace width

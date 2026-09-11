@@ -59,14 +59,22 @@ struct PnsSnapshot;
  * Exactly one of the pointers is set. The router speaks in host IDs, which
  * are indices into ::librepcb::BoardPnsSnapshot::getHostRefs(), so this is
  * how a router answer is mapped back onto the board.
+ *
+ * The pointers are not const, because what a caller does with a board object
+ * the router named is edit it: ::librepcb::editor::CmdBoardApplyPnsCommit
+ * hands them to the remove and edit commands. No const is laundered by that,
+ * the board's own accessors hand out mutable children from a const board
+ * (::librepcb::Board::getNetSegments() is const and yields
+ * `BI_NetSegment*`), which is why the snapshot can fill these in while only
+ * reading the board.
  */
 struct BoardPnsHostRef final {
-  const BI_NetLine* netLine = nullptr;
-  const BI_Via* via = nullptr;
-  const BI_Pad* pad = nullptr;
-  const BI_Hole* hole = nullptr;
-  const BI_Polygon* polygon = nullptr;
-  const BI_Zone* zone = nullptr;
+  BI_NetLine* netLine = nullptr;
+  BI_Via* via = nullptr;
+  BI_Pad* pad = nullptr;
+  BI_Hole* hole = nullptr;
+  BI_Polygon* polygon = nullptr;
+  BI_Zone* zone = nullptr;
 };
 
 /*******************************************************************************
@@ -150,9 +158,11 @@ public:
    * @return The net signal, or `nullptr` for net number 0 and for a number
    *         this snapshot never handed out. The router's internal orphan
    *         net, which a route placed in free space gets, is one of the
-   *         latter.
+   *         latter. Not const for the same reason
+   *         ::librepcb::BoardPnsHostRef's pointers are not: the commit
+   *         applier puts the net signal into a new net segment.
    */
-  const NetSignal* getNetSignal(quint32 netNumber) const noexcept;
+  NetSignal* getNetSignal(quint32 netNumber) const noexcept;
 
   // General Methods
 
@@ -227,7 +237,7 @@ private:  // Methods
    * solid instead would make the pad collide with itself under the drill to
    * drill clearance rule.
    */
-  void addPad(const BI_Pad& pad, int innerLayerCount);
+  void addPad(BI_Pad& pad, int innerLayerCount);
 
   /**
    * @brief Add one board outline or cutout, edge by edge
@@ -238,7 +248,7 @@ private:  // Methods
    * start. Each edge becomes its own zero width obstacle instead, which is
    * how KiCad syncs its own board edges.
    */
-  void addBoardEdge(const BI_Polygon& polygon, quint64 id);
+  void addBoardEdge(BI_Polygon& polygon, quint64 id);
 
   /**
    * @brief Add one keepout zone, one obstacle per triangle of its outline
@@ -255,7 +265,7 @@ private:  // Methods
    * an approximation: an obstacle of the wrong shape is worse than none, and
    * the design rule check still reports copper in the zone.
    */
-  void addZone(const BI_Zone& zone);
+  void addZone(BI_Zone& zone);
 
   /**
    * @brief Reserve the next host ID for a board object
@@ -274,7 +284,7 @@ private:  // Data
   QVector<BoardPnsHostRef> mHostRefs;
   QHash<const void*, quint64> mHostIds;
   QHash<const NetSignal*, quint32> mNetNumbers;
-  QVector<const NetSignal*> mNetSignals;
+  QVector<NetSignal*> mNetSignals;
 };
 
 /*******************************************************************************

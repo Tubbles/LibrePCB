@@ -927,6 +927,23 @@ struct PnsRouterSettings {
    */
   uint32_t shove_iteration_limit;
   /**
+   * Whether a route which breaks a rule may be committed anyway.
+   *
+   * `RoutingSettings::allow_drc_violations`, KiCad's "Allow DRC
+   * violations". The engine only honours it in mark obstacles mode, which
+   * is the mode whose job is to show what a route breaks, so it changes
+   * nothing in the other two.
+   */
+  bool allow_drc_violations;
+  /**
+   * Whether corners are built at 90 degrees instead of 45.
+   *
+   * `RoutingSettings::corner_mode`, of which the engine has the two
+   * mitered ones: false is `CornerMode::Mitered45` and true is
+   * `CornerMode::Mitered90`.
+   */
+  bool corner_mode_90;
+  /**
    * Whether the session records everything it is driven with.
    *
    * Read by [`ffi_pnsrouter_new`] only, because a recording has to start
@@ -1702,13 +1719,6 @@ bool ffi_pnsrouter_toggle_via_placement(PnsRouter * NONNULL obj);
  * Wraps `pnsrouter::router::Router::flip_posture`.
  */
 void ffi_pnsrouter_flip_posture(PnsRouter * NONNULL obj);
-
-/**
- * Cycle between the 45 and the 90 degree corner mode.
- *
- * Wraps `pnsrouter::router::Router::toggle_corner_mode`.
- */
-void ffi_pnsrouter_toggle_corner_mode(PnsRouter * NONNULL obj);
 
 /**
  * Commit what was routed and end the session.

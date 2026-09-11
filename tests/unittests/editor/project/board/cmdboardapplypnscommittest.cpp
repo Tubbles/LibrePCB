@@ -72,27 +72,30 @@ static Point mm(qreal x, qreal y) noexcept {
 
 static BoardPnsNewItem makeSegment(const Point& start, const Point& end,
                                    const Layer& layer,
-                                   const NetSignal* net) noexcept {
+                                   NetSignal* net) noexcept {
+  BoardPnsNewSegment segment;
+  segment.start = start;
+  segment.end = end;
+  segment.width = traceWidth();
+  segment.layer = &layer;
+
   BoardPnsNewItem item;
-  item.kind = BoardPnsNewItem::Kind::Segment;
   item.net = net;
-  item.start = start;
-  item.end = end;
-  item.width = traceWidth();
-  item.layer = &layer;
+  item.geometry = segment;
   return item;
 }
 
-static BoardPnsNewItem makeVia(const Point& pos,
-                               const NetSignal* net) noexcept {
+static BoardPnsNewItem makeVia(const Point& pos, NetSignal* net) noexcept {
+  BoardPnsNewVia via;
+  via.position = pos;
+  via.diameter = PositiveLength(700000);  // 0.7 mm.
+  via.drill = PositiveLength(300000);  // 0.3 mm.
+  via.startLayer = &Layer::topCopper();
+  via.endLayer = &Layer::botCopper();
+
   BoardPnsNewItem item;
-  item.kind = BoardPnsNewItem::Kind::Via;
   item.net = net;
-  item.position = pos;
-  item.diameter = PositiveLength(700000);  // 0.7 mm.
-  item.drill = PositiveLength(300000);  // 0.3 mm.
-  item.startLayer = &Layer::topCopper();
-  item.endLayer = &Layer::botCopper();
+  item.geometry = via;
   return item;
 }
 

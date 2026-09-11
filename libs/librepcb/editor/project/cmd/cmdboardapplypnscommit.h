@@ -140,10 +140,14 @@ private:  // Methods
   bool performExecute() override;
 
   /**
-   * @brief Check whether an updated via only moved
+   * @brief Get the new geometry of an updated via which only moved
+   *
+   * @return The via geometry to move the board object to, or `nullptr` if
+   *         the update is not a plain move and has to become a removal plus
+   *         an addition instead.
    */
-  static bool isViaMove(const BoardPnsHostRef& ref,
-                        const BoardPnsNewItem& item) noexcept;
+  static const BoardPnsNewVia* getViaMove(const BoardPnsHostRef& ref,
+                                          const BoardPnsNewItem& item) noexcept;
 
   /**
    * @brief Collect one removed host object into the sets to remove
@@ -155,7 +159,7 @@ private:  // Methods
   /**
    * @brief Turn one added segment into a net line
    */
-  void addSegment(const BoardPnsNewItem& item);
+  void addSegment(const BoardPnsNewSegment& item, NetSignal* net);
 
   /**
    * @brief Put a via nothing ended on into a net segment of its own

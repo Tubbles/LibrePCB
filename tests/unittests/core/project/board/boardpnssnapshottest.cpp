@@ -207,7 +207,16 @@ TEST_F(BoardPnsSnapshotTest, testSnapshotHandleLifetime) {
 TEST_F(BoardPnsSnapshotTest, testRouterHandleLifetime) {
   RustHandle<rs::PnsSnapshot> snapshot = makeSnapshot(4);
 
-  const rs::PnsRouterSettings settings{2, 250000, 700000, 300000, 250, false};
+  const rs::PnsRouterSettings settings{
+      2,  // Walkaround.
+      250000,  // 0.25 mm trace.
+      700000,  // 0.7 mm via.
+      300000,  // 0.3 mm via drill.
+      250,  // Shove iteration limit.
+      false,  // Allow DRC violations.
+      false,  // 90 degree corners.
+      false,  // Record the session.
+  };
   rs::PnsRouter* obj = rs::ffi_pnsrouter_new(snapshot.mObj, &settings);
   ASSERT_NE(obj, nullptr);
   snapshot.mObj = nullptr;  // Consumed by ffi_pnsrouter_new().

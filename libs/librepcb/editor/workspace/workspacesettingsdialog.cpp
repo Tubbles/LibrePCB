@@ -743,6 +743,10 @@ void WorkspaceSettingsDialog::loadSettings() noexcept {
   mUi->spbPnsShoveIterationLimit->setValue(
       mSettings.pnsShoveIterationLimit.get());
 
+  // Push & Shove Allow DRC Violations
+  mUi->cbxPnsAllowDrcViolations->setChecked(
+      mSettings.pnsAllowDrcViolations.get());
+
   // Use OpenGL
   mUi->cbxUseOpenGl->setChecked(mSettings.useOpenGl.get());
 
@@ -810,6 +814,10 @@ void WorkspaceSettingsDialog::saveSettings() noexcept {
     // Push & Shove Iteration Limit
     mSettings.pnsShoveIterationLimit.set(
         mUi->spbPnsShoveIterationLimit->value());
+
+    // Push & Shove Allow DRC Violations
+    mSettings.pnsAllowDrcViolations.set(
+        mUi->cbxPnsAllowDrcViolations->isChecked());
 
     // Use OpenGL
     mSettings.useOpenGl.set(mUi->cbxUseOpenGl->isChecked());

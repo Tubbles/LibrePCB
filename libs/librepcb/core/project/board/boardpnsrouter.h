@@ -32,6 +32,7 @@
 
 #include <memory>
 #include <optional>
+#include <variant>
 
 /*******************************************************************************
  *  Namespace / Forward Declarations
@@ -141,40 +142,57 @@ struct BoardPnsPreview final {
  ******************************************************************************/
 
 /**
- * @brief One trace or via a routing session produced
- *
- * A single track placer emits nothing else. ::librepcb::BoardPnsNewItem::kind
- * says which half of the struct is meaningful.
+ * @brief The straight trace half of a ::librepcb::BoardPnsNewItem
  */
-struct BoardPnsNewItem final {
-  enum class Kind {
-    Segment,  ///< A straight trace.
-    Via,  ///< A via.
-  };
-
-  Kind kind = Kind::Segment;
-
-  /// The net, or `nullptr` for no net. A route placed in free space has
-  /// none: the router puts it on an internal orphan net which has no
-  /// counterpart in the circuit.
-  const NetSignal* net = nullptr;
-
-  /// The board object this item descends from, all null for a freshly
-  /// routed one. Set for the halves an existing trace was split into.
-  BoardPnsHostRef source;
-
-  // Kind::Segment
+struct BoardPnsNewSegment final {
   Point start;
   Point end;
   PositiveLength width = PositiveLength(Length(1));
   const Layer* layer = nullptr;
+};
 
-  // Kind::Via
+/**
+ * @brief The via half of a ::librepcb::BoardPnsNewItem
+ */
+struct BoardPnsNewVia final {
   Point position;
   PositiveLength diameter = PositiveLength(Length(1));
   PositiveLength drill = PositiveLength(Length(1));
   const Layer* startLayer = nullptr;
   const Layer* endLayer = nullptr;
+};
+
+/**
+ * @brief One trace or via a routing session produced
+ *
+ * A single track placer emits nothing else. The geometry is a variant rather
+ * than both structs plus a discriminator, so that a via cannot carry a trace
+ * width and a trace cannot carry a drill diameter. Read it with #getSegment()
+ * and #getVia(), each of which answers `nullptr` for the other kind.
+ */
+struct BoardPnsNewItem final {
+  /// The net, or `nullptr` for no net. A route placed in free space has
+  /// none: the router puts it on an internal orphan net which has no
+  /// counterpart in the circuit. Not const, unlike the net of a preview
+  /// item, because a commit is applied to the board rather than drawn.
+  NetSignal* net = nullptr;
+
+  /// The board object this item descends from, all null for a freshly
+  /// routed one. Set for the halves an existing trace was split into.
+  BoardPnsHostRef source;
+
+  /// What was placed.
+  std::variant<BoardPnsNewSegment, BoardPnsNewVia> geometry;
+
+  /// @brief Get the trace, or `nullptr` if this item is a via
+  const BoardPnsNewSegment* getSegment() const noexcept {
+    return std::get_if<BoardPnsNewSegment>(&geometry);
+  }
+
+  /// @brief Get the via, or `nullptr` if this item is a trace
+  const BoardPnsNewVia* getVia() const noexcept {
+    return std::get_if<BoardPnsNewVia>(&geometry);
+  }
 };
 
 /**
@@ -188,6 +206,11 @@ struct BoardPnsCommit final {
   QVector<BoardPnsHostRef> removed;
   QVector<BoardPnsNewItem> added;
   QVector<QPair<BoardPnsHostRef, BoardPnsNewItem>> updated;
+
+  /// @brief Check whether the commit changes nothing at all
+  bool isEmpty() const noexcept {
+    return removed.isEmpty() && added.isEmpty() && updated.isEmpty();
+  }
 };
 
 /*******************************************************************************
@@ -239,6 +262,18 @@ public:
     /// smaller value bounds the time one mouse move can take on a densely
     /// populated board.
     uint shoveIterationLimit = 250;
+
+    /// Whether a route which breaks a design rule may be committed anyway,
+    /// which is KiCad's "Allow DRC violations". Only
+    /// ::librepcb::BoardPnsRouter::Mode::MarkObstacles honours it, that
+    /// being the mode whose job is to show what a route breaks; the other
+    /// two never place colliding copper either way.
+    bool allowDrcViolations = false;
+
+    /// Whether corners are built at 90 degrees instead of 45. Part of the
+    /// settings rather than a command of its own, so that a session
+    /// rebuilt after a commit starts on the mode the user left.
+    bool cornerMode90 = false;
 
     /// Whether the session records what it is driven with, so that
     /// #takeRecording() can answer with it. Off by default: a recording
@@ -344,8 +379,12 @@ public:
    *
    * Refreshed by every call that can commit, which is #fixRoute(), #finish()
    * and #stopRouting(). Cleared by #abortRouting().
+   *
+   * By value, like #stopRouting()'s answer: a caller applies the commit by
+   * building a new session over the edited board, which destroys this one,
+   * so a reference into it would dangle exactly where it is used.
    */
-  const BoardPnsCommit& getCommit() const noexcept { return mCommit; }
+  BoardPnsCommit getCommit() const noexcept { return mCommit; }
 
   /**
    * @brief Get the board object of each host ID
@@ -492,11 +531,6 @@ public:
   void flipPosture() noexcept;
 
   /**
-   * @brief Cycle between the 45 and the 90 degree corner mode
-   */
-  void toggleCornerMode() noexcept;
-
-  /**
    * @brief Commit what was routed and end the session
    *
    * A drag commits nothing here, which is the router's own semantics:
@@ -518,7 +552,10 @@ public:
    *
    * A running placement keeps the geometry it started with, because the
    * router has no entry point for a mid route size change yet. A caller
-   * applies a width change by fixing and starting a new leg.
+   * applies a width change by fixing and starting a new leg. Everything
+   * which is not geometry, which is the mode, the shove iteration limit,
+   * the DRC violation switch and the corner mode, reaches a running
+   * placement on its next #moveTo().
    *
    * ::librepcb::BoardPnsRouter::Settings::recordSession is ignored here: a
    * recording opens with the board snapshot, which only exists while the
@@ -576,7 +613,7 @@ private:  // Methods
   /**
    * @brief Map an FFI net number back to a net signal
    */
-  const NetSignal* toNetSignal(quint32 netNumber) const noexcept;
+  NetSignal* toNetSignal(quint32 netNumber) const noexcept;
 
 private:  // Data
   /// Kept alive for its host ID and net tables. Not movable, hence the

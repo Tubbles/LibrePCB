@@ -84,10 +84,10 @@ bool CmdBoardApplyPnsCommit::performExecute() {
   // a net segment re-creates the whole segment and the moved via has to
   // carry its new position into that copy.
   for (const auto& pair : mCommit.updated) {
-    if (isViaMove(pair.first, pair.second)) {
-      BI_Via* via = const_cast<BI_Via*>(pair.first.via);
+    if (const BoardPnsNewVia* moved = getViaMove(pair.first, pair.second)) {
+      BI_Via* via = pair.first.via;
       std::unique_ptr<CmdBoardViaEdit> cmd(new CmdBoardViaEdit(*via));
-      cmd->setPosition(pair.second.position, true);
+      cmd->setPosition(moved->position, true);
       rememberSegment(&via->getNetSegment());
       execNewChildCmd(cmd.release());  // can throw
     } else {
@@ -117,16 +117,16 @@ bool CmdBoardApplyPnsCommit::performExecute() {
 
   // Vias are held back until a net line ends on one, see PendingVia.
   for (const BoardPnsNewItem& item : additions) {
-    if ((item.kind == BoardPnsNewItem::Kind::Via) && item.startLayer &&
-        item.endLayer) {
-      mPendingVias.append(PendingVia{item.position, item.diameter, item.drill,
-                                     item.startLayer, item.endLayer,
-                                     const_cast<NetSignal*>(item.net), false});
+    const BoardPnsNewVia* via = item.getVia();
+    if (via && via->startLayer && via->endLayer) {
+      mPendingVias.append(PendingVia{via->position, via->diameter, via->drill,
+                                     via->startLayer, via->endLayer, item.net,
+                                     false});
     }
   }
   for (const BoardPnsNewItem& item : additions) {
-    if (item.kind == BoardPnsNewItem::Kind::Segment) {
-      addSegment(item);  // can throw
+    if (const BoardPnsNewSegment* segment = item.getSegment()) {
+      addSegment(*segment, item.net);  // can throw
     }
   }
   for (PendingVia& via : mPendingVias) {
@@ -155,12 +155,15 @@ bool CmdBoardApplyPnsCommit::performExecute() {
  *  Private Methods
  ******************************************************************************/
 
-bool CmdBoardApplyPnsCommit::isViaMove(const BoardPnsHostRef& ref,
-                                       const BoardPnsNewItem& item) noexcept {
-  return ref.via && ref.via->isAddedToBoard() &&
-      (item.kind == BoardPnsNewItem::Kind::Via) &&
-      (&ref.via->getVia().getStartLayer() == item.startLayer) &&
-      (&ref.via->getVia().getEndLayer() == item.endLayer);
+const BoardPnsNewVia* CmdBoardApplyPnsCommit::getViaMove(
+    const BoardPnsHostRef& ref, const BoardPnsNewItem& item) noexcept {
+  const BoardPnsNewVia* via = item.getVia();
+  if (via && ref.via && ref.via->isAddedToBoard() &&
+      (&ref.via->getVia().getStartLayer() == via->startLayer) &&
+      (&ref.via->getVia().getEndLayer() == via->endLayer)) {
+    return via;
+  }
+  return nullptr;
 }
 
 void CmdBoardApplyPnsCommit::collectRemoval(const BoardPnsHostRef& ref,
@@ -169,13 +172,14 @@ void CmdBoardApplyPnsCommit::collectRemoval(const BoardPnsHostRef& ref,
   // Pads, holes and copper graphics are obstacles the router never removes,
   // so a reference to one of them is silently ignored here.
   if (ref.netLine && ref.netLine->isAddedToBoard()) {
-    netLines.insert(const_cast<BI_NetLine*>(ref.netLine));
+    netLines.insert(ref.netLine);
   } else if (ref.via && ref.via->isAddedToBoard()) {
-    vias.insert(const_cast<BI_Via*>(ref.via));
+    vias.insert(ref.via);
   }
 }
 
-void CmdBoardApplyPnsCommit::addSegment(const BoardPnsNewItem& item) {
+void CmdBoardApplyPnsCommit::addSegment(const BoardPnsNewSegment& item,
+                                        NetSignal* net) {
   if (!item.layer) {
     throw LogicError(__FILE__, __LINE__, "Routed trace without a layer.");
   }
@@ -187,16 +191,15 @@ void CmdBoardApplyPnsCommit::addSegment(const BoardPnsNewItem& item) {
   // Resolve both ends against the board as it is right now. Splitting an
   // existing net line for the first end happens before the second end is
   // looked up, so the second end can anchor on the split point.
-  const FoundAnchor a = resolveAnchor(item.start, layer, item.net);
-  const FoundAnchor b = resolveAnchor(item.end, layer, item.net);
+  const FoundAnchor a = resolveAnchor(item.start, layer, net);
+  const FoundAnchor b = resolveAnchor(item.end, layer, net);
 
   // Add to the net segment an anchor already belongs to, or open a new one.
   // A footprint pad with no trace on it yet has no net segment, so it can
   // join whichever segment the other end picks.
   BI_NetSegment* segment = a.segment ? a.segment : b.segment;
   if (!segment) {
-    CmdBoardNetSegmentAdd* cmd =
-        new CmdBoardNetSegmentAdd(mBoard, const_cast<NetSignal*>(item.net));
+    CmdBoardNetSegmentAdd* cmd = new CmdBoardNetSegmentAdd(mBoard, net);
     execNewChildCmd(cmd);  // can throw
     segment = cmd->getNetSegment();
     if (!segment) {
