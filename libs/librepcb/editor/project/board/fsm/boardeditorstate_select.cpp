@@ -64,6 +64,7 @@
 #include "../graphicsitems/bgi_stroketext.h"
 #include "../graphicsitems/bgi_via.h"
 #include "../graphicsitems/bgi_zone.h"
+#include "../tracelengthcomparisondialog.h"
 
 #include <librepcb/core/attribute/attributesubstitutor.h>
 #include <librepcb/core/import/dxfreader.h>
@@ -83,6 +84,7 @@
 #include <librepcb/core/project/board/items/bi_stroketext.h>
 #include <librepcb/core/project/board/items/bi_via.h>
 #include <librepcb/core/project/board/items/bi_zone.h>
+#include <librepcb/core/project/circuit/bus.h>
 #include <librepcb/core/project/circuit/circuit.h>
 #include <librepcb/core/project/circuit/componentinstance.h>
 #include <librepcb/core/project/circuit/componentsignalinstance.h>
@@ -950,6 +952,15 @@ bool BoardEditorState_Select::processGraphicsSceneRightMouseButtonReleased(
             netline->setSelected(true);
             measureSelectedItems(netline->getNetLine());
           }));
+      QAction* aCompare = cmd.compareTraceLengths.createAction(
+          &menu, this, [this, netline]() {
+            netline->setSelected(true);
+            compareTraceLengths();
+          });
+      aCompare->setEnabled(
+          getTraceLengthNetNames(getTraceLengthSegments(&netline->getNetLine()))
+              .count() >= 2);
+      mb.addAction(aCompare);
     } else if (auto netpoint =
                    std::dynamic_pointer_cast<BGI_NetPoint>(selectedItem)) {
       const Point pos = netpoint->getNetPoint().getPosition();
@@ -978,6 +989,17 @@ bool BoardEditorState_Select::processGraphicsSceneRightMouseButtonReleased(
               }
               measureSelectedItems(*netline);
             }));
+        QAction* aCompare = cmd.compareTraceLengths.createAction(
+            &menu, this, [this, scene, netline]() {
+              if (auto item = scene->getNetLines().value(netline)) {
+                item->setSelected(true);
+              }
+              compareTraceLengths();
+            });
+        aCompare->setEnabled(
+            getTraceLengthNetNames(getTraceLengthSegments(netline)).count() >=
+            2);
+        mb.addAction(aCompare);
       }
     } else if (auto via = std::dynamic_pointer_cast<BGI_Via>(selectedItem)) {
       const Point pos = via->getVia().getPosition();
@@ -1854,6 +1876,54 @@ void BoardEditorState_Select::measureLengthInDirection(
       break;
     }
   }
+}
+
+QVector<TraceLengthSegment> BoardEditorState_Select::getTraceLengthSegments(
+    const BI_NetLine* additional) noexcept {
+  BoardGraphicsScene* scene = getActiveBoardScene();
+  if (!scene) return QVector<TraceLengthSegment>();
+
+  BoardSelectionQuery query(*scene, true);
+  query.addSelectedNetLines();
+  QSet<const BI_NetLine*> netLines;
+  foreach (const BI_NetLine* netLine, query.getNetLines()) {
+    netLines.insert(netLine);
+  }
+  if (additional) {
+    netLines.insert(additional);
+  }
+
+  QVector<TraceLengthSegment> segments;
+  segments.reserve(netLines.count());
+  foreach (const BI_NetLine* netLine, netLines) {
+    // Net segments without a net are all lumped into one pseudo net, which
+    // is good enough since they cannot be compared to anything anyway.
+    segments.append(TraceLengthSegment{
+        netLine->getNetSegment().getNetNameToDisplay(true),
+        reinterpret_cast<TraceLengthAnchorId>(&netLine->getP1()),
+        reinterpret_cast<TraceLengthAnchorId>(&netLine->getP2()),
+        netLine->getLength(),
+    });
+  }
+  return segments;
+}
+
+bool BoardEditorState_Select::compareTraceLengths() noexcept {
+  QVector<TraceLengthBus> buses;
+  foreach (const Bus* bus, mContext.project.getCircuit().getBuses()) {
+    QSet<QString> netNames;
+    foreach (const NetSignal* net, bus->getConnectedNetSignals()) {
+      netNames.insert(*net->getName());
+    }
+    buses.append(TraceLengthBus{*bus->getName(), netNames,
+                                bus->getMaxTraceLengthDifference()});
+  }
+
+  TraceLengthComparisonDialog dialog(
+      getTraceLengthSegments(nullptr), buses, getLengthUnit(),
+      "board_editor/trace_length_comparison_dialog", parentWidget());
+  dialog.exec();
+  return true;
 }
 
 bool BoardEditorState_Select::openPropertiesDialog(

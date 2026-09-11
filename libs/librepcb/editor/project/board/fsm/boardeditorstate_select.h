@@ -23,6 +23,7 @@
 /*******************************************************************************
  *  Includes
  ******************************************************************************/
+#include "../tracelengthcomparison.h"
 #include "boardeditorstate.h"
 
 #include <librepcb/core/types/uuid.h>
@@ -179,6 +180,27 @@ private:  // Methods
                                 const BI_NetLine& netline,
                                 QSet<Uuid>& visitedNetLines,
                                 UnsignedLength& totalLength);
+
+  /**
+   * @brief Collect the selected trace segments for the length comparison
+   *
+   * @param additional  A net line to take into account in addition to the
+   *                    currently selected ones, e.g. the one the context
+   *                    menu was opened on. Pass nullptr for the selection
+   *                    only.
+   * @return One entry per trace segment, in arbitrary order.
+   */
+  QVector<TraceLengthSegment> getTraceLengthSegments(
+      const BI_NetLine* additional) noexcept;
+
+  /**
+   * @brief Compare the length of the selected traces of the involved nets
+   *
+   * Opens the ::librepcb::editor::TraceLengthComparisonDialog on the current
+   * selection. In contrast to #measureSelectedItems(), this groups the
+   * selected segments by net instead of measuring them as a single chain.
+   */
+  bool compareTraceLengths() noexcept;
 
   bool openPropertiesDialog(std::shared_ptr<QGraphicsItem> item);
   void openDevicePropertiesDialog(BI_Device& device) noexcept;

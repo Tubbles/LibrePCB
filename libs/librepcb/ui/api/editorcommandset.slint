@@ -1714,6 +1714,16 @@ export global EditorCommandSet {
         key: "",
     };
 
+    in property <EditorCommand> compare-trace-lengths: {
+        id: "compare_trace_lengths",
+        icon: @image-url("../../../font-awesome/svgs/solid/ruler.svg"),
+        text: "Compare Trace Lengths...",
+        status-tip: "Compare the lengths of the selected traces of several nets",
+        shortcut: "",
+        modifiers: { alt: false, control: false, shift: false, meta: false },
+        key: "",
+    };
+
     in property <EditorCommand> trace-remove-whole: {
         id: "trace_remove_whole",
         icon: @image-url("../../../font-awesome/svgs/solid/trash-can.svg"),

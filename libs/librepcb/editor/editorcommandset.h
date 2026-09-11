@@ -1826,6 +1826,16 @@ public:
       {},
       &categoryContextMenu,
   };
+  EditorCommand compareTraceLengths{
+      "compare_trace_lengths",  // clang-format break
+      QT_TR_NOOP("Compare Trace Lengths"),
+      QT_TR_NOOP(
+          "Compare the lengths of the selected traces of several nets"),
+      ":/fa/solid/ruler.svg",
+      EditorCommand::Flag::OpensPopup,
+      {},
+      &categoryContextMenu,
+  };
   EditorCommand traceRemoveWhole{
       "trace_remove_whole",  // clang-format break
       QT_TR_NOOP("Remove Whole Trace"),
