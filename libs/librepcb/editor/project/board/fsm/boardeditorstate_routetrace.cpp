@@ -36,6 +36,7 @@
 #include <librepcb/core/geometry/via.h>
 #include <librepcb/core/project/board/board.h>
 #include <librepcb/core/project/board/boarddesignrules.h>
+#include <librepcb/core/project/board/drc/boarddesignrulechecksettings.h>
 #include <librepcb/core/project/board/items/bi_device.h>
 #include <librepcb/core/project/board/items/bi_netline.h>
 #include <librepcb/core/project/board/items/bi_netpoint.h>
@@ -49,11 +50,38 @@
 
 #include <QtCore>
 
+#include <algorithm>
+
 /*******************************************************************************
  *  Namespace
  ******************************************************************************/
 namespace librepcb {
 namespace editor {
+
+/*******************************************************************************
+ *  Constants
+ ******************************************************************************/
+
+/// The width one trace of a differential pair starts at, which is the
+/// router's own default because LibrePCB has no design rule for it.
+static const PositiveLength sDefaultDiffPairWidth(125000);
+
+/// The gap a differential pair starts at, the router's own default.
+static const PositiveLength sDefaultDiffPairGap(180000);
+
+/**
+ * The gap a differential pair starts at on one board
+ *
+ * The board's minimum copper to copper clearance wins over the router's
+ * own default where it is larger: the router refuses every pair start
+ * whose gap is below that clearance, and a tool whose default always
+ * refuses is no use.
+ */
+static PositiveLength defaultDiffPairGap(const Board& board) noexcept {
+  const Length minClearance =
+      *board.getDrcSettings().getMinCopperCopperClearance();
+  return PositiveLength(std::max(*sDefaultDiffPairGap, minClearance));
+}
 
 /*******************************************************************************
  *  Constructors / Destructor
@@ -70,10 +98,14 @@ BoardEditorState_RouteTrace::BoardEditorState_RouteTrace(
     mCurrentWidth(mContext.board.getDesignRules().getDefaultTraceWidth()),
     mCurrentViaDrill(std::nullopt),
     mCurrentViaSize(std::nullopt),
+    mDiffPair(false),
+    mDiffPairWidth(sDefaultDiffPairWidth),
+    mDiffPairGap(defaultDiffPairGap(mContext.board)),
+    mDiffPairViaGap(std::nullopt),
     mCursorPos(),
     mSnapActive(true),
     mPendingDrag(std::nullopt),
-    mCurrentNetSignal(nullptr) {
+    mCurrentNetSignals() {
   // The workspace settings dialog stays usable while the tool is open, so
   // a new iteration limit, and a new answer to whether a colliding route
   // may be committed, have to reach the running session too.
@@ -146,7 +178,7 @@ bool BoardEditorState_RouteTrace::exit() noexcept {
   if (commit) {
     applyCommit(*commit);
   }
-  mCurrentNetSignal = nullptr;
+  mCurrentNetSignals.clear();
 
   mAdapter.fsmCrossProbe();
   mAdapter.fsmSetViewCursor(std::nullopt);
@@ -496,6 +528,62 @@ void BoardEditorState_RouteTrace::setViaSize(
   updateRouterSettings();
 }
 
+void BoardEditorState_RouteTrace::setDiffPair(bool diffPair) noexcept {
+  if (diffPair == mDiffPair) return;
+
+  mDiffPair = diffPair;
+  emit diffPairChanged(mDiffPair);
+
+  // Nothing is pushed into the router: the toggle only decides which of
+  // the two start methods the next click calls, and a running placement
+  // stays whatever it was started as.
+}
+
+void BoardEditorState_RouteTrace::setDiffPairWidth(
+    const PositiveLength& width) noexcept {
+  if (width == mDiffPairWidth) return;
+
+  mDiffPairWidth = width;
+  emit diffPairWidthChanged(mDiffPairWidth);
+
+  // Like the trace width: a running placement keeps the geometry it was
+  // started with, the new value applies to the next pair.
+  updateRouterSettings();
+}
+
+void BoardEditorState_RouteTrace::setDiffPairGap(
+    const PositiveLength& gap) noexcept {
+  if (gap == mDiffPairGap) return;
+
+  const PositiveLength oldViaGap = getDiffPairViaGap();
+  mDiffPairGap = gap;
+  emit diffPairGapChanged(mDiffPairGap);
+
+  const PositiveLength newViaGap = getDiffPairViaGap();
+  if (newViaGap != oldViaGap) {
+    emit diffPairViaGapChanged(!mDiffPairViaGap.has_value(), newViaGap);
+  }
+
+  updateRouterSettings();
+}
+
+PositiveLength BoardEditorState_RouteTrace::getDiffPairViaGap() const noexcept {
+  if (auto gap = mDiffPairViaGap) {
+    return *gap;
+  }
+  return mDiffPairGap;
+}
+
+void BoardEditorState_RouteTrace::setDiffPairViaGap(
+    const std::optional<PositiveLength>& gap) noexcept {
+  if (gap == mDiffPairViaGap) return;
+
+  mDiffPairViaGap = gap;
+  emit diffPairViaGapChanged(!mDiffPairViaGap.has_value(), getDiffPairViaGap());
+
+  updateRouterSettings();
+}
+
 /*******************************************************************************
  *  Private Methods
  ******************************************************************************/
@@ -517,6 +605,9 @@ bool BoardEditorState_RouteTrace::createRouter() noexcept {
             getAllowDrcViolations(),
             mCornerMode90,
             mContext.pnsRecorder.isRecording(),
+            mDiffPairWidth,
+            mDiffPairGap,
+            mDiffPairViaGap,
         }));
     return true;
   } catch (const Exception& e) {
@@ -542,6 +633,10 @@ void BoardEditorState_RouteTrace::updateRouterSettings() noexcept {
       getShoveIterationLimit(),
       getAllowDrcViolations(),
       mCornerMode90,
+      false,  // Recording, only honoured by the constructor.
+      mDiffPairWidth,
+      mDiffPairGap,
+      mDiffPairViaGap,
   });
 }
 
@@ -571,12 +666,13 @@ BoardEditorState_RouteTrace::SnappedCursor
   }
 
   // While routing, restrict the search the same way the draw trace tool
-  // restricts its end anchor search.
+  // restricts its end anchor search. A differential pair is routing two
+  // nets, so both of them are in the filter and either lane may snap.
   const bool routing = mRouter->isRoutingInProgress();
   const Layer* layerFilter = routing ? &getLayer() : nullptr;
   QSet<const NetSignal*> netFilter;
   if (routing) {
-    netFilter.insert(mCurrentNetSignal);
+    netFilter = mCurrentNetSignals;
   }
   const std::shared_ptr<QGraphicsItem> item = findItemAtPos(
       mCursorPos,
@@ -660,6 +756,22 @@ const NetSignal* BoardEditorState_RouteTrace::getNetSignalOfHostId(
   return nullptr;
 }
 
+void BoardEditorState_RouteTrace::setCurrentNetSignals(
+    const QSet<const NetSignal*>& nets) noexcept {
+  mCurrentNetSignals = nets;
+  mAdapter.fsmCrossProbe(mCurrentNetSignals);
+}
+
+void BoardEditorState_RouteTrace::updateCurrentNetSignals() noexcept {
+  QSet<const NetSignal*> nets;
+  if (mRouter) {
+    foreach (NetSignal* net, mRouter->getCurrentNets()) {
+      nets.insert(net);
+    }
+  }
+  setCurrentNetSignals(nets);
+}
+
 bool BoardEditorState_RouteTrace::isDraggable(quint64 hostId) const noexcept {
   if (!mRouter) return false;
 
@@ -729,11 +841,20 @@ void BoardEditorState_RouteTrace::startRouting(
     const SnappedCursor& cursor) noexcept {
   if (!mRouter) return;
 
+  // Which of the two placements a click starts is the toolbar toggle's
+  // answer. A pair start is refused unless the object under the cursor
+  // belongs to a net whose partner exists in the circuit and holds a
+  // matching object, and the refusal is what the status bar shows: there
+  // is no silent fallback to a single trace, because a user who asked for
+  // a pair and got one trace would not notice until the commit.
   const Layer& layer = getStartLayer(cursor.item);
-  BoardPnsRouter::StartResult result =
-      mRouter->isStartingPointRoutable(cursor.pos, cursor.item, layer);
+  BoardPnsRouter::StartResult result = mDiffPair
+      ? mRouter->isStartingPointRoutableDiffPair(cursor.pos, cursor.item, layer)
+      : mRouter->isStartingPointRoutable(cursor.pos, cursor.item, layer);
   if (result == BoardPnsRouter::StartResult::Ok) {
-    result = mRouter->startRouting(cursor.pos, cursor.item, layer);
+    result = mDiffPair
+        ? mRouter->startRoutingDiffPair(cursor.pos, cursor.item, layer)
+        : mRouter->startRouting(cursor.pos, cursor.item, layer);
   }
   if (result != BoardPnsRouter::StartResult::Ok) {
     mAdapter.fsmSetStatusBarMessage(getStartResultMessage(result), 3000);
@@ -745,8 +866,7 @@ void BoardEditorState_RouteTrace::startRouting(
     mCurrentLayer = &layer;
     makeLayerVisible(layer.getColorRole());
   }
-  mCurrentNetSignal = getNetSignalOfHostId(cursor.item);
-  mAdapter.fsmCrossProbe({mCurrentNetSignal});
+  updateCurrentNetSignals();
   emit layerChanged(getLayer());
 
   if (mPreviewItems) {
@@ -774,8 +894,9 @@ void BoardEditorState_RouteTrace::startDragging(
     mCurrentLayer = &layer;
     makeLayerVisible(layer.getColorRole());
   }
-  mCurrentNetSignal = getNetSignalOfHostId(cursor.item);
-  mAdapter.fsmCrossProbe({mCurrentNetSignal});
+  // Not the router's answer here: a footprint drag reports no net at all,
+  // where the pressed pad has one the schematic can highlight.
+  setCurrentNetSignals({getNetSignalOfHostId(cursor.item)});
   emit layerChanged(getLayer());
 
   // A drag which has not moved yet has an empty frame, so this only takes
@@ -795,7 +916,7 @@ void BoardEditorState_RouteTrace::abortDragging() noexcept {
   if (mPreviewItems) {
     mPreviewItems->clear();
   }
-  mCurrentNetSignal = nullptr;
+  mCurrentNetSignals.clear();
   mAdapter.fsmCrossProbe();
 }
 
@@ -826,7 +947,7 @@ void BoardEditorState_RouteTrace::fixRoute(const SnappedCursor& cursor,
     if (mPreviewItems) {
       mPreviewItems->clear();
     }
-    mCurrentNetSignal = nullptr;
+    mCurrentNetSignals.clear();
     mAdapter.fsmCrossProbe();
     applyCommit(commit);
     rebuildRouter();
@@ -840,7 +961,7 @@ void BoardEditorState_RouteTrace::stopRouting() noexcept {
   if (mPreviewItems) {
     mPreviewItems->clear();
   }
-  mCurrentNetSignal = nullptr;
+  mCurrentNetSignals.clear();
   mAdapter.fsmCrossProbe();
   applyCommit(commit);
   rebuildRouter();
@@ -907,6 +1028,26 @@ QString BoardEditorState_RouteTrace::getStartResultMessage(
       return tr("A device can only be dragged by all of its pads.");
     case BoardPnsRouter::StartResult::NotDraggable:
       return tr("This object cannot be dragged.");
+    case BoardPnsRouter::StartResult::PairNeedsStartItem:
+      return tr("A differential pair must be started on a pad, a via or a "
+                "trace, not in free space.");
+    case BoardPnsRouter::StartResult::NotADiffPair:
+      return tr("This net is not part of a differential pair. Pairs are "
+                "derived from the net names, which have to differ only in a "
+                "'P'/'N' or '+'/'-' suffix.");
+    case BoardPnsRouter::StartResult::NoDanglingAnchor:
+      return tr("There is no free end here to start a differential pair "
+                "from.");
+    case BoardPnsRouter::StartResult::NoCoupledStartItem:
+      return tr("Nothing on the other net of the pair can be started from "
+                "here. It has to be the same kind of object, have a free end "
+                "and, for a pad or a via, span the same layers.");
+    case BoardPnsRouter::StartResult::PairGapBelowMinClearance:
+      return tr("The differential pair gap is smaller than the board's "
+                "minimum copper clearance.");
+    case BoardPnsRouter::StartResult::PairGapMismatch:
+      return tr("These two traces are not spaced like the configured "
+                "differential pair.");
     default:
       return tr("The router refused to start a trace here.");
   }

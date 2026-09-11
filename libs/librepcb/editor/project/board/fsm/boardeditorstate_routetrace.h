@@ -84,6 +84,14 @@ class BoardPnsPreviewItems;
  *     drag ends the way a route commit does, with the board edited and a new
  *     session built over it.
  *
+ * While the "differential pair" toggle is on, a click starts a pair instead
+ * of a single trace. That needs an object under the cursor whose net has a
+ * partner in the circuit, ::librepcb::DifferentialPairs derives the pairs
+ * from the net names, and the router refuses anything else; the refusal
+ * reaches the status bar and no single trace is started in its place. The
+ * drag gesture is unchanged, there is no differential pair dragger, a user
+ * selects both traces and uses the multi drag instead.
+ *
  * Which objects go into the drag is #collectDragItems(): a pressed pad drags
  * its whole device, a pressed trace which is part of a selection of several
  * traces drags all of them, and anything else drags itself. The router
@@ -148,6 +156,21 @@ public:
   bool getAutoViaSize() const noexcept { return !mCurrentViaSize.has_value(); }
   PositiveLength getViaSize() const noexcept;
   void setViaSize(const std::optional<PositiveLength>& size) noexcept;
+  /// Whether the next click starts a differential pair instead of a trace.
+  bool getDiffPair() const noexcept { return mDiffPair; }
+  void setDiffPair(bool diffPair) noexcept;
+  const PositiveLength& getDiffPairWidth() const noexcept {
+    return mDiffPairWidth;
+  }
+  void setDiffPairWidth(const PositiveLength& width) noexcept;
+  const PositiveLength& getDiffPairGap() const noexcept { return mDiffPairGap; }
+  void setDiffPairGap(const PositiveLength& gap) noexcept;
+  /// Whether the via gap follows the trace gap instead of being its own.
+  bool getAutoDiffPairViaGap() const noexcept {
+    return !mDiffPairViaGap.has_value();
+  }
+  PositiveLength getDiffPairViaGap() const noexcept;
+  void setDiffPairViaGap(const std::optional<PositiveLength>& gap) noexcept;
 
   // Operator Overloadings
   BoardEditorState_RouteTrace& operator=(
@@ -160,6 +183,10 @@ signals:
   void widthChanged(const PositiveLength& width);
   void viaDrillDiameterChanged(bool autoSize, const PositiveLength& diameter);
   void viaSizeChanged(bool autoSize, const PositiveLength& size);
+  void diffPairChanged(bool diffPair);
+  void diffPairWidthChanged(const PositiveLength& width);
+  void diffPairGapChanged(const PositiveLength& gap);
+  void diffPairViaGapChanged(bool autoGap, const PositiveLength& gap);
 
 private:  // Types
   /**
@@ -268,6 +295,24 @@ private:  // Methods
    * @brief Get the net signal of a board object the router named
    */
   const NetSignal* getNetSignalOfHostId(quint64 hostId) const noexcept;
+
+  /**
+   * @brief Remember the nets being worked on and cross probe them
+   *
+   * The set is what #snapCursor() filters by while routing and what the
+   * schematic editor highlights.
+   */
+  void setCurrentNetSignals(const QSet<const NetSignal*>& nets) noexcept;
+
+  /**
+   * @brief Take the nets of the running placement off the router
+   *
+   * The router's own answer rather than the net of the clicked object,
+   * because a differential pair routes two nets and only the session knows
+   * which two. Not used for a drag: a footprint drag reports no net at
+   * all, where the pressed pad has one worth highlighting.
+   */
+  void updateCurrentNetSignals() noexcept;
 
   /**
    * @brief Check whether a board object is one the router can drag
@@ -425,15 +470,32 @@ private:  // Data
   /// The via size, or `std::nullopt` to derive it from the drill diameter.
   std::optional<PositiveLength> mCurrentViaSize;
 
+  /// Whether a click starts a differential pair instead of a single trace.
+  /// Remembered across sessions like the mode is.
+  bool mDiffPair;
+
+  PositiveLength mDiffPairWidth;  ///< the width of one trace of a pair
+
+  /// The copper gap between the two traces of a pair. Starts at the larger
+  /// of the router's own default and the board's minimum copper to copper
+  /// clearance, because a gap below that clearance is refused by the
+  /// router's start gate and a tool whose default always refuses is no use.
+  PositiveLength mDiffPairGap;
+
+  /// The gap between the two vias of a pair, or `std::nullopt` to follow
+  /// #mDiffPairGap.
+  std::optional<PositiveLength> mDiffPairViaGap;
+
   Point mCursorPos;  ///< the current cursor position, not snapped
   bool mSnapActive;  ///< whether the cursor snaps to board objects
 
   /// The press which has not been resolved into a click or a drag yet.
   std::optional<PendingDrag> mPendingDrag;
 
-  /// The net of the route being placed, `nullptr` for a route in free space
-  /// and while idle.
-  const NetSignal* mCurrentNetSignal;
+  /// The nets of the route being placed: empty while idle, one for a trace
+  /// or a drag and two for a differential pair. A `nullptr` entry is a
+  /// route in free space, which belongs to no net of the circuit.
+  QSet<const NetSignal*> mCurrentNetSignals;
 };
 
 /*******************************************************************************

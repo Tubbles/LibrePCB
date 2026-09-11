@@ -27,12 +27,14 @@
 #include <librepcb/core/project/board/board.h>
 #include <librepcb/core/project/board/boardpnsrouter.h>
 #include <librepcb/core/project/board/boardzonedata.h>
+#include <librepcb/core/project/board/drc/boarddesignrulechecksettings.h>
 #include <librepcb/core/project/board/items/bi_device.h>
 #include <librepcb/core/project/board/items/bi_hole.h>
 #include <librepcb/core/project/board/items/bi_netline.h>
 #include <librepcb/core/project/board/items/bi_netsegment.h>
 #include <librepcb/core/project/board/items/bi_pad.h>
 #include <librepcb/core/project/board/items/bi_zone.h>
+#include <librepcb/core/project/circuit/circuit.h>
 #include <librepcb/core/project/circuit/netsignal.h>
 #include <librepcb/core/project/project.h>
 #include <librepcb/core/project/projectloader.h>
@@ -41,6 +43,7 @@
 
 #include <QtCore>
 
+#include <algorithm>
 #include <memory>
 #include <optional>
 
@@ -606,6 +609,204 @@ static std::optional<Point> longestSegmentMiddle(
     }
   }
   return middle;
+}
+
+/*******************************************************************************
+ *  Differential pair helpers
+ ******************************************************************************/
+
+/**
+ * @brief The settings a differential pair session runs with
+ *
+ * The pair gap is above the fixture's 0.2 mm minimum copper clearance,
+ * which the router's own default of 0.18 mm is not: a gap below that
+ * clearance is refused before anything else is even looked at.
+ */
+static BoardPnsRouter::Settings makeDiffPairSettings() noexcept {
+  BoardPnsRouter::Settings settings = makeSettings();
+  settings.diffPairWidth = PositiveLength(Length(250000));  // 0.25 mm.
+  settings.diffPairGap = PositiveLength(Length(300000));  // 0.3 mm.
+  return settings;
+}
+
+/**
+ * @brief One pad a differential pair could be started from
+ */
+struct DiffPairPad {
+  NetSignal* net = nullptr;
+  quint64 hostId = 0;
+  Point pos;
+};
+
+/**
+ * @brief A differential pair made out of the fixture, and a route on it
+ *
+ * The two net signals are already renamed when this is answered, so the
+ * board really does carry a pair and a new session over it finds one too.
+ */
+struct DiffPairCase {
+  NetSignal* positive = nullptr;
+  NetSignal* negative = nullptr;
+
+  /// A pad of the positive net, which is what the route starts on.
+  quint64 hostId = 0;
+  Point pos;
+
+  /// A point in free space the pair reaches and commits on.
+  Point target;
+};
+
+/**
+ * @brief Every pad with a net and copper on the top layer
+ */
+static QVector<DiffPairPad> diffPairPadCandidates(
+    const BoardPnsRouter& router, const Board& board) noexcept {
+  QVector<DiffPairPad> pads;
+  foreach (const BI_Device* device, board.getDeviceInstances()) {
+    foreach (BI_Pad* pad, device->getPads()) {
+      NetSignal* net = pad->getNetSignal();
+      if (!net) {
+        continue;
+      }
+      if (pad->getGeometries().value(&Layer::topCopper()).isEmpty()) {
+        continue;
+      }
+      const quint64 hostId = router.getSnapshot().getHostId(*pad);
+      if (hostId == 0) {
+        continue;
+      }
+      pads.append(DiffPairPad{net, hostId, pad->getPosition()});
+    }
+  }
+  return pads;
+}
+
+/**
+ * @brief Check whether a commit put segments on both nets of a pair
+ */
+static bool commitsBothNets(const BoardPnsCommit& commit,
+                            const NetSignal* positive,
+                            const NetSignal* negative) noexcept {
+  bool onPositive = false;
+  bool onNegative = false;
+  foreach (const BoardPnsNewItem& item, commit.added) {
+    if (!item.getSegment()) {
+      continue;
+    }
+    onPositive = onPositive || (item.net == positive);
+    onNegative = onNegative || (item.net == negative);
+  }
+  return onPositive && onNegative;
+}
+
+/**
+ * @brief Try to route a pair out of two nets of the fixture
+ *
+ * Renames the two nets into `T_P` and `T_N`, which is all it takes to make
+ * a pair, LibrePCB derives them from the names. On success the renaming
+ * stays, so the caller's own session sees the same pair; on failure the
+ * two names are put back.
+ */
+static std::optional<DiffPairCase> tryDiffPairCase(
+    Circuit& circuit, Board& board, const QVector<DiffPairPad>& pads,
+    NetSignal& positive, NetSignal& negative) {
+  const CircuitIdentifier nameP = positive.getName();
+  const CircuitIdentifier nameN = negative.getName();
+  circuit.setNetSignalName(positive, CircuitIdentifier("T_P"), false);
+  circuit.setNetSignalName(negative, CircuitIdentifier("T_N"), false);
+
+  BoardPnsRouter probe(board, makeDiffPairSettings());
+  foreach (const DiffPairPad& pad, pads) {
+    if (pad.net != &positive) {
+      continue;
+    }
+    if (probe.isStartingPointRoutableDiffPair(pad.pos, pad.hostId,
+                                              Layer::topCopper()) !=
+        BoardPnsRouter::StartResult::Ok) {
+      continue;
+    }
+    // Which way out of the pads is free depends on the fixture's geometry,
+    // which is exactly what the test must not depend on, so the first
+    // direction that commits is taken. Each attempt gets its own session
+    // because a successful one commits.
+    foreach (const Point& target, freeSpaceCandidates(pad.pos)) {
+      BoardPnsRouter attempt(board, makeDiffPairSettings());
+      if (attempt.startRoutingDiffPair(pad.pos, pad.hostId,
+                                       Layer::topCopper()) !=
+          BoardPnsRouter::StartResult::Ok) {
+        continue;
+      }
+      attempt.moveTo(target, 0);
+      if (attempt.fixRoute(target, 0, true) !=
+          BoardPnsRouter::FixOutcome::Finished) {
+        continue;
+      }
+      if (!commitsBothNets(attempt.getCommit(), &positive, &negative)) {
+        continue;
+      }
+      return DiffPairCase{&positive, &negative, pad.hostId, pad.pos, target};
+    }
+  }
+
+  circuit.setNetSignalName(positive, nameP, false);
+  circuit.setNetSignalName(negative, nameN, false);
+  return std::nullopt;
+}
+
+/**
+ * @brief Make a differential pair out of the fixture and route it once
+ *
+ * The Gerber Test project holds no pair, so one is made by renaming two of
+ * its nets. Which two can actually be coupled depends on the board: the
+ * router pairs the start object with the *nearest* matching object of the
+ * partner net, and that object has to be a pad too, has to have a free end
+ * and has to span the same layers. The net pairs are therefore tried
+ * closest first, which finds one in a handful of attempts instead of
+ * walking the whole product.
+ */
+static std::optional<DiffPairCase> findDiffPairCase(Project& project,
+                                                    Board& board) {
+  BoardPnsRouter probeRouter(board, makeDiffPairSettings());
+  const QVector<DiffPairPad> pads = diffPairPadCandidates(probeRouter, board);
+
+  // The closest pad of each ordered net pair, which is the pad the router
+  // would couple with anyway.
+  QMap<QPair<NetSignal*, NetSignal*>, qint64> distances;
+  foreach (const DiffPairPad& a, pads) {
+    foreach (const DiffPairPad& b, pads) {
+      if (a.net == b.net) {
+        continue;
+      }
+      const qint64 distance = (*(b.pos - a.pos).getLength()).toNm();
+      const QPair<NetSignal*, NetSignal*> key(a.net, b.net);
+      if ((!distances.contains(key)) || (distance < distances.value(key))) {
+        distances.insert(key, distance);
+      }
+    }
+  }
+
+  // Closest first, and the net names break a tie so that a failure is
+  // reproducible: the keys are pointers, whose order is not.
+  QVector<QPair<NetSignal*, NetSignal*>> ordered = distances.keys().toVector();
+  std::sort(ordered.begin(), ordered.end(),
+            [&distances](const QPair<NetSignal*, NetSignal*>& a,
+                         const QPair<NetSignal*, NetSignal*>& b) {
+              if (distances.value(a) != distances.value(b)) {
+                return distances.value(a) < distances.value(b);
+              }
+              if (a.first != b.first) {
+                return *a.first->getName() < *b.first->getName();
+              }
+              return *a.second->getName() < *b.second->getName();
+            });
+
+  foreach (const auto& candidate, ordered) {
+    if (auto found = tryDiffPairCase(project.getCircuit(), board, pads,
+                                     *candidate.first, *candidate.second)) {
+      return found;
+    }
+  }
+  return std::nullopt;
 }
 
 /*******************************************************************************
@@ -1268,6 +1469,130 @@ TEST_F(BoardPnsRouterTest, testAllowDrcViolationsCommitsACollidingRoute) {
   const BoardPnsCommit commit = router.getCommit();
   EXPECT_FALSE(commit.isEmpty());
   EXPECT_FALSE(commit.added.isEmpty());
+}
+
+/*******************************************************************************
+ *  Differential pairs
+ ******************************************************************************/
+
+TEST_F(BoardPnsRouterTest, testRouteDiffPairFromPadPairIntoFreeSpace) {
+  const std::optional<DiffPairCase> pair = findDiffPairCase(*mProject, *mBoard);
+  ASSERT_TRUE(pair.has_value())
+      << "no two pads of the fixture can be made into a routable pair";
+
+  BoardPnsRouter router(*mBoard, makeDiffPairSettings());
+  ASSERT_EQ(router.isStartingPointRoutableDiffPair(pair->pos, pair->hostId,
+                                                   Layer::topCopper()),
+            BoardPnsRouter::StartResult::Ok);
+  ASSERT_EQ(router.startRoutingDiffPair(pair->pos, pair->hostId,
+                                        Layer::topCopper()),
+            BoardPnsRouter::StartResult::Ok);
+  EXPECT_TRUE(router.isRoutingInProgress());
+
+  // Both nets, positive first, which is what the net filter of the tool
+  // takes its two entries from.
+  const QVector<NetSignal*> nets = router.getCurrentNets();
+  ASSERT_EQ(nets.count(), 2);
+  EXPECT_EQ(nets.at(0), pair->positive);
+  EXPECT_EQ(nets.at(1), pair->negative);
+
+  // Two lanes are previewed, one per net, both on the layer being routed.
+  router.moveTo(pair->target, 0);
+  QSet<const NetSignal*> headNets;
+  foreach (const BoardPnsPreviewItem& item, router.getPreview().items) {
+    if (item.style == BoardPnsPreviewStyle::Head) {
+      EXPECT_EQ(item.layer, &Layer::topCopper());
+      EXPECT_GE(item.path.count(), 2);
+      headNets.insert(item.net);
+    }
+  }
+  EXPECT_TRUE(headNets.contains(pair->positive));
+  EXPECT_TRUE(headNets.contains(pair->negative));
+
+  ASSERT_EQ(router.fixRoute(pair->target, 0, true),
+            BoardPnsRouter::FixOutcome::Finished);
+  EXPECT_FALSE(router.isRoutingInProgress());
+
+  // One commit carries the segments of both nets, at the pair width, which
+  // is what lets the commit applier stitch them into two net segments.
+  const BoardPnsCommit commit = router.getCommit();
+  int positiveSegments = 0;
+  int negativeSegments = 0;
+  foreach (const BoardPnsNewItem& item, commit.added) {
+    const BoardPnsNewSegment* segment = item.getSegment();
+    ASSERT_NE(segment, nullptr);
+    EXPECT_EQ(segment->layer, &Layer::topCopper());
+    EXPECT_EQ((*segment->width).toNm(), 250000);
+    if (item.net == pair->positive) {
+      ++positiveSegments;
+    } else if (item.net == pair->negative) {
+      ++negativeSegments;
+    } else {
+      ADD_FAILURE() << "a segment on a net which is not part of the pair";
+    }
+  }
+  EXPECT_GT(positiveSegments, 0);
+  EXPECT_GT(negativeSegments, 0);
+}
+
+TEST_F(BoardPnsRouterTest, testDiffPairOnAnUnpairedNetIsRefused) {
+  BoardPnsRouter router(*mBoard, makeDiffPairSettings());
+  const std::optional<RouteStart> start = findStartPad(router, *mBoard);
+  ASSERT_TRUE(start.has_value()) << "no routable top layer pad with a net";
+
+  // No net of the fixture is half of a pair, so the router cannot name a
+  // second net to route and says so rather than routing one trace.
+  EXPECT_EQ(router.isStartingPointRoutableDiffPair(start->pos, start->hostId,
+                                                   Layer::topCopper()),
+            BoardPnsRouter::StartResult::NotADiffPair);
+  EXPECT_EQ(
+      router.startRoutingDiffPair(start->pos, start->hostId,
+                                  Layer::topCopper()),
+      BoardPnsRouter::StartResult::NotADiffPair);
+  EXPECT_FALSE(router.isRoutingInProgress());
+
+  // A single trace from the very same point is fine, so the refusal is
+  // about the pair and not about the start point.
+  EXPECT_EQ(router.startRouting(start->pos, start->hostId, Layer::topCopper()),
+            BoardPnsRouter::StartResult::Ok);
+}
+
+TEST_F(BoardPnsRouterTest, testDiffPairInFreeSpaceIsRefused) {
+  BoardPnsRouter probeRouter(*mBoard, makeDiffPairSettings());
+  const std::optional<RouteStart> start = findStartPad(probeRouter, *mBoard);
+  ASSERT_TRUE(start.has_value()) << "no routable top layer pad with a net";
+  const std::optional<Point> target = findFreeTarget(*mBoard, *start);
+  ASSERT_TRUE(target.has_value()) << "no free space around the start pad";
+
+  // A single trace may start in free space, a pair may not: it has no other
+  // way to learn which two nets it is routing.
+  BoardPnsRouter router(*mBoard, makeDiffPairSettings());
+  EXPECT_EQ(router.isStartingPointRoutableDiffPair(*target, 0,
+                                                   Layer::topCopper()),
+            BoardPnsRouter::StartResult::PairNeedsStartItem);
+  EXPECT_EQ(router.startRoutingDiffPair(*target, 0, Layer::topCopper()),
+            BoardPnsRouter::StartResult::PairNeedsStartItem);
+  EXPECT_FALSE(router.isRoutingInProgress());
+}
+
+TEST_F(BoardPnsRouterTest, testDiffPairGapBelowMinClearanceIsRefused) {
+  const Length minClearance =
+      *mBoard->getDrcSettings().getMinCopperCopperClearance();
+  ASSERT_GT(minClearance.toNm(), 1);
+
+  BoardPnsRouter::Settings settings = makeDiffPairSettings();
+  settings.diffPairGap = PositiveLength(Length(minClearance.toNm() - 1));
+
+  BoardPnsRouter router(*mBoard, settings);
+  const std::optional<RouteStart> start = findStartPad(router, *mBoard);
+  ASSERT_TRUE(start.has_value()) << "no routable top layer pad with a net";
+
+  // The one consistency check the router makes between the pair geometry
+  // and the clearance rules, and it runs before anything else, so it wins
+  // over the missing pair of this net.
+  EXPECT_EQ(router.isStartingPointRoutableDiffPair(start->pos, start->hostId,
+                                                   Layer::topCopper()),
+            BoardPnsRouter::StartResult::PairGapBelowMinClearance);
 }
 
 /*******************************************************************************

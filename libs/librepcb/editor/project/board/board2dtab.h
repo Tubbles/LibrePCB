@@ -195,6 +195,8 @@ signals:
   void routerCornerModeRequested(bool corners90);
   void routerFlipPostureRequested();
   void routerViaToggleRequested();
+  void routerDiffPairRequested(bool diffPair);
+  void diffPairViaGapRequested(const std::optional<PositiveLength>& gap);
   void netRequested(bool autoNet, const std::optional<Uuid>& net);
   void viaDrillRequested(const std::optional<PositiveLength>& drill);
   void viaSizeRequested(const std::optional<PositiveLength>& size);
@@ -288,6 +290,7 @@ private:
   BoardEditorState_DrawTrace::WireMode mToolWireMode;
   ui::RouterMode mToolRouterMode;
   bool mToolRouterCornerMode;  // True for 90°, false for 45° corners
+  bool mToolRouterDiffPair;  // True while routing differential pairs
   QVector<std::pair<bool, std::optional<Uuid>>> mToolNetsQt;
   std::shared_ptr<slint::VectorModel<slint::SharedString>> mToolNets;
   std::pair<bool, std::optional<Uuid>> mToolNet;
@@ -298,6 +301,10 @@ private:
   LengthEditContext mToolLineWidth;
   LengthEditContext mToolSize;
   LengthEditContext mToolDrill;
+  LengthEditContext mToolDiffPairWidth;
+  LengthEditContext mToolDiffPairGap;
+  LengthEditContext mToolDiffPairViaGap;
+  bool mToolDiffPairViaGapAuto;  // True if the via gap is the trace gap
   Angle mToolAngle;
   bool mToolFilled;  // Also used for auto width
   bool mToolMirrored;  // Also used for auto via size

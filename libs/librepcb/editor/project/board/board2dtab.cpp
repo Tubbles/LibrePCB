@@ -198,6 +198,7 @@ Board2dTab::Board2dTab(GuiApplication& app, BoardEditor& editor,
     mToolWireMode(BoardEditorState_DrawTrace::WireMode::HV),
     mToolRouterMode(ui::RouterMode::Walkaround),
     mToolRouterCornerMode(false),
+    mToolRouterDiffPair(false),
     mToolNets(std::make_shared<slint::VectorModel<slint::SharedString>>()),
     mToolNet({true, std::nullopt}),
     mToolLayers(std::make_shared<slint::VectorModel<slint::SharedString>>()),
@@ -205,6 +206,10 @@ Board2dTab::Board2dTab(GuiApplication& app, BoardEditor& editor,
     mToolLineWidth(app.getWorkspace().getSettings()),
     mToolSize(app.getWorkspace().getSettings()),
     mToolDrill(app.getWorkspace().getSettings()),
+    mToolDiffPairWidth(app.getWorkspace().getSettings()),
+    mToolDiffPairGap(app.getWorkspace().getSettings()),
+    mToolDiffPairViaGap(app.getWorkspace().getSettings()),
+    mToolDiffPairViaGapAuto(true),
     mToolFilled(false),
     mToolMirrored(false),
     mToolValueSuggestions(
@@ -432,6 +437,7 @@ ui::Board2dTabData Board2dTab::getDerivedUiData() const noexcept {
       l2s(mToolWireMode),  // Tool wire mode
       mToolRouterMode,  // Tool router mode
       mToolRouterCornerMode,  // Tool router corner mode
+      mToolRouterDiffPair,  // Tool router differential pair
       ui::ComboBoxData{
           // Tool net
           mToolNets,  // Items,
@@ -446,6 +452,10 @@ ui::Board2dTabData Board2dTab::getDerivedUiData() const noexcept {
       mToolLineWidth.getUiData(),  // Tool line width
       mToolSize.getUiData(),  // Tool size
       mToolDrill.getUiData(),  // Tool drill
+      mToolDiffPairWidth.getUiData(),  // Tool differential pair width
+      mToolDiffPairGap.getUiData(),  // Tool differential pair gap
+      mToolDiffPairViaGap.getUiData(),  // Tool differential pair via gap
+      mToolDiffPairViaGapAuto,  // Tool differential pair via gap "auto"
       ui::AngleEditData{
           // Tool angle
           l2s(mToolAngle),  // Angle
@@ -555,6 +565,17 @@ void Board2dTab::setDerivedUiData(const ui::Board2dTabData& data) noexcept {
   // Tool router mode
   emit routerModeRequested(s2l(data.tool_router_mode));
   emit routerCornerModeRequested(data.tool_router_corner_mode);
+  emit routerDiffPairRequested(data.tool_router_diff_pair);
+
+  // Tool differential pair sizes
+  mToolDiffPairWidth.setUiData(data.tool_diff_pair_width);
+  mToolDiffPairGap.setUiData(data.tool_diff_pair_gap);
+  mToolDiffPairViaGap.setUiData(data.tool_diff_pair_via_gap);
+  emit diffPairViaGapRequested(
+      ((mToolDiffPairViaGap.getValue() > 0) &&
+       (!data.tool_diff_pair_via_gap_auto))
+          ? std::make_optional(PositiveLength(mToolDiffPairViaGap.getValue()))
+          : std::nullopt);
 
   // Tool line width
   mToolLineWidth.setUiData(data.tool_line_width);
@@ -1468,6 +1489,58 @@ void Board2dTab::fsmToolEnter(BoardEditorState_RouteTrace& state) noexcept {
   mFsmStateConnections.append(
       connect(this, &Board2dTab::routerViaToggleRequested, &state,
               &BoardEditorState_RouteTrace::toggleVia));
+
+  // Differential pair switch
+  auto setDiffPair = [this](bool diffPair) {
+    mToolRouterDiffPair = diffPair;
+    onDerivedUiDataChanged.notify();
+  };
+  setDiffPair(state.getDiffPair());
+  mFsmStateConnections.append(connect(
+      &state, &BoardEditorState_RouteTrace::diffPairChanged, this,
+      setDiffPair));
+  mFsmStateConnections.append(
+      connect(this, &Board2dTab::routerDiffPairRequested, &state,
+              &BoardEditorState_RouteTrace::setDiffPair));
+
+  // Differential pair trace width
+  mToolDiffPairWidth.configure(state.getDiffPairWidth(),
+                               LengthEditContext::Steps::generic(),
+                               "board_editor/route_trace/diff_pair_width");
+  mFsmStateConnections.append(
+      connect(&state, &BoardEditorState_RouteTrace::diffPairWidthChanged,
+              &mToolDiffPairWidth, &LengthEditContext::setValuePositive));
+  mFsmStateConnections.append(
+      connect(&mToolDiffPairWidth, &LengthEditContext::valueChangedPositive,
+              &state, &BoardEditorState_RouteTrace::setDiffPairWidth));
+
+  // Differential pair gap
+  mToolDiffPairGap.configure(state.getDiffPairGap(),
+                             LengthEditContext::Steps::generic(),
+                             "board_editor/route_trace/diff_pair_gap");
+  mFsmStateConnections.append(
+      connect(&state, &BoardEditorState_RouteTrace::diffPairGapChanged,
+              &mToolDiffPairGap, &LengthEditContext::setValuePositive));
+  mFsmStateConnections.append(
+      connect(&mToolDiffPairGap, &LengthEditContext::valueChangedPositive,
+              &state, &BoardEditorState_RouteTrace::setDiffPairGap));
+
+  // Differential pair via gap, whose "auto" is "the same as the trace gap".
+  mToolDiffPairViaGap.configure(state.getDiffPairViaGap(),
+                                LengthEditContext::Steps::generic(),
+                                "board_editor/route_trace/diff_pair_via_gap");
+  auto setDiffPairViaGap = [this](bool autoGap, const PositiveLength& gap) {
+    mToolDiffPairViaGap.setValuePositive(gap);
+    mToolDiffPairViaGapAuto = autoGap;
+    onDerivedUiDataChanged.notify();
+  };
+  setDiffPairViaGap(state.getAutoDiffPairViaGap(), state.getDiffPairViaGap());
+  mFsmStateConnections.append(
+      connect(&state, &BoardEditorState_RouteTrace::diffPairViaGapChanged,
+              this, setDiffPairViaGap));
+  mFsmStateConnections.append(
+      connect(this, &Board2dTab::diffPairViaGapRequested, &state,
+              &BoardEditorState_RouteTrace::setDiffPairViaGap));
 
   // Trace width
   mToolLineWidth.configure(state.getWidth(),

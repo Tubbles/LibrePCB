@@ -1036,6 +1036,9 @@ export global Shortcuts {
             } else if Backend.is-shortcut(event, Cmd.router-via-toggle) {
                 Backend.trigger-tab(section, tab, TabAction.router-via-toggle);
                 return true;
+            } else if Backend.is-shortcut(event, Cmd.router-diff-pair-toggle) {
+                Data.current-section.board-2d-tabs[tab].tool-router-diff-pair = !Data.current-section.board-2d-tabs[tab].tool-router-diff-pair;
+                return true;
             }
         } else if Data.current-section.board-2d-tabs[tab].tool == EditorTool.via {
             if Backend.is-shortcut(event, Cmd.size-increase) {

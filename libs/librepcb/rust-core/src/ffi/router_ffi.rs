@@ -28,7 +28,7 @@ use pnsrouter::item::{HostId, Kind, LayerRange, NetId, ViaType};
 use pnsrouter::node::World;
 use pnsrouter::router::{
   CommitDiff, FixOutcome, NewGeometry, NewItem, PreviewFrame, PreviewStyle,
-  PreviewVia, Router, RouterState, StartError,
+  PreviewVia, RoutedNets, Router, RouterState, StartError,
 };
 use pnsrouter::rules::{
   Constraint, ConstraintType, ItemRef, Keepout, RuleResolver,
@@ -395,6 +395,24 @@ pub struct PnsRouterSettings {
   /// rather than refused, so that a host can hand the same struct to both
   /// entry points.
   pub record_session: bool,
+  /// The width of one track of a differential pair, in nanometres.
+  ///
+  /// `Sizes::diff_pair_width`. Zero keeps the crate's own default, which
+  /// is KiCad's 0.125 mm.
+  pub diff_pair_width: i64,
+  /// The copper gap between the two tracks of a differential pair, in
+  /// nanometres.
+  ///
+  /// `Sizes::diff_pair_gap`. Zero keeps the crate's own default, which is
+  /// KiCad's 0.18 mm. It has to reach the board's minimum copper to copper
+  /// clearance or every pair start is refused with
+  /// [`PnsStartResult::PairGapBelowMinClearance`].
+  pub diff_pair_gap: i64,
+  /// The gap between the two vias of a differential pair, in nanometres.
+  ///
+  /// `Sizes::diff_pair_via_gap`. Zero means "the same as the track gap",
+  /// which is what `Sizes::diff_pair_via_gap_same_as_trace_gap` selects.
+  pub diff_pair_via_gap: i64,
 }
 
 // ---------------------------------------------------------------------
@@ -428,11 +446,35 @@ pub struct LibrePcbRules {
   net_classes: Vec<NetClassRuleValues>,
   /// The net class index of each net, in `NetId` order.
   nets: Vec<usize>,
+  /// The differential pair partner of each net, in `NetId` order, and
+  /// `None` for a net which is not half of a pair.
+  ///
+  /// LibrePCB derives its pairs from the net signal names
+  /// (`librepcb::DifferentialPairs`), so this is a plain table the host
+  /// fills in once per snapshot with
+  /// [`ffi_pnsrouter_snapshot_set_net_partner`].
+  net_partners: Vec<Option<NetId>>,
+  /// The pair polarity of each net, in `NetId` order: `1` for the positive
+  /// half, `-1` for the negative one and `0` for a net which is not half
+  /// of a pair.
+  net_polarities: Vec<i32>,
   /// What each host object contributes, indexed by host id. Entry zero is
   /// the unused null id.
   hosts: Vec<HostRules>,
   /// The largest clearance any query below can answer.
   max_clearance: i32,
+  /// The copper gap between the two tracks of a differential pair, in
+  /// nanometres, or zero while no session has set one.
+  ///
+  /// LibrePCB has no design rule for it: the gap is the number the router
+  /// toolbar shows, so the [`ConstraintType::DiffPairGap`] answer below is
+  /// that number mirrored back rather than a rule the geometry is checked
+  /// against. Written by [`ffi_pnsrouter_new`] from
+  /// [`PnsRouterSettings::diff_pair_gap`] before the table is handed to
+  /// the session, because the crate takes the resolver by value and has no
+  /// setter for it; a toolbar change therefore reaches the constraint on
+  /// the next session, which the tool builds after every commit.
+  diff_pair_gap: i32,
 }
 
 /// [`PnsBoardRules`] after the range check.
@@ -480,9 +522,26 @@ impl LibrePcbRules {
       board: BoardRuleValues::default(),
       net_classes: Vec::new(),
       nets: Vec::new(),
+      net_partners: Vec::new(),
+      net_polarities: Vec::new(),
       hosts: vec![HostRules::default()],
       max_clearance: 0,
+      diff_pair_gap: 0,
     }
+  }
+
+  /// The other half of the differential pair a net belongs to.
+  fn partner_of(&self, net: NetId) -> Option<NetId> {
+    *self.net_partners.get(net.0 as usize)?
+  }
+
+  /// Which half of a differential pair a net is, zero for neither.
+  fn polarity_of(&self, net: NetId) -> i32 {
+    self
+      .net_polarities
+      .get(net.0 as usize)
+      .copied()
+      .unwrap_or(0)
   }
 
   /// The net class values of a net, or the all zero defaults.
@@ -692,6 +751,14 @@ impl RuleResolver for LibrePcbRules {
         (self.board.min_copper_npth_clearance, 0)
       }
       ConstraintType::HoleToHole => (self.board.min_drill_drill_clearance, 0),
+      // Not a rule LibrePCB has: it is the session's own pair gap handed
+      // back, see `LibrePcbRules::diff_pair_gap`.
+      ConstraintType::DiffPairGap => {
+        if self.diff_pair_gap <= 0 {
+          return None;
+        }
+        (self.diff_pair_gap, self.diff_pair_gap)
+      }
       _ => return None,
     };
 
@@ -786,6 +853,34 @@ impl RuleResolver for LibrePcbRules {
   /// what a net with no net class should get.
   fn orphaned_net(&self) -> NetId {
     NetId(u32::MAX)
+  }
+
+  /// The other half of the pair, out of the table the host filled in.
+  fn dp_coupled_net(&self, net: NetId) -> Option<NetId> {
+    self.partner_of(net)
+  }
+
+  /// Which half of the pair the net is, out of the same table.
+  fn dp_net_polarity(&self, net: NetId) -> i32 {
+    self.polarity_of(net)
+  }
+
+  /// Both halves, positive first, whichever half the item belongs to.
+  ///
+  /// The normalisation is what the pair placer relies on; see the trait's
+  /// own note on why it then needs no [`RuleResolver::dp_net_polarity`].
+  /// A net whose partner is known but whose polarity is zero cannot
+  /// happen, the host writes the two together, and it answers "no pair"
+  /// rather than guessing a half.
+  fn dp_net_pair(&self, item: ItemRef<'_>) -> Option<(NetId, NetId)> {
+    let net = item.item().net()?;
+    let partner = self.partner_of(net)?;
+
+    match self.polarity_of(net) {
+      polarity if polarity > 0 => Some((net, partner)),
+      polarity if polarity < 0 => Some((partner, net)),
+      _ => None,
+    }
   }
 }
 
@@ -1069,9 +1164,82 @@ extern "C" fn ffi_pnsrouter_snapshot_add_net(
   net_class_index: usize,
 ) -> u32 {
   obj.rules.nets.push(net_class_index);
+  obj.rules.net_partners.push(None);
+  obj.rules.net_polarities.push(0);
   obj.world = None;
 
   obj.rules.nets.len() as u32
+}
+
+/// Record that two nets are the two halves of a differential pair.
+///
+/// `net` and `partner` are net numbers as
+/// [`ffi_pnsrouter_snapshot_add_net`] handed them out, and `polarity` is
+/// `1` for the positive half and `-1` for the negative one. It is called
+/// once per half, so the host does not have to decide which half it is
+/// looking at, and it must be called after both nets were added.
+///
+/// A net number the snapshot never handed out, a partner equal to the net
+/// itself, or a polarity of zero is ignored rather than stored: the three
+/// resolver hooks then answer "not a pair" and the engine refuses a pair
+/// start cleanly instead of routing two nets that are not coupled.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_snapshot_set_net_partner(
+  obj: &mut PnsSnapshot,
+  net: u32,
+  partner: u32,
+  polarity: i32,
+) {
+  let count = obj.rules.nets.len() as u32;
+
+  if (net == 0) || (net > count) || (partner == 0) || (partner > count) {
+    debug_assert!(false, "net {net} or partner {partner} is not in the table");
+
+    return;
+  }
+  if (net == partner) || (polarity == 0) {
+    debug_assert!(false, "net {net} cannot be its own pair partner");
+
+    return;
+  }
+
+  let index = (net - 1) as usize;
+
+  obj.rules.net_partners[index] = Some(NetId(partner - 1));
+  obj.rules.net_polarities[index] = polarity.signum();
+  obj.world = None;
+}
+
+/// The net number of a net's differential pair partner, or zero.
+///
+/// A read back of what [`ffi_pnsrouter_snapshot_set_net_partner`] stored,
+/// so that the unit tests can prove the table the resolver reads.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_snapshot_net_partner(
+  obj: &PnsSnapshot,
+  net: u32,
+) -> u32 {
+  if net == 0 {
+    return 0;
+  }
+
+  obj
+    .rules
+    .partner_of(NetId(net - 1))
+    .map_or(0, |partner| partner.0 + 1)
+}
+
+/// The differential pair polarity of a net, zero for a net without one.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_snapshot_net_polarity(
+  obj: &PnsSnapshot,
+  net: u32,
+) -> i32 {
+  if net == 0 {
+    return 0;
+  }
+
+  obj.rules.polarity_of(NetId(net - 1))
 }
 
 /// Add one track.
@@ -1468,12 +1636,27 @@ pub enum PnsStartResult {
   IncompleteDeviceDrag = 7,
   /// `StartError::NotDraggable`.
   NotDraggable = 8,
-  /// Any of the engine's differential pair refusals. This host never
-  /// starts a pair, so the value exists to keep the mapping total.
-  DiffPairRefused = 9,
+  /// `StartError::PairNeedsStartItem`: a pair placement was asked for in
+  /// free space, where it needs an object to learn the two nets from.
+  PairNeedsStartItem = 9,
+  /// `StartError::NotADiffPair`: the net of the start object has no
+  /// partner in the snapshot's pair table.
+  NotADiffPair = 10,
+  /// `StartError::NoDanglingAnchor`: the start object has no free end.
+  NoDanglingAnchor = 11,
+  /// `StartError::NoCoupledStartItem`: nothing on the coupled net can be
+  /// paired with the start object. The net it names is dropped, like the
+  /// ids of the two naming variants above.
+  NoCoupledStartItem = 12,
+  /// `StartError::PairGapBelowMinClearance`: the configured pair gap does
+  /// not reach the board's minimum copper to copper clearance.
+  PairGapBelowMinClearance = 13,
+  /// `StartError::PairGapMismatch`: the two tracks under the cursor are
+  /// not spaced like the configured pair.
+  PairGapMismatch = 14,
   /// Any of the engine's length tuning refusals. This host never starts
   /// a tuning session, so the value exists to keep the mapping total.
-  TuningRefused = 10,
+  TuningRefused = 15,
 }
 
 /// What happened to a fix.
@@ -1642,6 +1825,18 @@ impl PnsRouter {
   }
 }
 
+/// One host length, or a fallback when the host did not set it.
+///
+/// The differential pair sizes are the only ones with a crate default
+/// worth keeping: a host which leaves them at zero gets KiCad's numbers
+/// rather than a degenerate pair.
+fn positive_or(value: i64, fallback: i32) -> i32 {
+  match to_length(value) {
+    Ok(length) if length > 0 => length,
+    _ => fallback,
+  }
+}
+
 /// Derive the engine's settings and sizes from the host's values.
 ///
 /// Shared by [`ffi_pnsrouter_new`] and [`ffi_pnsrouter_set_settings`], so
@@ -1674,6 +1869,7 @@ fn derive_settings(
     ..base
   };
 
+  let defaults = Sizes::default();
   let mut sizes = Sizes {
     clearance: rules.max_clearance,
     min_clearance: rules.board.min_copper_copper_clearance,
@@ -1681,6 +1877,16 @@ fn derive_settings(
     track_width: to_length(settings.track_width).unwrap_or(0),
     via_diameter: to_length(settings.via_diameter).unwrap_or(0),
     via_drill: to_length(settings.via_drill).unwrap_or(0),
+    diff_pair_width: positive_or(
+      settings.diff_pair_width,
+      defaults.diff_pair_width,
+    ),
+    diff_pair_gap: positive_or(settings.diff_pair_gap, defaults.diff_pair_gap),
+    diff_pair_via_gap: positive_or(
+      settings.diff_pair_via_gap,
+      defaults.diff_pair_via_gap,
+    ),
+    diff_pair_via_gap_same_as_trace_gap: settings.diff_pair_via_gap <= 0,
     // The router only ever places through vias for now, so the via layer
     // pair covers the whole copper stack; see the integration design
     // note, section 1.8.
@@ -1718,6 +1924,11 @@ extern "C" fn ffi_pnsrouter_new(
     copper_layer_count,
     settings,
   );
+
+  // The resolver is taken by value, so this is the last moment at which
+  // the pair gap the `ConstraintType::DiffPairGap` answer mirrors can be
+  // put into the table.
+  snapshot.rules.diff_pair_gap = sizes.diff_pair_gap;
 
   let mut router = Router::new(
     &snapshot.snapshot,
@@ -1783,6 +1994,10 @@ extern "C" fn ffi_pnsrouter_set_settings(
     obj.copper_layer_count,
     settings,
   );
+
+  // Only the host's own copy: the resolver inside the session keeps the
+  // gap the session was built with, see `LibrePcbRules::diff_pair_gap`.
+  obj.rules.diff_pair_gap = sizes.diff_pair_gap;
 
   obj.router.set_settings(routing_settings);
   obj.router.set_sizes(sizes);
@@ -1910,6 +2125,90 @@ extern "C" fn ffi_pnsrouter_start_routing(
       obj.set_frame(PreviewFrame::default());
 
       to_start_result(Err(error))
+    }
+  }
+}
+
+/// Whether a differential pair may be started at a point.
+///
+/// Wraps `pnsrouter::router::Router::is_starting_point_routable_diff_pair`.
+/// Unlike the single track gate, `start` may not be zero: the engine has
+/// no other way to learn which two nets are being routed, and a zero is
+/// [`PnsStartResult::PairNeedsStartItem`].
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_is_starting_point_routable_diff_pair(
+  obj: &PnsRouter,
+  at: PnsPoint,
+  start: u64,
+  layer: i32,
+) -> PnsStartResult {
+  to_start_result(obj.router.is_starting_point_routable_diff_pair(
+    to_cursor(at),
+    to_host_id(start),
+    layer,
+  ))
+}
+
+/// Begin routing a differential pair.
+///
+/// Wraps `pnsrouter::router::Router::start_routing_diff_pair`. Which two
+/// nets are routed comes from the snapshot's pair table, through the
+/// resolver hooks [`ffi_pnsrouter_snapshot_set_net_partner`] fills in. On
+/// success the session holds the frame of a placement that has not been
+/// moved yet, and on failure it holds an empty one.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_start_routing_diff_pair(
+  obj: &mut PnsRouter,
+  at: PnsPoint,
+  start: u64,
+  layer: i32,
+) -> PnsStartResult {
+  match obj.router.start_routing_diff_pair(
+    to_cursor(at),
+    to_host_id(start),
+    layer,
+  ) {
+    Ok(frame) => {
+      obj.set_frame(frame);
+
+      PnsStartResult::Ok
+    }
+    Err(error) => {
+      obj.set_frame(PreviewFrame::default());
+
+      to_start_result(Err(error))
+    }
+  }
+}
+
+/// The nets the session is routing or dragging.
+///
+/// Wraps `pnsrouter::router::Router::current_nets`. Answers how many nets
+/// there are, which is zero while idle, one for a track or a drag and two
+/// for a differential pair, and writes the net numbers into `out_p` and
+/// `out_n`, the positive half first. A net number of zero is a route with
+/// no net of the host's, which is what a track started in free space gets.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_current_nets(
+  obj: &PnsRouter,
+  out_p: &mut u32,
+  out_n: &mut u32,
+) -> u32 {
+  *out_p = 0;
+  *out_n = 0;
+
+  match obj.router.current_nets() {
+    RoutedNets::None => 0,
+    RoutedNets::Single(net) => {
+      *out_p = to_net_number(net);
+
+      1
+    }
+    RoutedNets::Pair(net_p, net_n) => {
+      *out_p = to_net_number(net_p);
+      *out_n = to_net_number(net_n);
+
+      2
     }
   }
 }
@@ -2209,6 +2508,32 @@ extern "C" fn ffi_pnsrouter_preview_via(
   *out = to_ffi_via(via);
 }
 
+/// Whether the latest frame holds the N lane's half of a pending
+/// differential pair via.
+///
+/// `PreviewFrame::via_n`, which is always absent while a single track is
+/// being routed; the P lane's half is [`ffi_pnsrouter_preview_via`].
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_has_via_n(obj: &PnsRouter) -> bool {
+  obj.frame.via_n.is_some()
+}
+
+/// The N lane's half of a pending differential pair via, when
+/// [`ffi_pnsrouter_preview_has_via_n`] answers true.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_via_n(
+  obj: &PnsRouter,
+  out: &mut PnsPreviewVia,
+) {
+  let Some(via) = obj.frame.via_n.as_ref() else {
+    debug_assert!(false, "the frame holds no N lane head via");
+
+    return;
+  };
+
+  *out = to_ffi_via(via);
+}
+
 /// How many vias this session has already fixed.
 #[no_mangle]
 extern "C" fn ffi_pnsrouter_preview_fixed_via_count(obj: &PnsRouter) -> usize {
@@ -2254,6 +2579,42 @@ extern "C" fn ffi_pnsrouter_preview_ratline_point(
 
   if index >= ratline.point_count() {
     debug_assert!(false, "rat line point index {index} is out of range");
+
+    return PnsPoint { x: 0, y: 0 };
+  }
+
+  to_ffi_point(ratline.point(index))
+}
+
+/// How many points the N lane's rat line holds, zero when there is none.
+///
+/// `PreviewFrame::ratline_n`, the second rat line a differential pair
+/// draws; always empty while a single track is being routed.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_ratline_n_point_count(
+  obj: &PnsRouter,
+) -> usize {
+  obj
+    .frame
+    .ratline_n
+    .as_ref()
+    .map_or(0, LineChain::point_count)
+}
+
+/// One point of the N lane's rat line.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_ratline_n_point(
+  obj: &PnsRouter,
+  index: usize,
+) -> PnsPoint {
+  let Some(ratline) = obj.frame.ratline_n.as_ref() else {
+    debug_assert!(false, "the frame holds no N lane rat line");
+
+    return PnsPoint { x: 0, y: 0 };
+  };
+
+  if index >= ratline.point_count() {
+    debug_assert!(false, "N lane rat line point index {index} is out of range");
 
     return PnsPoint { x: 0, y: 0 };
   }
@@ -2587,14 +2948,16 @@ fn to_start_result(result: Result<(), StartError>) -> PnsStartResult {
     Err(StartError::PlacerRefused) => PnsStartResult::PlacerRefused,
     Err(StartError::NothingToDrag) => PnsStartResult::NothingToDrag,
     Err(StartError::NotDraggable(_)) => PnsStartResult::NotDraggable,
-    Err(
-      StartError::PairNeedsStartItem
-      | StartError::NotADiffPair
-      | StartError::NoDanglingAnchor
-      | StartError::NoCoupledStartItem(_)
-      | StartError::PairGapBelowMinClearance
-      | StartError::PairGapMismatch,
-    ) => PnsStartResult::DiffPairRefused,
+    Err(StartError::PairNeedsStartItem) => PnsStartResult::PairNeedsStartItem,
+    Err(StartError::NotADiffPair) => PnsStartResult::NotADiffPair,
+    Err(StartError::NoDanglingAnchor) => PnsStartResult::NoDanglingAnchor,
+    Err(StartError::NoCoupledStartItem(_)) => {
+      PnsStartResult::NoCoupledStartItem
+    }
+    Err(StartError::PairGapBelowMinClearance) => {
+      PnsStartResult::PairGapBelowMinClearance
+    }
+    Err(StartError::PairGapMismatch) => PnsStartResult::PairGapMismatch,
     Err(
       StartError::TuningNeedsStartItem
       | StartError::NotATrack(_)

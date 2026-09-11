@@ -184,7 +184,11 @@ private:  // Methods
   void drawVia(const BoardPnsPreviewVia& via) noexcept;
 
   /**
-   * @brief Draw the rat line of a frame
+   * @brief Draw one rat line of a frame
+   *
+   * Called once per frame for a single trace and twice for a differential
+   * pair, which carries one rat line per lane. An empty path draws nothing
+   * and consumes no pool item.
    */
   void drawRatline(const QVector<Point>& ratline) noexcept;
 

@@ -17,7 +17,8 @@ import {
 //
 // The first four widgets are the ones the draw trace toolbar has too, bound
 // to the same generic tool properties. The router-specific ones follow:
-// the routing mode, the corner mode, the posture and the via placement.
+// the routing mode, the corner mode, the posture, the via placement and the
+// differential pair switch with the three pair sizes it reveals.
 export component RouteTraceToolBar inherits HorizontalLayout {
     in property <int> section-index;
     in-out property <WindowSectionData> section;
@@ -187,6 +188,100 @@ export component RouteTraceToolBar inherits HorizontalLayout {
 
         clicked => {
             Backend.trigger-tab(section-index, section.current-tab-index, TabAction.router-via-toggle);
+        }
+    }
+
+    diff-pair-sw := ToolBarButton {
+        icon: @image-url("../../../../font-awesome/svgs/solid/equals.svg");
+        tooltip: @tr("Differential Pair");
+        status-tip: @tr("Route both nets of a differential pair at once");
+        checked: tabs[section.current-tab-index].tool-router-diff-pair;
+        checkable: true;
+
+        clicked => {
+            tabs[section.current-tab-index].tool-router-diff-pair = !self.checked;
+        }
+    }
+
+    // The three pair sizes only make sense while pairs are being routed, and
+    // the toolbar is crowded enough without them.
+    if diff-pair-sw.checked: diff-pair-width-edt := LengthEdit {
+        data: tabs[section.current-tab-index].tool-diff-pair-width;
+        icon: @image-url("../../../../bootstrap-icons/icons/border-width.svg");
+        tooltip: @tr("Differential Pair Trace Width");
+        min-width-text: "1.234";
+
+        value-changed(v) => {
+            tabs[section.current-tab-index].tool-diff-pair-width.value = v;
+        }
+
+        unit-changed(u) => {
+            tabs[section.current-tab-index].tool-diff-pair-width.unit = u;
+        }
+
+        increase-triggered => {
+            tabs[section.current-tab-index].tool-diff-pair-width.increase = true;
+        }
+
+        decrease-triggered => {
+            tabs[section.current-tab-index].tool-diff-pair-width.decrease = true;
+        }
+    }
+
+    if diff-pair-sw.checked: diff-pair-gap-edt := LengthEdit {
+        data: tabs[section.current-tab-index].tool-diff-pair-gap;
+        icon: @image-url("../../../../bootstrap-icons/icons/distribute-horizontal.svg");
+        tooltip: @tr("Differential Pair Gap");
+        min-width-text: "1.234";
+
+        value-changed(v) => {
+            tabs[section.current-tab-index].tool-diff-pair-gap.value = v;
+        }
+
+        unit-changed(u) => {
+            tabs[section.current-tab-index].tool-diff-pair-gap.unit = u;
+        }
+
+        increase-triggered => {
+            tabs[section.current-tab-index].tool-diff-pair-gap.increase = true;
+        }
+
+        decrease-triggered => {
+            tabs[section.current-tab-index].tool-diff-pair-gap.decrease = true;
+        }
+    }
+
+    // "Auto" here means "the same as the trace gap", which is what the
+    // router's own via gap switch does.
+    if diff-pair-sw.checked && show-via-size: diff-pair-via-gap-edt := LengthEdit {
+        data: tabs[section.current-tab-index].tool-diff-pair-via-gap;
+        icon: @image-url("../../../../bootstrap-icons/icons/record-circle-fill.svg");
+        tooltip: @tr("Differential Pair Via Gap");
+        min-width-text: "1.234";
+        auto-supported: true;
+        auto-checked: tabs[section.current-tab-index].tool-diff-pair-via-gap-auto;
+
+        value-changed(v) => {
+            tabs[section.current-tab-index].tool-diff-pair-via-gap-auto = false;
+            tabs[section.current-tab-index].tool-diff-pair-via-gap.value = v;
+        }
+
+        unit-changed(u) => {
+            tabs[section.current-tab-index].tool-diff-pair-via-gap.unit = u;
+        }
+
+        increase-triggered => {
+            tabs[section.current-tab-index].tool-diff-pair-via-gap-auto = false;
+            tabs[section.current-tab-index].tool-diff-pair-via-gap.increase = true;
+        }
+
+        decrease-triggered => {
+            tabs[section.current-tab-index].tool-diff-pair-via-gap-auto = false;
+            tabs[section.current-tab-index].tool-diff-pair-via-gap.decrease = true;
+        }
+
+        auto-toggled(checked) => {
+            tabs[section.current-tab-index].tool-diff-pair-via-gap-auto = checked;
         }
     }
 }

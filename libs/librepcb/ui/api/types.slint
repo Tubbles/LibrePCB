@@ -1386,12 +1386,17 @@ export struct Board2dTabData {
     tool-wire-mode: WireMode,
     tool-router-mode: RouterMode,
     tool-router-corner-mode: bool,  // True for 90°, false for 45° corners
+    tool-router-diff-pair: bool,  // True to route differential pairs
     tool-net: ComboBoxData,
     tool-netclass-name: string,  // Read-only, empty if not in routing state
     tool-layer: ComboBoxData,
     tool-line-width: LengthEditData,
     tool-size: LengthEditData,
     tool-drill: LengthEditData,
+    tool-diff-pair-width: LengthEditData,
+    tool-diff-pair-gap: LengthEditData,
+    tool-diff-pair-via-gap: LengthEditData,
+    tool-diff-pair-via-gap-auto: bool,  // True if the via gap is the trace gap
     tool-angle: AngleEditData,
     tool-filled: bool,  // Also used for 'auto' trace width
     tool-mirrored: bool,  // Also used for 'auto' via size

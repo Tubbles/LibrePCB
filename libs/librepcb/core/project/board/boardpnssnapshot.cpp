@@ -32,6 +32,7 @@
 #include "../../types/layer.h"
 #include "../../utils/transform.h"
 #include "../circuit/circuit.h"
+#include "../circuit/differentialpairs.h"
 #include "../circuit/netclass.h"
 #include "../circuit/netsignal.h"
 #include "../project.h"
@@ -376,6 +377,17 @@ NetSignal* BoardPnsSnapshot::getNetSignal(quint32 netNumber) const noexcept {
   return mNetSignals.at(static_cast<int>(netNumber - 1));
 }
 
+quint32 BoardPnsSnapshot::getPartnerNetNumber(
+    quint32 netNumber) const noexcept {
+  if (!mHandle.mObj) return 0;  // Already handed over to a session.
+  return rs::ffi_pnsrouter_snapshot_net_partner(*mHandle, netNumber);
+}
+
+int BoardPnsSnapshot::getNetPolarity(quint32 netNumber) const noexcept {
+  if (!mHandle.mObj) return 0;  // Already handed over to a session.
+  return rs::ffi_pnsrouter_snapshot_net_polarity(*mHandle, netNumber);
+}
+
 /*******************************************************************************
  *  General Methods
  ******************************************************************************/
@@ -478,6 +490,21 @@ void BoardPnsSnapshot::addNets(const Board& board) {
     // order makes the vector the reverse lookup.
     Q_ASSERT(number == static_cast<quint32>(mNetSignals.count() + 1));
     mNetSignals.append(net);
+  }
+
+  // The differential pairs, in a second pass because a net's partner may
+  // well come after it in the circuit's own order and both halves have to
+  // be numbered before they can be related. One call per half, so the
+  // router's table is symmetric without this loop having to skip the half
+  // it has already seen.
+  foreach (NetSignal* net, circuit.getNetSignals()) {
+    const NetSignal* partner = DifferentialPairs::partnerOf(*net);
+    if (!partner) {
+      continue;
+    }
+    rs::ffi_pnsrouter_snapshot_set_net_partner(
+        *mHandle, getNetNumber(net), getNetNumber(partner),
+        DifferentialPairs::polarityOf(*net->getName()));
   }
 }
 

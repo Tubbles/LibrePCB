@@ -142,11 +142,17 @@ void BoardPnsPreviewItems::update(const BoardPnsPreview& preview) noexcept {
     drawItem(item);
   }
   drawRatline(preview.ratline);
+  // Both are empty unless a differential pair is being routed, in which
+  // case the two lanes bring one rat line and one via each.
+  drawRatline(preview.ratlineN);
   foreach (const BoardPnsPreviewVia& via, preview.fixedVias) {
     drawVia(via);
   }
   if (preview.via) {
     drawVia(*preview.via);
+  }
+  if (preview.viaN) {
+    drawVia(*preview.viaN);
   }
 
   parkUnusedItems();

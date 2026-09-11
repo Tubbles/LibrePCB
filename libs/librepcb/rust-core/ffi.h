@@ -363,15 +363,40 @@ enum class PnsStartResult {
    */
   NotDraggable = 8,
   /**
-   * Any of the engine's differential pair refusals. This host never
-   * starts a pair, so the value exists to keep the mapping total.
+   * `StartError::PairNeedsStartItem`: a pair placement was asked for in
+   * free space, where it needs an object to learn the two nets from.
    */
-  DiffPairRefused = 9,
+  PairNeedsStartItem = 9,
+  /**
+   * `StartError::NotADiffPair`: the net of the start object has no
+   * partner in the snapshot's pair table.
+   */
+  NotADiffPair = 10,
+  /**
+   * `StartError::NoDanglingAnchor`: the start object has no free end.
+   */
+  NoDanglingAnchor = 11,
+  /**
+   * `StartError::NoCoupledStartItem`: nothing on the coupled net can be
+   * paired with the start object. The net it names is dropped, like the
+   * ids of the two naming variants above.
+   */
+  NoCoupledStartItem = 12,
+  /**
+   * `StartError::PairGapBelowMinClearance`: the configured pair gap does
+   * not reach the board's minimum copper to copper clearance.
+   */
+  PairGapBelowMinClearance = 13,
+  /**
+   * `StartError::PairGapMismatch`: the two tracks under the cursor are
+   * not spaced like the configured pair.
+   */
+  PairGapMismatch = 14,
   /**
    * Any of the engine's length tuning refusals. This host never starts
    * a tuning session, so the value exists to keep the mapping total.
    */
-  TuningRefused = 10,
+  TuningRefused = 15,
 };
 
 /**
@@ -954,6 +979,30 @@ struct PnsRouterSettings {
    * entry points.
    */
   bool record_session;
+  /**
+   * The width of one track of a differential pair, in nanometres.
+   *
+   * `Sizes::diff_pair_width`. Zero keeps the crate's own default, which
+   * is KiCad's 0.125 mm.
+   */
+  int64_t diff_pair_width;
+  /**
+   * The copper gap between the two tracks of a differential pair, in
+   * nanometres.
+   *
+   * `Sizes::diff_pair_gap`. Zero keeps the crate's own default, which is
+   * KiCad's 0.18 mm. It has to reach the board's minimum copper to copper
+   * clearance or every pair start is refused with
+   * [`PnsStartResult::PairGapBelowMinClearance`].
+   */
+  int64_t diff_pair_gap;
+  /**
+   * The gap between the two vias of a differential pair, in nanometres.
+   *
+   * `Sizes::diff_pair_via_gap`. Zero means "the same as the track gap",
+   * which is what `Sizes::diff_pair_via_gap_same_as_trace_gap` selects.
+   */
+  int64_t diff_pair_via_gap;
 };
 
 /**
@@ -1410,6 +1459,40 @@ uint32_t ffi_pnsrouter_snapshot_add_net(PnsSnapshot * NONNULL obj,
                                         size_t net_class_index);
 
 /**
+ * Record that two nets are the two halves of a differential pair.
+ *
+ * `net` and `partner` are net numbers as
+ * [`ffi_pnsrouter_snapshot_add_net`] handed them out, and `polarity` is
+ * `1` for the positive half and `-1` for the negative one. It is called
+ * once per half, so the host does not have to decide which half it is
+ * looking at, and it must be called after both nets were added.
+ *
+ * A net number the snapshot never handed out, a partner equal to the net
+ * itself, or a polarity of zero is ignored rather than stored: the three
+ * resolver hooks then answer "not a pair" and the engine refuses a pair
+ * start cleanly instead of routing two nets that are not coupled.
+ */
+void ffi_pnsrouter_snapshot_set_net_partner(PnsSnapshot * NONNULL obj,
+                                            uint32_t net,
+                                            uint32_t partner,
+                                            int32_t polarity);
+
+/**
+ * The net number of a net's differential pair partner, or zero.
+ *
+ * A read back of what [`ffi_pnsrouter_snapshot_set_net_partner`] stored,
+ * so that the unit tests can prove the table the resolver reads.
+ */
+uint32_t ffi_pnsrouter_snapshot_net_partner(const PnsSnapshot * NONNULL obj,
+                                            uint32_t net);
+
+/**
+ * The differential pair polarity of a net, zero for a net without one.
+ */
+int32_t ffi_pnsrouter_snapshot_net_polarity(const PnsSnapshot * NONNULL obj,
+                                            uint32_t net);
+
+/**
  * Add one track.
  *
  * Wraps `pnsrouter::snapshot::WorldGeometry::Segment`.
@@ -1618,6 +1701,46 @@ PnsStartResult ffi_pnsrouter_start_routing(PnsRouter * NONNULL obj,
                                            int32_t layer);
 
 /**
+ * Whether a differential pair may be started at a point.
+ *
+ * Wraps `pnsrouter::router::Router::is_starting_point_routable_diff_pair`.
+ * Unlike the single track gate, `start` may not be zero: the engine has
+ * no other way to learn which two nets are being routed, and a zero is
+ * [`PnsStartResult::PairNeedsStartItem`].
+ */
+PnsStartResult ffi_pnsrouter_is_starting_point_routable_diff_pair(const PnsRouter * NONNULL obj,
+                                                                  PnsPoint at,
+                                                                  uint64_t start,
+                                                                  int32_t layer);
+
+/**
+ * Begin routing a differential pair.
+ *
+ * Wraps `pnsrouter::router::Router::start_routing_diff_pair`. Which two
+ * nets are routed comes from the snapshot's pair table, through the
+ * resolver hooks [`ffi_pnsrouter_snapshot_set_net_partner`] fills in. On
+ * success the session holds the frame of a placement that has not been
+ * moved yet, and on failure it holds an empty one.
+ */
+PnsStartResult ffi_pnsrouter_start_routing_diff_pair(PnsRouter * NONNULL obj,
+                                                     PnsPoint at,
+                                                     uint64_t start,
+                                                     int32_t layer);
+
+/**
+ * The nets the session is routing or dragging.
+ *
+ * Wraps `pnsrouter::router::Router::current_nets`. Answers how many nets
+ * there are, which is zero while idle, one for a track or a drag and two
+ * for a differential pair, and writes the net numbers into `out_p` and
+ * `out_n`, the positive half first. A net number of zero is a route with
+ * no net of the host's, which is what a track started in free space gets.
+ */
+uint32_t ffi_pnsrouter_current_nets(const PnsRouter * NONNULL obj,
+                                    uint32_t * NONNULL out_p,
+                                    uint32_t * NONNULL out_n);
+
+/**
  * Begin dragging existing board objects.
  *
  * Wraps `pnsrouter::router::Router::start_dragging`. `host_ids` points at
@@ -1776,6 +1899,22 @@ void ffi_pnsrouter_preview_via(const PnsRouter * NONNULL obj,
                                PnsPreviewVia * NONNULL out);
 
 /**
+ * Whether the latest frame holds the N lane's half of a pending
+ * differential pair via.
+ *
+ * `PreviewFrame::via_n`, which is always absent while a single track is
+ * being routed; the P lane's half is [`ffi_pnsrouter_preview_via`].
+ */
+bool ffi_pnsrouter_preview_has_via_n(const PnsRouter * NONNULL obj);
+
+/**
+ * The N lane's half of a pending differential pair via, when
+ * [`ffi_pnsrouter_preview_has_via_n`] answers true.
+ */
+void ffi_pnsrouter_preview_via_n(const PnsRouter * NONNULL obj,
+                                 PnsPreviewVia * NONNULL out);
+
+/**
  * How many vias this session has already fixed.
  */
 size_t ffi_pnsrouter_preview_fixed_via_count(const PnsRouter * NONNULL obj);
@@ -1798,6 +1937,20 @@ size_t ffi_pnsrouter_preview_ratline_point_count(const PnsRouter * NONNULL obj);
  */
 PnsPoint ffi_pnsrouter_preview_ratline_point(const PnsRouter * NONNULL obj,
                                              size_t index);
+
+/**
+ * How many points the N lane's rat line holds, zero when there is none.
+ *
+ * `PreviewFrame::ratline_n`, the second rat line a differential pair
+ * draws; always empty while a single track is being routed.
+ */
+size_t ffi_pnsrouter_preview_ratline_n_point_count(const PnsRouter * NONNULL obj);
+
+/**
+ * One point of the N lane's rat line.
+ */
+PnsPoint ffi_pnsrouter_preview_ratline_n_point(const PnsRouter * NONNULL obj,
+                                               size_t index);
 
 /**
  * How many obstacles the route being placed runs into.

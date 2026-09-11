@@ -141,14 +141,24 @@ struct BoardPnsMovedDevice final {
 struct BoardPnsPreview final {
   QVector<BoardPnsPreviewItem> items;
 
-  /// The via the next fix would place, if one is armed.
+  /// The via the next fix would place, if one is armed. While a
+  /// differential pair is being routed this is the positive lane's.
   std::optional<BoardPnsPreviewVia> via;
+
+  /// The negative lane's half of a pending differential pair via. Never
+  /// set while a single trace is being routed.
+  std::optional<BoardPnsPreviewVia> viaN;
 
   /// The vias the session has already fixed.
   QVector<BoardPnsPreviewVia> fixedVias;
 
   /// The rat line from the end of the route to what it still has to reach.
+  /// While a differential pair is being routed this is the positive lane's.
   QVector<Point> ratline;
+
+  /// The negative lane's rat line. Always empty while a single trace is
+  /// being routed.
+  QVector<Point> ratlineN;
 
   QVector<BoardPnsViolation> violations;
 
@@ -310,12 +320,37 @@ public:
     /// keeps a copy of the whole board snapshot and of every event.
     /// Only honoured by the constructor, not by #setSettings().
     bool recordSession = false;
+
+    /// The width of one trace of a differential pair. The router's own
+    /// default, KiCad's 0.125 mm, because LibrePCB has no design rule
+    /// which could supply one.
+    PositiveLength diffPairWidth = PositiveLength(Length(125000));
+
+    /// The copper gap between the two traces of a differential pair. The
+    /// router's own default, KiCad's 0.18 mm, for the same reason.
+    ///
+    /// It has to reach the board's minimum copper to copper clearance or
+    /// every pair start is refused with
+    /// ::librepcb::BoardPnsRouter::StartResult::PairGapBelowMinClearance;
+    /// that is the only consistency check the router makes between the
+    /// pair geometry and the clearance rules.
+    PositiveLength diffPairGap = PositiveLength(Length(180000));
+
+    /// The gap between the two vias of a differential pair, or
+    /// `std::nullopt` for "the same as #diffPairGap".
+    std::optional<PositiveLength> diffPairViaGap = std::nullopt;
   };
 
   /**
    * @brief Why a session refused to start
    *
-   * The last three can only come out of #startDragging().
+   * ::librepcb::BoardPnsRouter::StartResult::NothingToDrag,
+   * ::librepcb::BoardPnsRouter::StartResult::IncompleteDeviceDrag and
+   * ::librepcb::BoardPnsRouter::StartResult::NotDraggable can only come
+   * out of #startDragging(); the six from
+   * ::librepcb::BoardPnsRouter::StartResult::PairNeedsStartItem on can
+   * only come out of #startRoutingDiffPair() and
+   * #isStartingPointRoutableDiffPair().
    */
   enum class StartResult {
     Ok,  ///< The point may be routed from.
@@ -330,6 +365,18 @@ public:
                            ///< behind.
     NotDraggable,  ///< A hole, a copper graphic, a keepout zone or a pad
                    ///< of no device: obstacles the router never moves.
+    PairNeedsStartItem,  ///< A pair was started in free space, where it has
+                         ///< no way to learn which two nets to route.
+    NotADiffPair,  ///< The net of the start object has no partner.
+    NoDanglingAnchor,  ///< The start object has no free end to start from.
+    NoCoupledStartItem,  ///< Nothing on the partner net matches the start
+                         ///< object: it has to be the same kind of object,
+                         ///< have a free end of its own and, for a pad or a
+                         ///< via, span the same layers.
+    PairGapBelowMinClearance,  ///< The pair gap does not reach the board's
+                               ///< minimum copper to copper clearance.
+    PairGapMismatch,  ///< The two traces under the cursor are not spaced
+                      ///< like the configured pair.
   };
 
   /**
@@ -476,6 +523,59 @@ public:
    */
   StartResult startRouting(const Point& pos, quint64 startItem,
                            const Layer& layer) noexcept;
+
+  /**
+   * @brief Check whether a differential pair may be started at a point
+   *
+   * The same gate #startRoutingDiffPair() runs. It is a much larger gate
+   * than the single trace one: the configured pair gap has to reach the
+   * board's minimum copper to copper clearance, a start object is
+   * required, the object's net has to have a partner in the circuit, the
+   * partner net has to hold a matching object with a free end, and a
+   * start on two existing traces has to find them spaced like the
+   * configured pair.
+   *
+   * A pair cannot start in free space, so a start item of 0 answers
+   * ::librepcb::BoardPnsRouter::StartResult::PairNeedsStartItem.
+   *
+   * @param pos         The already snapped start point.
+   * @param startItem   The host ID under the cursor, which is required.
+   * @param layer       The copper layer to start on.
+   */
+  StartResult isStartingPointRoutableDiffPair(
+      const Point& pos, quint64 startItem, const Layer& layer) const noexcept;
+
+  /**
+   * @brief Begin routing a differential pair
+   *
+   * Which two nets are routed is not the caller's choice: the router takes
+   * them from the pair table of its snapshot, which
+   * ::librepcb::DifferentialPairs derives from the net signal names. The two
+   * traces are placed at the pair width and gap of
+   * ::librepcb::BoardPnsRouter::Settings, and the session commits segments
+   * and vias on both nets in one ::librepcb::BoardPnsCommit.
+   *
+   * Everything after the start is the same as for a single trace: #moveTo(),
+   * #fixRoute(), #switchLayer(), #toggleViaPlacement(), #stopRouting() and
+   * #abortRouting() all work on whichever placement is running.
+   *
+   * @param pos         The already snapped start point.
+   * @param startItem   The host ID under the cursor, which is required.
+   * @param layer       The copper layer to start on.
+   */
+  StartResult startRoutingDiffPair(const Point& pos, quint64 startItem,
+                                   const Layer& layer) noexcept;
+
+  /**
+   * @brief Get the net signals the session is routing or dragging
+   *
+   * @return Empty while nothing is running, one entry for a single trace
+   *         or a drag, and two for a differential pair with the positive
+   *         half first. An entry is `nullptr` for a route which has no net
+   *         of the circuit, which is what a trace started in free space
+   *         gets.
+   */
+  QVector<NetSignal*> getCurrentNets() const noexcept;
 
   /**
    * @brief Begin dragging existing board objects

@@ -36,6 +36,7 @@
 #include <librepcb/core/project/board/items/bi_via.h>
 #include <librepcb/core/project/board/items/bi_zone.h>
 #include <librepcb/core/project/circuit/circuit.h>
+#include <librepcb/core/project/circuit/netsignal.h>
 #include <librepcb/core/project/project.h>
 #include <librepcb/core/project/projectloader.h>
 #include <librepcb/core/types/layer.h>
@@ -216,6 +217,9 @@ TEST_F(BoardPnsSnapshotTest, testRouterHandleLifetime) {
       false,  // Allow DRC violations.
       false,  // 90 degree corners.
       false,  // Record the session.
+      0,  // Differential pair trace width, 0 keeps the router's default.
+      0,  // Differential pair gap, 0 keeps the router's default.
+      0,  // Differential pair via gap, 0 means "the same as the trace gap".
   };
   rs::PnsRouter* obj = rs::ffi_pnsrouter_new(snapshot.mObj, &settings);
   ASSERT_NE(obj, nullptr);
@@ -647,6 +651,79 @@ TEST_F(BoardPnsSnapshotTest, testKeepoutHasNoClearance) {
                 *snapshot, zoneId, rs::PnsItemRole::Copper, padId,
                 rs::PnsItemRole::Copper, &clearance),
             rs::PnsResult::NoClearance);
+}
+
+/*******************************************************************************
+ *  Differential pairs
+ ******************************************************************************/
+
+/**
+ * @brief The router's pair table is what DifferentialPairs derives
+ *
+ * The Gerber Test project holds no pair, so two of its nets are renamed into
+ * one. The renaming is the whole fixture: nothing else about the board has
+ * to change, because LibrePCB derives its pairs from the net names alone.
+ */
+TEST_F(BoardPnsSnapshotTest, testDifferentialPairReachesTheRuleTable) {
+  std::unique_ptr<Project> project = openGerberTestProject();
+  ASSERT_FALSE(project->getBoards().isEmpty());
+  Board& board = *project->getBoards().first();
+  Circuit& circuit = project->getCircuit();
+
+  const QList<NetSignal*> nets = circuit.getNetSignals().values();
+  ASSERT_GE(nets.count(), 3);
+  NetSignal* positive = nets.at(0);
+  NetSignal* negative = nets.at(1);
+  NetSignal* unpaired = nets.at(2);
+  circuit.setNetSignalName(*positive, CircuitIdentifier("X_P"), false);
+  circuit.setNetSignalName(*negative, CircuitIdentifier("X_N"), false);
+
+  BoardPnsSnapshot snapshot(board);
+  const quint32 numberP = snapshot.getNetNumber(positive);
+  const quint32 numberN = snapshot.getNetNumber(negative);
+  const quint32 numberUnpaired = snapshot.getNetNumber(unpaired);
+  ASSERT_GT(numberP, 0U);
+  ASSERT_GT(numberN, 0U);
+  ASSERT_GT(numberUnpaired, 0U);
+
+  // Both ways round, which is what the router's resolver needs: it asks
+  // about whichever half the start object happens to sit on.
+  EXPECT_EQ(snapshot.getPartnerNetNumber(numberP), numberN);
+  EXPECT_EQ(snapshot.getPartnerNetNumber(numberN), numberP);
+  EXPECT_EQ(snapshot.getNetPolarity(numberP), 1);
+  EXPECT_EQ(snapshot.getNetPolarity(numberN), -1);
+
+  // Every other net is untouched, and so is the null net number.
+  EXPECT_EQ(snapshot.getPartnerNetNumber(numberUnpaired), 0U);
+  EXPECT_EQ(snapshot.getNetPolarity(numberUnpaired), 0);
+  EXPECT_EQ(snapshot.getPartnerNetNumber(0), 0U);
+  EXPECT_EQ(snapshot.getNetPolarity(0), 0);
+}
+
+/**
+ * @brief A name whose complement is missing makes no pair
+ *
+ * The half without a partner has a polarity as a *name*, which is what
+ * ::librepcb::DifferentialPairs::polarityOf() answers, but the router must
+ * not learn one: a polarity without a partner would make the resolver
+ * answer a pair whose other half does not exist.
+ */
+TEST_F(BoardPnsSnapshotTest, testHalfADifferentialPairIsNoPair) {
+  std::unique_ptr<Project> project = openGerberTestProject();
+  ASSERT_FALSE(project->getBoards().isEmpty());
+  Board& board = *project->getBoards().first();
+  Circuit& circuit = project->getCircuit();
+
+  NetSignal* lonely = circuit.getNetSignals().values().value(0);
+  ASSERT_NE(lonely, nullptr);
+  circuit.setNetSignalName(*lonely, CircuitIdentifier("Y_P"), false);
+  ASSERT_EQ(circuit.getNetSignalByName("Y_N"), nullptr);
+
+  BoardPnsSnapshot snapshot(board);
+  const quint32 number = snapshot.getNetNumber(lonely);
+  ASSERT_GT(number, 0U);
+  EXPECT_EQ(snapshot.getPartnerNetNumber(number), 0U);
+  EXPECT_EQ(snapshot.getNetPolarity(number), 0);
 }
 
 /*******************************************************************************

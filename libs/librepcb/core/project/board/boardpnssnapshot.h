@@ -164,6 +164,31 @@ public:
    */
   NetSignal* getNetSignal(quint32 netNumber) const noexcept;
 
+  /**
+   * @brief Get the FFI net number of a net's differential pair partner
+   *
+   * Read back out of the router's own pair table, which is what its rule
+   * resolver answers the three differential pair queries from, so this is
+   * the table and not a second copy of it.
+   *
+   * @param netNumber   An FFI net number as #getNetNumber() hands them out.
+   *
+   * @return The partner's net number, or 0 if the net is not half of a
+   *         pair, if the number was never handed out, or if the snapshot
+   *         was already given to a routing session by #release().
+   */
+  quint32 getPartnerNetNumber(quint32 netNumber) const noexcept;
+
+  /**
+   * @brief Get the differential pair polarity of an FFI net number
+   *
+   * @retval 1    The `+` / `P` half of a pair.
+   * @retval -1   The `-` / `N` half of a pair.
+   * @retval 0    Not part of a pair, or the snapshot was already given to a
+   *              routing session by #release().
+   */
+  int getNetPolarity(quint32 netNumber) const noexcept;
+
   // General Methods
 
   /**
@@ -222,6 +247,14 @@ public:
 
 private:  // Methods
   void addRules(const Board& board);
+
+  /**
+   * @brief Add every net class and every net signal of the circuit
+   *
+   * The differential pairs go in afterwards, in a second pass over the
+   * same net signals, because a net's partner may come after it in the
+   * circuit's order and both halves have to be numbered first.
+   */
   void addNets(const Board& board);
   void addTracesAndVias(const Board& board);
   void addPads(const Board& board);

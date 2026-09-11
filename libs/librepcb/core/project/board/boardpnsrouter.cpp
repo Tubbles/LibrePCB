@@ -108,8 +108,21 @@ static BoardPnsRouter::StartResult toStartResult(
       return BoardPnsRouter::StartResult::IncompleteDeviceDrag;
     case rs::PnsStartResult::NotDraggable:
       return BoardPnsRouter::StartResult::NotDraggable;
-    case rs::PnsStartResult::DiffPairRefused:
+    case rs::PnsStartResult::PairNeedsStartItem:
+      return BoardPnsRouter::StartResult::PairNeedsStartItem;
+    case rs::PnsStartResult::NotADiffPair:
+      return BoardPnsRouter::StartResult::NotADiffPair;
+    case rs::PnsStartResult::NoDanglingAnchor:
+      return BoardPnsRouter::StartResult::NoDanglingAnchor;
+    case rs::PnsStartResult::NoCoupledStartItem:
+      return BoardPnsRouter::StartResult::NoCoupledStartItem;
+    case rs::PnsStartResult::PairGapBelowMinClearance:
+      return BoardPnsRouter::StartResult::PairGapBelowMinClearance;
+    case rs::PnsStartResult::PairGapMismatch:
+      return BoardPnsRouter::StartResult::PairGapMismatch;
     case rs::PnsStartResult::TuningRefused:
+      // Nothing here ever starts a length tuning session, so this is
+      // unreachable; it keeps the mapping total.
       return BoardPnsRouter::StartResult::PlacerRefused;
     case rs::PnsStartResult::Ok:
     default:
@@ -164,6 +177,10 @@ static rs::PnsRouterSettings toFfi(
       settings.allowDrcViolations,
       settings.cornerMode90,
       settings.recordSession,
+      (*settings.diffPairWidth).toNm(),
+      (*settings.diffPairGap).toNm(),
+      // Zero is how the router spells "the via gap follows the trace gap".
+      settings.diffPairViaGap ? (**settings.diffPairViaGap).toNm() : 0,
   };
 }
 
@@ -268,6 +285,39 @@ BoardPnsRouter::StartResult BoardPnsRouter::startRouting(
       *mHandle, toFfi(pos), startItem, denseLayer);
   updatePreview();
   return toStartResult(result);
+}
+
+BoardPnsRouter::StartResult BoardPnsRouter::isStartingPointRoutableDiffPair(
+    const Point& pos, quint64 startItem, const Layer& layer) const noexcept {
+  const int denseLayer =
+      BoardPnsSnapshot::toDenseLayerIndex(layer, mInnerLayerCount);
+  return toStartResult(rs::ffi_pnsrouter_is_starting_point_routable_diff_pair(
+      *mHandle, toFfi(pos), startItem, denseLayer));
+}
+
+BoardPnsRouter::StartResult BoardPnsRouter::startRoutingDiffPair(
+    const Point& pos, quint64 startItem, const Layer& layer) noexcept {
+  const int denseLayer =
+      BoardPnsSnapshot::toDenseLayerIndex(layer, mInnerLayerCount);
+  const rs::PnsStartResult result = rs::ffi_pnsrouter_start_routing_diff_pair(
+      *mHandle, toFfi(pos), startItem, denseLayer);
+  updatePreview();
+  return toStartResult(result);
+}
+
+QVector<NetSignal*> BoardPnsRouter::getCurrentNets() const noexcept {
+  uint32_t netP = 0;
+  uint32_t netN = 0;
+  const uint32_t count = rs::ffi_pnsrouter_current_nets(*mHandle, &netP, &netN);
+
+  QVector<NetSignal*> nets;
+  if (count > 0) {
+    nets.append(toNetSignal(netP));
+  }
+  if (count > 1) {
+    nets.append(toNetSignal(netN));
+  }
+  return nets;
 }
 
 BoardPnsRouter::StartResult BoardPnsRouter::startDragging(
@@ -407,6 +457,12 @@ void BoardPnsRouter::updatePreview() noexcept {
     mPreview.via = toPreviewVia(raw);
   }
 
+  if (rs::ffi_pnsrouter_preview_has_via_n(*mHandle)) {
+    rs::PnsPreviewVia raw = {};
+    rs::ffi_pnsrouter_preview_via_n(*mHandle, &raw);
+    mPreview.viaN = toPreviewVia(raw);
+  }
+
   const std::size_t viaCount =
       rs::ffi_pnsrouter_preview_fixed_via_count(*mHandle);
   mPreview.fixedVias.reserve(static_cast<int>(viaCount));
@@ -422,6 +478,14 @@ void BoardPnsRouter::updatePreview() noexcept {
   for (std::size_t i = 0; i < ratlineCount; ++i) {
     mPreview.ratline.append(
         toPoint(rs::ffi_pnsrouter_preview_ratline_point(*mHandle, i)));
+  }
+
+  const std::size_t ratlineNCount =
+      rs::ffi_pnsrouter_preview_ratline_n_point_count(*mHandle);
+  mPreview.ratlineN.reserve(static_cast<int>(ratlineNCount));
+  for (std::size_t i = 0; i < ratlineNCount; ++i) {
+    mPreview.ratlineN.append(
+        toPoint(rs::ffi_pnsrouter_preview_ratline_n_point(*mHandle, i)));
   }
 
   const std::size_t violationCount =

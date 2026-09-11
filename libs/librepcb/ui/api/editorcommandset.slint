@@ -1474,6 +1474,16 @@ export global EditorCommandSet {
         key: "V",
     };
 
+    in property <EditorCommand> router-diff-pair-toggle: {
+        id: "router_diff_pair_toggle",
+        icon: @image-url(""),
+        text: "Toggle Differential Pair",
+        status-tip: "Route both nets of a differential pair at once",
+        shortcut: "Shift+D",
+        modifiers: { alt: false, control: false, shift: true, meta: false },
+        key: "D",
+    };
+
     in property <EditorCommand> shape-round: {
         id: "shape_round",
         icon: @image-url("../../../font-awesome/svgs/solid/circle.svg"),

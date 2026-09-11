@@ -1510,6 +1510,15 @@ public:
       {QKeySequence(Qt::SHIFT | Qt::Key_V)},
       &categoryCommands,
   };
+  EditorCommand routerDiffPairToggle{
+      "router_diff_pair_toggle",  // clang-format break
+      QT_TR_NOOP("Toggle Differential Pair"),
+      QT_TR_NOOP("Route both nets of a differential pair at once"),
+      nullptr,
+      EditorCommand::Flags(),
+      {QKeySequence(Qt::SHIFT | Qt::Key_D)},
+      &categoryCommands,
+  };
   EditorCommand shapeRound{
       "shape_round",  // clang-format break
       QT_TR_NOOP("Round"),

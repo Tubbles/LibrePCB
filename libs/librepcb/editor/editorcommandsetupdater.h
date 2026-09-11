@@ -163,6 +163,7 @@ public:
     out.set_router_corner_mode(l2s(cmd.routerCornerMode, out.get_router_corner_mode()));
     out.set_router_flip_posture(l2s(cmd.routerFlipPosture, out.get_router_flip_posture()));
     out.set_router_via_toggle(l2s(cmd.routerViaToggle, out.get_router_via_toggle()));
+    out.set_router_diff_pair_toggle(l2s(cmd.routerDiffPairToggle, out.get_router_diff_pair_toggle()));
     out.set_shape_round(l2s(cmd.shapeRound, out.get_shape_round()));
     out.set_shape_rounded_rect(l2s(cmd.shapeRoundedRect, out.get_shape_rounded_rect()));
     out.set_shape_rect(l2s(cmd.shapeRect, out.get_shape_rect()));
