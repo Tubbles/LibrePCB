@@ -1,0 +1,606 @@
+/*
+ * LibrePCB - Professional EDA for everyone!
+ * Copyright (C) 2013 LibrePCB Developers, see AUTHORS.md for contributors.
+ * https://librepcb.org/
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+#ifndef LIBREPCB_EDITOR_BOARDEDITORSTATE_ROUTETRACE_H
+#define LIBREPCB_EDITOR_BOARDEDITORSTATE_ROUTETRACE_H
+
+/*******************************************************************************
+ *  Includes
+ ******************************************************************************/
+#include "boardeditorstate.h"
+
+#include <librepcb/core/project/board/boardpnsrouter.h>
+
+#include <QtCore>
+
+#include <memory>
+#include <optional>
+
+/*******************************************************************************
+ *  Namespace / Forward Declarations
+ ******************************************************************************/
+namespace librepcb {
+
+class BI_NetPoint;
+class Layer;
+class NetSignal;
+
+namespace editor {
+
+class BoardPnsPreviewItems;
+
+/*******************************************************************************
+ *  Class BoardEditorState_RouteTrace
+ ******************************************************************************/
+
+/**
+ * @brief The "route trace" state/tool of the board editor
+ *
+ * Drives a ::librepcb::BoardPnsRouter, the push and shove routing session,
+ * and applies what it commits with
+ * ::librepcb::editor::CmdBoardApplyPnsCommit. It coexists with
+ * ::librepcb::editor::BoardEditorState_DrawTrace, which is untouched.
+ *
+ * The two tools differ in where the trace being placed lives. The draw trace
+ * tool opens an undo command group on entry and edits real board items for
+ * the whole route, so the board is in a half edited state while the tool
+ * runs. This tool holds no command group at all: the route is inside the
+ * router until it is committed, and one commit is one undo entry.
+ *
+ * The router works on a snapshot of the board taken in its constructor, so
+ * every board object it names is stale as soon as the board is edited. The
+ * session is therefore rebuilt on entry and after every applied commit, and
+ * other editors are blocked for the tool's lifetime.
+ *
+ * Snapping stays here rather than in the router, because it depends on the
+ * grid, on layer visibility and on what is under the cursor, none of which
+ * the router knows. #snapCursor() is the only place that produces the
+ * ::librepcb::editor::BoardEditorState_RouteTrace::SnappedCursor every
+ * router call takes, so an unsnapped point cannot reach the router.
+ *
+ * The tool has two gestures, told apart by whether the mouse travels while
+ * the left button is down, which is what KiCad's router tool does too:
+ *   - A click starts a route, and every further click fixes one leg of it.
+ *   - Pressing on an existing trace, via or pad and then moving further than
+ *     #exceedsDragThreshold() drags with the router: every move takes it to
+ *     the cursor, the release commits the drag where the cursor is, and
+ *     escape throws it away. A press on empty space is never a drag, and a
+ *     drag ends the way a route commit does, with the board edited and a new
+ *     session built over it.
+ *
+ * While the "differential pair" toggle is on, a click starts a pair instead
+ * of a single trace. That needs an object under the cursor whose net has a
+ * partner in the circuit, ::librepcb::DifferentialPairs derives the pairs
+ * from the net names, and the router refuses anything else; the refusal
+ * reaches the status bar and no single trace is started in its place. The
+ * drag gesture is unchanged, there is no differential pair dragger, a user
+ * selects both traces and uses the multi drag instead.
+ *
+ * While a length tuning mode is selected, a press on a trace starts a tuning
+ * session on it instead of a route or a drag, the cursor then decides how
+ * much of the trace meanders, the next click fixes and commits, and escape
+ * throws the session away rather than keeping it. Every frame refreshes a
+ * status bar readout naming how far the trace still is from its target,
+ * because the meandered copper alone does not say whether it got there.
+ * A press anywhere else is refused with a sentence, exactly as a pair start
+ * is, and the two pair tuning modes need the same net name derived pairs
+ * that pair routing does.
+ *
+ * Which objects go into the drag is #collectDragItems(): a pressed pad drags
+ * its whole device, a pressed trace which is part of a selection of several
+ * traces drags all of them, and anything else drags itself. The router
+ * decides what that set means, which is a footprint drag, a multi drag or a
+ * single drag respectively.
+ *
+ * While ::librepcb::editor::PnsSessionRecorder is recording, every session
+ * records what it is driven with and hands the recording to the recorder
+ * when it ends, which is one file per session in the router crate's own
+ * fixture format. A failed write only reaches the status bar, never a
+ * dialog, because recording must never interrupt routing.
+ */
+class BoardEditorState_RouteTrace final : public BoardEditorState {
+  Q_OBJECT
+
+public:
+  // Constructors / Destructor
+  BoardEditorState_RouteTrace() = delete;
+  BoardEditorState_RouteTrace(const BoardEditorState_RouteTrace& other) =
+      delete;
+  explicit BoardEditorState_RouteTrace(const Context& context) noexcept;
+  ~BoardEditorState_RouteTrace() noexcept override;
+
+  // General Methods
+  bool entry() noexcept override;
+  bool exit() noexcept override;
+
+  // Event Handlers
+  bool processAbortCommand() noexcept override;
+  bool processKeyPressed(const GraphicsSceneKeyEvent& e) noexcept override;
+  bool processKeyReleased(const GraphicsSceneKeyEvent& e) noexcept override;
+  bool processGraphicsSceneMouseMoved(
+      const GraphicsSceneMouseEvent& e) noexcept override;
+  bool processGraphicsSceneLeftMouseButtonPressed(
+      const GraphicsSceneMouseEvent& e) noexcept override;
+  bool processGraphicsSceneLeftMouseButtonReleased(
+      const GraphicsSceneMouseEvent& e) noexcept override;
+  bool processGraphicsSceneLeftMouseButtonDoubleClicked(
+      const GraphicsSceneMouseEvent& e) noexcept override;
+  bool processGraphicsSceneRightMouseButtonReleased(
+      const GraphicsSceneMouseEvent& e) noexcept override;
+
+  // Connection to UI
+  QSet<const Layer*> getAvailableLayers() noexcept;
+  const Layer& getLayer() const noexcept;
+  void setLayer(const Layer& layer) noexcept;
+  BoardPnsRouter::Mode getMode() const noexcept { return mCurrentMode; }
+  void setMode(BoardPnsRouter::Mode mode) noexcept;
+  /// Whether 90 degree corners are built instead of 45 degree ones.
+  bool getCornerMode() const noexcept { return mCornerMode90; }
+  void setCornerMode(bool corners90) noexcept;
+  void flipPosture() noexcept;
+  void toggleVia() noexcept;
+  const PositiveLength& getWidth() const noexcept { return mCurrentWidth; }
+  void setWidth(const PositiveLength& width) noexcept;
+  bool getViaAutoDrillDiameter() const noexcept {
+    return !mCurrentViaDrill.has_value();
+  }
+  PositiveLength getViaDrillDiameter() const noexcept;
+  void setViaDrillDiameter(
+      const std::optional<PositiveLength>& diameter) noexcept;
+  bool getAutoViaSize() const noexcept { return !mCurrentViaSize.has_value(); }
+  PositiveLength getViaSize() const noexcept;
+  void setViaSize(const std::optional<PositiveLength>& size) noexcept;
+  /// Whether the next click starts a differential pair instead of a trace.
+  bool getDiffPair() const noexcept { return mDiffPair; }
+  void setDiffPair(bool diffPair) noexcept;
+  const PositiveLength& getDiffPairWidth() const noexcept {
+    return mDiffPairWidth;
+  }
+  void setDiffPairWidth(const PositiveLength& width) noexcept;
+  const PositiveLength& getDiffPairGap() const noexcept { return mDiffPairGap; }
+  void setDiffPairGap(const PositiveLength& gap) noexcept;
+  /// Whether the via gap follows the trace gap instead of being its own.
+  bool getAutoDiffPairViaGap() const noexcept {
+    return !mDiffPairViaGap.has_value();
+  }
+  PositiveLength getDiffPairViaGap() const noexcept;
+  void setDiffPairViaGap(const std::optional<PositiveLength>& gap) noexcept;
+  /// Which length tuning session a press starts, or `std::nullopt` for the
+  /// ordinary routing tool.
+  const std::optional<BoardPnsTuningMode>& getTuningMode() const noexcept {
+    return mTuningMode;
+  }
+  void setTuningMode(const std::optional<BoardPnsTuningMode>& mode) noexcept;
+  /// What the meanders aim for: a length in the two length modes, and a
+  /// skew in ::librepcb::BoardPnsTuningMode::Skew.
+  const Length& getTuningTarget() const noexcept { return mTuningTarget; }
+  void setTuningTarget(const Length& target) noexcept;
+  const PositiveLength& getTuningTolerance() const noexcept {
+    return mTuningTolerance;
+  }
+  void setTuningTolerance(const PositiveLength& tolerance) noexcept;
+  const PositiveLength& getTuningMinAmplitude() const noexcept {
+    return mTuningMinAmplitude;
+  }
+  void setTuningMinAmplitude(const PositiveLength& amplitude) noexcept;
+  const PositiveLength& getTuningMaxAmplitude() const noexcept {
+    return mTuningMaxAmplitude;
+  }
+  void setTuningMaxAmplitude(const PositiveLength& amplitude) noexcept;
+  const PositiveLength& getTuningSpacing() const noexcept {
+    return mTuningSpacing;
+  }
+  void setTuningSpacing(const PositiveLength& spacing) noexcept;
+  /// Nudge the meander amplitude of a running tuning session.
+  void amplitudeStep(int sign) noexcept;
+  /// Nudge the meander spacing of a running tuning session.
+  void spacingStep(int sign) noexcept;
+
+  // Operator Overloadings
+  BoardEditorState_RouteTrace& operator=(
+      const BoardEditorState_RouteTrace& rhs) = delete;
+
+signals:
+  void layerChanged(const Layer& layer);
+  void modeChanged(BoardPnsRouter::Mode mode);
+  void cornerModeChanged(bool corners90);
+  void widthChanged(const PositiveLength& width);
+  void viaDrillDiameterChanged(bool autoSize, const PositiveLength& diameter);
+  void viaSizeChanged(bool autoSize, const PositiveLength& size);
+  void diffPairChanged(bool diffPair);
+  void diffPairWidthChanged(const PositiveLength& width);
+  void diffPairGapChanged(const PositiveLength& gap);
+  void diffPairViaGapChanged(bool autoGap, const PositiveLength& gap);
+  void tuningModeChanged(const std::optional<BoardPnsTuningMode>& mode);
+  void tuningTargetChanged(const Length& target);
+  void tuningToleranceChanged(const PositiveLength& tolerance);
+  void tuningMinAmplitudeChanged(const PositiveLength& amplitude);
+  void tuningMaxAmplitudeChanged(const PositiveLength& amplitude);
+  void tuningSpacingChanged(const PositiveLength& spacing);
+
+private:  // Types
+  /**
+   * @brief A cursor position the router may be handed
+   *
+   * Produced only by #snapCursor(), so that no code path can pass an
+   * unsnapped point to the router.
+   */
+  struct SnappedCursor final {
+    /// The snapped position: the grid point, or the position of the board
+    /// object under the cursor when one was found.
+    Point pos;
+
+    /// The host ID of that board object, or 0 for free space.
+    quint64 item = 0;
+  };
+
+  /**
+   * @brief A left button press which may still become either gesture
+   *
+   * Held from the press on a draggable object until the first mouse move
+   * decides that it was a drag or the release decides that it was a click.
+   */
+  struct PendingDrag final {
+    /// Where the button went down, unsnapped, which the threshold is
+    /// measured from.
+    Point pressPos;
+
+    /// The snapped press position and the object under it, which both
+    /// gestures start from.
+    SnappedCursor cursor;
+  };
+
+private:  // Methods
+  /**
+   * @brief Build a new routing session over the current board
+   *
+   * @return True on success. On failure the error is shown and the tool has
+   *         no session, so the caller must leave the tool.
+   */
+  bool createRouter() noexcept;
+
+  /**
+   * @brief Build a new routing session and leave the tool if that fails
+   */
+  void rebuildRouter() noexcept;
+
+  /**
+   * @brief Push the current width, via size, via drill and workspace
+   *        settings into the session
+   *
+   * Also connected to the workspace settings the router reads, so that a
+   * change made while the tool is open reaches the running session. Does
+   * nothing when no session is open.
+   */
+  void updateRouterSettings() noexcept;
+
+  /**
+   * @brief Get the shove iteration limit from the workspace settings
+   *
+   * Clamped to a range the router can work with: zero would make every
+   * shove fail immediately, and a value far above the default only wastes
+   * time the user waits for.
+   */
+  uint getShoveIterationLimit() const noexcept;
+
+  /**
+   * @brief Get whether a colliding route may be committed
+   *
+   * The workspace setting behind KiCad's "Allow DRC violations", which only
+   * ::librepcb::BoardPnsRouter::Mode::MarkObstacles acts on. Any value is
+   * valid, so unlike the iteration limit there is nothing to clamp.
+   */
+  bool getAllowDrcViolations() const noexcept;
+
+  /**
+   * @brief Snap the cursor to the grid and to the board object under it
+   *
+   * While routing, the search is restricted to the layer being routed on and
+   * to the net being routed, which is what the draw trace tool does for its
+   * end anchor. Shift disables it, in which case the plain grid point is
+   * returned.
+   */
+  SnappedCursor snapCursor() noexcept;
+
+  /**
+   * @brief Get the host ID a net point stands for
+   *
+   * A net point is not a router object; the traces meeting there are. The
+   * lowest host ID of them is taken, which is deterministic because the host
+   * IDs are handed out in the snapshot's own walk order while
+   * ::librepcb::BI_NetPoint::getNetLines() is an unordered set.
+   */
+  quint64 getHostIdOfNetPoint(const BI_NetPoint& netPoint) const noexcept;
+  /**
+   * @brief The layer a route started on a board object begins on
+   *
+   * A trace hands over its layer, a surface mount pad its solder layer and
+   * a via its start layer when the selected layer is not one it spans;
+   * everything else keeps the selected layer. Mirrors the draw trace tool.
+   */
+  const Layer& getStartLayer(quint64 hostId) const noexcept;
+
+
+  /**
+   * @brief Get the net signal of a board object the router named
+   */
+  const NetSignal* getNetSignalOfHostId(quint64 hostId) const noexcept;
+
+  /**
+   * @brief Remember the nets being worked on and cross probe them
+   *
+   * The set is what #snapCursor() filters by while routing and what the
+   * schematic editor highlights.
+   */
+  void setCurrentNetSignals(const QSet<const NetSignal*>& nets) noexcept;
+
+  /**
+   * @brief Take the nets of the running placement off the router
+   *
+   * The router's own answer rather than the net of the clicked object,
+   * because a differential pair routes two nets and only the session knows
+   * which two. Not used for a drag: a footprint drag reports no net at
+   * all, where the pressed pad has one worth highlighting.
+   */
+  void updateCurrentNetSignals() noexcept;
+
+  /**
+   * @brief Check whether a board object is one the router can drag
+   *
+   * Traces, vias and the pads of a device are; the holes, copper graphics
+   * and keepout zones the router only knows as obstacles are not, and
+   * neither is a board pad, which belongs to no device the drag could
+   * move. The router refuses the others itself; this is what keeps a press
+   * on one of them an ordinary click.
+   */
+  bool isDraggable(quint64 hostId) const noexcept;
+
+  /**
+   * @brief Get every board object one press drags
+   *
+   * A pad drags every pad of its device, which is what the router needs to
+   * make a footprint drag of it: it moves the pads it is given and the
+   * host moves the device as a whole. A trace which is selected together
+   * with other traces drags all of them, which is the router's multi drag.
+   * Everything else drags only itself.
+   *
+   * @return The host IDs, the pressed object included, or just the pressed
+   *         object if there is nothing to go with it.
+   */
+  QVector<quint64> collectDragItems(quint64 hostId) noexcept;
+
+  /**
+   * @brief Check whether the cursor left the press position far enough
+   *        to mean a drag
+   *
+   * Five screen pixels, which is the tolerance the editor picks board
+   * objects with and the distance the view itself takes as the beginning of
+   * a pan. The view converts it, so the threshold is a constant distance on
+   * screen at every zoom level.
+   */
+  bool exceedsDragThreshold(const Point& pressPos,
+                            const Point& pos) const noexcept;
+
+  /**
+   * @brief Begin a route at the cursor
+   */
+  void startRouting(const SnappedCursor& cursor) noexcept;
+
+  /**
+   * @brief Begin dragging the board object under the cursor
+   *
+   * Locks are not consulted, because neither a trace nor a via can be
+   * locked in LibrePCB; #getIgnoreLocks() belongs here if that ever
+   * changes, because the router's dragger clears a lock instead of
+   * honouring it and leaves the decision to its host.
+   */
+  void startDragging(const SnappedCursor& cursor) noexcept;
+
+  /**
+   * @brief Begin length tuning the trace under the cursor
+   *
+   * The tuning mode decides which of the three algorithms runs, and the
+   * refusal is what the status bar shows: there is no silent fall back to
+   * a route, for the same reason the differential pair toggle has none.
+   */
+  void startTuning(const SnappedCursor& cursor) noexcept;
+
+  /**
+   * @brief Throw a running tuning session away
+   *
+   * What escape does while tuning. Unlike a route, nothing of a tuning
+   * session is ever fixed before its one terminal fix, so there is nothing
+   * to keep and the board is left exactly as it was.
+   */
+  void abortTuning() noexcept;
+
+  /**
+   * @brief Get the meander dimensions a tuning session starts with
+   */
+  BoardPnsRouter::TuningSettings getTuningSettings() const noexcept;
+
+  /**
+   * @brief Show the live tuning readout of the last frame in the status bar
+   *
+   * Called after every event which produces a frame, so the numbers follow
+   * the cursor. The message has no timeout: it stands until the next frame
+   * replaces it or the session ends and #clearTuningReadout() wipes it.
+   */
+  void updateTuningReadout() noexcept;
+
+  /**
+   * @brief Take the tuning readout off the status bar
+   */
+  void clearTuningReadout() noexcept;
+
+  /**
+   * @brief Throw a running drag away and put the board back as it was
+   *
+   * Nothing is applied and no new session is built: a drag which was never
+   * fixed changed nothing, and the router drops what it speculatively built
+   * along with it.
+   */
+  void abortDragging() noexcept;
+
+  /**
+   * @brief Move the end of the route to the cursor
+   *
+   * Also the way to make the router materialise what a command without a
+   * frame changed, which is a layer switch, a via toggle, a posture flip and
+   * an undone segment.
+   */
+  void moveToCursor() noexcept;
+
+  /**
+   * @brief Pin the route down at the cursor and apply what that commits
+   *
+   * Also how a drag ends: a drag fix is always terminal, so this is the one
+   * path which commits one.
+   *
+   * @param forceFinish   Whether to end the session here rather than start a
+   *                      new leg, which is what a double click does. For a
+   *                      drag it is the force commit the button release
+   *                      needs, because the gesture cannot be retried.
+   */
+  void fixRoute(const SnappedCursor& cursor, bool forceFinish) noexcept;
+
+  /**
+   * @brief Commit what was routed so far and return to the idle state
+   *
+   * This is what escape does. Both KiCad and Horizon keep the already fixed
+   * part of a route on escape rather than throwing it away, and so does
+   * this tool, which is a deliberate difference to the draw trace tool.
+   */
+  void stopRouting() noexcept;
+
+  /**
+   * @brief Apply one commit to the board as a single undo entry
+   *
+   * Does not rebuild the session; the caller does that, because the tool
+   * exit path applies a commit without needing a new session.
+   */
+  void applyCommit(const BoardPnsCommit& commit) noexcept;
+
+  /**
+   * @brief Hand what the current session recorded to the recorder
+   *
+   * Taking the recording ends it, so this must be called exactly once per
+   * session, right before the session is replaced or dropped. Does nothing
+   * when there is no session, when recording is off, or when the recording
+   * was already taken.
+   */
+  void writeSessionRecording() noexcept;
+
+  /**
+   * @brief React to recording being switched on or off
+   *
+   * A session decides at construction whether it records, so the answer
+   * only changes with a new session. A route being placed cannot survive a
+   * rebuild, so it is left alone: it finishes in the session it started in
+   * and the session which follows it picks the new answer up.
+   */
+  void handleRecordingToggled() noexcept;
+
+  /**
+   * @brief Get the message to show for a refused start
+   */
+  static QString getStartResultMessage(
+      BoardPnsRouter::StartResult result) noexcept;
+
+private:  // Data
+  /// The routing session. Null only if building it failed, in which case the
+  /// tool is on its way out.
+  std::unique_ptr<BoardPnsRouter> mRouter;
+
+  /// Draws what the session wants shown. Null if the tool was entered
+  /// without a graphics scene.
+  std::unique_ptr<BoardPnsPreviewItems> mPreviewItems;
+
+  /// The layer a new route starts on. While routing, the router owns the
+  /// current layer and #getLayer() reports its answer instead.
+  const Layer* mCurrentLayer;
+
+  /// The algorithm the router runs. Applied to a running placement too, the
+  /// router picks it up on the next move.
+  BoardPnsRouter::Mode mCurrentMode;
+
+  /// Whether the router builds 90 degree corners instead of 45 degree ones.
+  /// Part of ::librepcb::BoardPnsRouter::Settings, so a session rebuilt
+  /// after a commit starts on it without being re-toggled.
+  bool mCornerMode90;
+
+  PositiveLength mCurrentWidth;  ///< the current trace width
+
+  /// The via drill diameter, or `std::nullopt` for the board's default.
+  std::optional<PositiveLength> mCurrentViaDrill;
+
+  /// The via size, or `std::nullopt` to derive it from the drill diameter.
+  std::optional<PositiveLength> mCurrentViaSize;
+
+  /// Whether a click starts a differential pair instead of a single trace.
+  /// Remembered across sessions like the mode is.
+  bool mDiffPair;
+
+  PositiveLength mDiffPairWidth;  ///< the width of one trace of a pair
+
+  /// The copper gap between the two traces of a pair. Starts at the larger
+  /// of the router's own default and the board's minimum copper to copper
+  /// clearance, because a gap below that clearance is refused by the
+  /// router's start gate and a tool whose default always refuses is no use.
+  PositiveLength mDiffPairGap;
+
+  /// The gap between the two vias of a pair, or `std::nullopt` to follow
+  /// #mDiffPairGap.
+  std::optional<PositiveLength> mDiffPairViaGap;
+
+  /// Which length tuning session a press starts, or `std::nullopt` for the
+  /// ordinary routing tool. Remembered across sessions like the mode is.
+  std::optional<BoardPnsTuningMode> mTuningMode;
+
+  /// What the meanders aim for, which is a skew in
+  /// ::librepcb::BoardPnsTuningMode::Skew. Signed and allowed to be zero,
+  /// which is the value a skew session wants, and which in the two length
+  /// modes reports every trace as too long until the user types a target.
+  Length mTuningTarget;
+
+  PositiveLength mTuningTolerance;  ///< how far off #mTuningTarget is tuned
+  PositiveLength mTuningMinAmplitude;  ///< the shallowest meander
+  PositiveLength mTuningMaxAmplitude;  ///< the deepest meander
+  PositiveLength mTuningSpacing;  ///< the distance between two meanders
+
+  Point mCursorPos;  ///< the current cursor position, not snapped
+  bool mSnapActive;  ///< whether the cursor snaps to board objects
+
+  /// The press which has not been resolved into a click or a drag yet.
+  std::optional<PendingDrag> mPendingDrag;
+
+  /// The nets of the route being placed: empty while idle, one for a trace
+  /// or a drag and two for a differential pair. A `nullptr` entry is a
+  /// route in free space, which belongs to no net of the circuit.
+  QSet<const NetSignal*> mCurrentNetSignals;
+};
+
+/*******************************************************************************
+ *  End of File
+ ******************************************************************************/
+
+}  // namespace editor
+}  // namespace librepcb
+
+#endif

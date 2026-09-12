@@ -75,7 +75,10 @@ add_executable(
   core/project/board/boardinteractivehtmlbomgeneratortest.cpp
   core/project/board/boardpickplacegeneratortest.cpp
   core/project/board/boardplanefragmentsbuildertest.cpp
+  core/project/board/boardpnsroutertest.cpp
+  core/project/board/boardpnssnapshottest.cpp
   core/project/board/boardspecctraexporttest.cpp
+  core/project/circuit/differentialpairstest.cpp
   core/project/outputjobrunnertest.cpp
   core/project/projectjsonexporttest.cpp
   core/project/projectlibrarytest.cpp
@@ -123,7 +126,10 @@ add_executable(
   editor/modelview/pathmodeltest.cpp
   editor/project/addcomponentdialogtest.cpp
   editor/project/board/boardclipboarddatatest.cpp
+  editor/project/board/boardpnspreviewtest.cpp
+  editor/project/board/cmdboardapplypnscommittest.cpp
   editor/project/board/cmdboardspecctraimporttest.cpp
+  editor/project/board/pnssessionrecordertest.cpp
   editor/project/board/tracelengthcomparisondialogtest.cpp
   editor/project/board/tracelengthcomparisontest.cpp
   editor/project/schematic/cmddragselectedschematicitemstest.cpp

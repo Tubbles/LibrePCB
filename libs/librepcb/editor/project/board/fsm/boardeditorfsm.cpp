@@ -32,6 +32,7 @@
 #include "boardeditorstate_drawtrace.h"
 #include "boardeditorstate_drawzone.h"
 #include "boardeditorstate_measure.h"
+#include "boardeditorstate_routetrace.h"
 #include "boardeditorstate_select.h"
 
 #include <QtCore>
@@ -94,6 +95,7 @@ BoardEditorFsm::BoardEditorFsm(const Context& context, QObject* parent) noexcept
   mStates.insert(State::DRAW_PLANE, new BoardEditorState_DrawPlane(context));
   mStates.insert(State::DRAW_ZONE, new BoardEditorState_DrawZone(context));
   mStates.insert(State::DRAW_TRACE, new BoardEditorState_DrawTrace(context));
+  mStates.insert(State::ROUTE_TRACE, new BoardEditorState_RouteTrace(context));
   mStates.insert(State::MEASURE, new BoardEditorState_Measure(context));
 
   enterNextState(State::SELECT);
@@ -186,6 +188,10 @@ bool BoardEditorFsm::processDrawZone() noexcept {
 
 bool BoardEditorFsm::processDrawTrace() noexcept {
   return setNextState(State::DRAW_TRACE);
+}
+
+bool BoardEditorFsm::processRouteTrace() noexcept {
+  return setNextState(State::ROUTE_TRACE);
 }
 
 bool BoardEditorFsm::processImportDxf() noexcept {

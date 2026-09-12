@@ -18,6 +18,11 @@ interactive-html-bom = "0.2.0"
 libm = "0.2.16"
 lz-str = "0.2.1"  # Keep in sync with interactive-html-bom
 
+# Interactive push and shove router engine. This is a path dependency only
+# while the crate is developed alongside LibrePCB; it becomes an ordinary
+# versioned crates.io dependency once the crate is published.
+pnsrouter = { path = "../../pnsrouter" }
+
 [dependencies.regex]
 version = "1.11"
 default-features = false

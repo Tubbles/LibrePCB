@@ -128,6 +128,452 @@ enum class InteractiveHtmlBomViewMode {
 };
 
 /**
+ * Which design rule a debug constraint query means.
+ *
+ * A subset of `pnsrouter::rules::ConstraintType`, holding the ones
+ * LibrePCB can answer; see the integration design note, section 2.2.
+ */
+enum class PnsConstraintKind {
+  /**
+   * Copper to copper clearance.
+   */
+  Clearance = 0,
+  /**
+   * Track width.
+   */
+  Width = 1,
+  /**
+   * Via drill diameter.
+   */
+  ViaHole = 2,
+  /**
+   * Copper to board edge clearance.
+   */
+  EdgeClearance = 3,
+  /**
+   * Hole to copper clearance.
+   */
+  HoleClearance = 4,
+  /**
+   * Hole to hole clearance.
+   */
+  HoleToHole = 5,
+};
+
+/**
+ * What happened to a fix.
+ *
+ * Mirrors `pnsrouter::router::FixOutcome` plus the "nothing was being
+ * routed" case, which the crate spells as `Option::None` on
+ * `Router::finish`.
+ */
+enum class PnsFixOutcome {
+  /**
+   * `FixOutcome::Continue`: the placement carries on, and the session
+   * holds the frame after the fix.
+   */
+  Continue = 0,
+  /**
+   * `FixOutcome::Finished`: the route reached its target and was
+   * committed, so the session holds the commit and no frame.
+   */
+  Finished = 1,
+  /**
+   * Nothing was being routed, so nothing was committed either.
+   */
+  NotRouting = 2,
+};
+
+/**
+ * Which of a host object's two engine items a debug query means.
+ *
+ * A drilled pad becomes a solid plus a hole that the engine creates
+ * itself, and the hole is the interesting side of a hole clearance
+ * query.
+ */
+enum class PnsItemRole {
+  /**
+   * The copper item the host object became.
+   */
+  Copper = 0,
+  /**
+   * The hole the engine drilled through it.
+   */
+  Hole = 1,
+};
+
+/**
+ * Which side of the base line a tuned stretch meanders to first.
+ *
+ * Mirrors `pnsrouter::meander::MeanderSide`, with the engine's own
+ * discriminants, which are KiCad's: the flip the shape generator makes is
+ * a negation, so the middle value is the one a negation leaves alone.
+ */
+enum class PnsMeanderSide {
+  /**
+   * `MeanderSide::Left`, the engine's own default.
+   */
+  Left = -1,
+  /**
+   * `MeanderSide::Default`, which means "follow the cursor".
+   */
+  Default = 0,
+  /**
+   * `MeanderSide::Right`.
+   */
+  Right = 1,
+};
+
+/**
+ * Which fields of a [`PnsNewItem`] are meaningful.
+ *
+ * Mirrors the three variants of `pnsrouter::router::NewGeometry`, which
+ * is all a single track placer emits.
+ *
+ * # Why LibrePCB never sees [`PnsNewGeometryKind::Arc`]
+ *
+ * The kind exists so that the boundary can describe what the engine
+ * sends rather than quietly turn a curve into its chord, and so that the
+ * applier can refuse it by name. Nothing LibrePCB can do reaches it
+ * today, and it takes all four of these to be true:
+ *
+ * - The corner mode is mitered. [`PnsRouterSettings::corner_mode_90`] is
+ *   a boolean and `derive_settings` maps it onto `CornerMode::Mitered45`
+ *   or `CornerMode::Mitered90` only, so the engine's two rounded modes,
+ *   the only ones whose `build_initial_trace` emits an arc, cannot be
+ *   selected. `Router::toggle_corner_mode`, which cycles all four, has
+ *   no entry point here on purpose.
+ * - Meanders are chamfered. [`PnsMeanderSettings`] carries no corner
+ *   style field, so every tuning session started here asks for
+ *   `MeanderStyle::Chamfer` by name rather than taking the engine's
+ *   default, which is `Round` since the arcs milestone.
+ * - The snapshot holds no arc. There is no arc adder and none is
+ *   possible, see [`PnsShapeKind`], so the dragger cannot be started on
+ *   an arc and the walkaround's `restore_untouched_arcs` has nothing to
+ *   splice back.
+ * - The optimizer only makes arcs in a rounded mode. `merge_step` builds
+ *   its bypasses with `build_initial_trace` and the session's corner
+ *   mode (`pcbnew/router/pns_optimizer.cpp:883`), so a mitered session's
+ *   bypasses are mitered too.
+ *
+ * If one arrives anyway, one of those four has been broken and the
+ * applier throws rather than storing something the file format cannot
+ * express; see `CmdBoardApplyPnsCommit::performExecute()`.
+ */
+enum class PnsNewGeometryKind {
+  /**
+   * `NewGeometry::Segment`: [`PnsNewItem::p1`], [`PnsNewItem::p2`] and
+   * [`PnsNewItem::width`].
+   */
+  Segment = 0,
+  /**
+   * `NewGeometry::Via`: [`PnsNewItem::pos`], [`PnsNewItem::diameter`],
+   * [`PnsNewItem::drill`] and [`PnsNewItem::via_type`].
+   */
+  Via = 1,
+  /**
+   * `NewGeometry::Arc`: [`PnsNewItem::p1`], [`PnsNewItem::mid`],
+   * [`PnsNewItem::p2`] and [`PnsNewItem::width`], KiCad's three point
+   * form with the two endpoints in the segment's own fields.
+   *
+   * Two is a value of its own rather than a renumbering, because
+   * [`PnsNewGeometryKind::Via`] is already one on the C++ side.
+   */
+  Arc = 2,
+};
+
+/**
+ * How a host should draw one element of a preview frame.
+ *
+ * Mirrors `pnsrouter::router::PreviewStyle` value for value.
+ */
+enum class PnsPreviewStyle {
+  /**
+   * `PreviewStyle::Head`, the track being placed right now.
+   */
+  Head = 0,
+  /**
+   * `PreviewStyle::Tail`, geometry this session has already fixed.
+   */
+  Tail = 1,
+  /**
+   * `PreviewStyle::Hover`, the item under the cursor. Set by a host and
+   * never by the engine.
+   */
+  Hover = 2,
+  /**
+   * `PreviewStyle::SemiSolid`, one primitive of a rule area. Nothing
+   * emits it yet, because zones are not synced.
+   */
+  SemiSolid = 3,
+  /**
+   * `PreviewStyle::Collision`, something a violation was found on.
+   */
+  Collision = 4,
+};
+
+/**
+ * What went wrong, if anything.
+ *
+ * Every snapshot builder entry point answers with one of these instead of
+ * panicking, so that the C++ side can raise a `RuntimeError` naming the
+ * board item that could not be converted.
+ */
+enum class PnsResult {
+  /**
+   * The call succeeded.
+   */
+  Ok = 0,
+  /**
+   * A coordinate was outside plus or minus 2 metres.
+   */
+  CoordinateOutOfRange = 1,
+  /**
+   * A polygon shape carried fewer than three vertices.
+   */
+  DegeneratePolygon = 2,
+  /**
+   * The layer range was empty or outside the board's copper stack.
+   */
+  InvalidLayerRange = 3,
+  /**
+   * A debug query named a host id the snapshot does not know.
+   */
+  UnknownItem = 4,
+  /**
+   * A clearance query answered "these two can never collide".
+   */
+  NoClearance = 5,
+};
+
+/**
+ * Which shape of the small geometry vocabulary a [`PnsShape`] carries.
+ *
+ * The four the engine has native support for. Keeping circles and
+ * rectangles native rather than polygonising everything is what keeps the
+ * collision inner loop cheap; see the integration design note, section
+ * 1.2.
+ *
+ * There is deliberately no arc, although the engine has one
+ * (`pnsrouter::geometry::shape::ShapeKind::Arc`). Every shape that
+ * crosses here is written by a LibrePCB board object, and the curved
+ * copper LibrePCB does store, a polygon or a zone, arrives flattened as
+ * [`PnsShapeKind::Polygon`]
+ * (`libs/librepcb/core/project/board/boardpnssnapshot.cpp:106`). A trace
+ * carries no angle at all
+ * (`libs/librepcb/core/geometry/trace.cpp:236`), so the snapshot side has
+ * no arc adder either and a snapshot never holds an arc item.
+ */
+enum class PnsShapeKind {
+  /**
+   * A circle of [`PnsShape::center`] and [`PnsShape::radius`].
+   */
+  Circle = 0,
+  /**
+   * A rectangle centred on [`PnsShape::center`], of
+   * [`PnsShape::half_size`], with corner radius [`PnsShape::radius`].
+   */
+  Rect = 1,
+  /**
+   * A capsule from [`PnsShape::p1`] to [`PnsShape::p2`] of full width
+   * [`PnsShape::radius`].
+   */
+  Segment = 2,
+  /**
+   * A closed polygon of [`PnsShape::vertices`].
+   */
+  Polygon = 3,
+};
+
+/**
+ * Why a routing session refused to start.
+ *
+ * Mirrors `Result<(), pnsrouter::router::StartError>`, flattened into one
+ * enum with success as its first value. The host id and the item id the
+ * two naming variants carry are dropped: the host already knows which
+ * object it asked about, and the engine's item id means nothing to it.
+ */
+enum class PnsStartResult {
+  /**
+   * The point may be routed from.
+   */
+  Ok = 0,
+  /**
+   * `StartError::AlreadyRouting`.
+   */
+  AlreadyRouting = 1,
+  /**
+   * `StartError::UnknownStartItem`.
+   */
+  UnknownStartItem = 2,
+  /**
+   * `StartError::NotRoutable`.
+   */
+  NotRoutable = 3,
+  /**
+   * `StartError::StartPointViolatesRules`.
+   */
+  StartPointViolatesRules = 4,
+  /**
+   * `StartError::PlacerRefused`.
+   */
+  PlacerRefused = 5,
+  /**
+   * `StartError::NothingToDrag`.
+   */
+  NothingToDrag = 6,
+  /**
+   * Answered by the host, not by the engine: a set of pads the host
+   * cannot turn into a device move, which is a pad mixed with tracks or
+   * only some of the pads of a device. The engine would drag those pads
+   * happily and leave the traces of the pads left out behind.
+   */
+  IncompleteDeviceDrag = 7,
+  /**
+   * `StartError::NotDraggable`.
+   */
+  NotDraggable = 8,
+  /**
+   * `StartError::PairNeedsStartItem`: a pair placement was asked for in
+   * free space, where it needs an object to learn the two nets from.
+   */
+  PairNeedsStartItem = 9,
+  /**
+   * `StartError::NotADiffPair`: the net of the start object has no
+   * partner in the snapshot's pair table.
+   */
+  NotADiffPair = 10,
+  /**
+   * `StartError::NoDanglingAnchor`: the start object has no free end.
+   */
+  NoDanglingAnchor = 11,
+  /**
+   * `StartError::NoCoupledStartItem`: nothing on the coupled net can be
+   * paired with the start object. The net it names is dropped, like the
+   * ids of the two naming variants above.
+   */
+  NoCoupledStartItem = 12,
+  /**
+   * `StartError::PairGapBelowMinClearance`: the configured pair gap does
+   * not reach the board's minimum copper to copper clearance.
+   */
+  PairGapBelowMinClearance = 13,
+  /**
+   * `StartError::PairGapMismatch`: the two tracks under the cursor are
+   * not spaced like the configured pair.
+   */
+  PairGapMismatch = 14,
+  /**
+   * `StartError::TuningNeedsStartItem`: a tuning session was asked for
+   * in free space, where there is nothing to lengthen.
+   */
+  TuningNeedsStartItem = 15,
+  /**
+   * `StartError::NotATrack`: the object to tune is a pad, a via or a
+   * hole rather than a track. The item id it names is dropped, like the
+   * ids of the other naming variants.
+   */
+  NotATrack = 16,
+  /**
+   * `StartError::NoTuningPath`: the topology walk found no copper for
+   * the session to measure.
+   */
+  NoTuningPath = 17,
+  /**
+   * `StartError::NotADiffPairForTuning`: the track a pair length tuning
+   * session was asked to tune is not half of a pair.
+   */
+  NotADiffPairForTuning = 18,
+  /**
+   * `StartError::NotADiffPairForSkew`: the same, from a skew tuning
+   * session, which the engine words differently.
+   */
+  NotADiffPairForSkew = 19,
+  /**
+   * `StartError::PairLaneHasNoSegments`: one lane of the recovered pair
+   * holds no segment.
+   */
+  PairLaneHasNoSegments = 20,
+  /**
+   * Answered by the boundary, not by the engine:
+   * `pnsrouter::meander::MeanderSettings::new` refused the meander
+   * settings of a tuning start. It refuses a step which is not positive
+   * and the round corner style, and this boundary never asks for round
+   * corners, so only a non positive step can reach it.
+   */
+  InvalidMeanderSettings = 21,
+};
+
+/**
+ * Which of the three length tuning algorithms a session runs.
+ *
+ * Mirrors `pnsrouter::placer::TuningMode`. The engine has three separate
+ * entry points where this is one argument of
+ * [`ffi_pnsrouter_start_tuning`]: they take the same arguments and refuse
+ * for overlapping reasons, and the host's toolbar already holds the mode
+ * as one value, so folding them saves the C++ side three near identical
+ * wrappers.
+ */
+enum class PnsTuningMode {
+  /**
+   * One track, lengthened to a target. `TuningMode::SingleLength`.
+   */
+  Single = 0,
+  /**
+   * Both lanes of a differential pair, lengthened together.
+   * `TuningMode::PairLength`.
+   */
+  DiffPair = 1,
+  /**
+   * One lane of a differential pair, lengthened until the two match.
+   * `TuningMode::PairSkew`.
+   */
+  Skew = 2,
+};
+
+/**
+ * How a tuned line stands against its target.
+ *
+ * Mirrors `pnsrouter::meander::TuningStatus`.
+ */
+enum class PnsTuningStatus {
+  /**
+   * The meanders ran out of baseline before the target.
+   */
+  TooShort = 0,
+  /**
+   * The line is longer than the window allows and no meander can
+   * shorten it.
+   */
+  TooLong = 1,
+  /**
+   * Inside the window.
+   */
+  Tuned = 2,
+};
+
+/**
+ * How far through the copper stack a via reaches.
+ *
+ * Wrapper for the three of `pnsrouter::item::ViaType` LibrePCB can tell
+ * apart through `Via::isBlind` and `Via::isBuried`.
+ */
+enum class PnsViaType {
+  /**
+   * All the way through the board.
+   */
+  Through = 0,
+  /**
+   * From an outer layer to an inner one.
+   */
+  Blind = 1,
+  /**
+   * Between two inner layers.
+   */
+  Buried = 2,
+};
+
+/**
  * Interactive HTML BOM structure
  *
  * The top-level structure to build & generate a HTML BOM.
@@ -204,6 +650,30 @@ enum class InteractiveHtmlBomViewMode {
 struct InteractiveHtmlBom;
 
 /**
+ * A routing session over one board snapshot.
+ *
+ * Owned by C++ through a `RustHandle` and deleted by
+ * [`ffi_pnsrouter_delete`].
+ *
+ * The session keeps the latest preview frame and the latest commit inside
+ * itself, and C++ reads them back through the accessors below right after
+ * the call that produced them. That keeps the boundary to one opaque
+ * handle: a `PreviewFrame` and a `CommitDiff` both hold variable length
+ * lists, so handing either out by value would need a second handle type
+ * and a second deleter for a value that is read once and dropped.
+ */
+struct PnsRouter;
+
+/**
+ * A board snapshot under construction, plus the rules the resolver reads.
+ *
+ * Owned by C++ through a `RustHandle`. Deleted either by
+ * [`ffi_pnsrouter_snapshot_delete`] or by [`ffi_pnsrouter_new`], which
+ * consumes it.
+ */
+struct PnsSnapshot;
+
+/**
  * Wrapper type for [Archive]
  */
 struct ZipArchive;
@@ -275,6 +745,783 @@ struct InteractiveHtmlBomRefMap {
    * Footprint ID
    */
   size_t id;
+};
+
+/**
+ * The board wide design rule values the resolver reads.
+ *
+ * Wrapper for `BoardDesignRuleCheckSettings` and `BoardDesignRules`; see
+ * the integration design note, section 2.1. Every value is in
+ * nanometres.
+ */
+struct PnsBoardRules {
+  /**
+   * `BoardDesignRuleCheckSettings::getMinCopperCopperClearance`.
+   */
+  int64_t min_copper_copper_clearance;
+  /**
+   * `BoardDesignRuleCheckSettings::getMinCopperBoardClearance`.
+   */
+  int64_t min_copper_board_clearance;
+  /**
+   * `BoardDesignRuleCheckSettings::getMinCopperNpthClearance`.
+   */
+  int64_t min_copper_npth_clearance;
+  /**
+   * `BoardDesignRuleCheckSettings::getMinDrillDrillClearance`.
+   */
+  int64_t min_drill_drill_clearance;
+  /**
+   * `BoardDesignRuleCheckSettings::getMinDrillBoardClearance`.
+   */
+  int64_t min_drill_board_clearance;
+  /**
+   * `BoardDesignRuleCheckSettings::getMinCopperWidth`.
+   */
+  int64_t min_copper_width;
+  /**
+   * `BoardDesignRuleCheckSettings::getMinPthDrillDiameter`.
+   */
+  int64_t min_pth_drill_diameter;
+  /**
+   * `BoardDesignRules::getDefaultTraceWidth`.
+   */
+  int64_t default_trace_width;
+  /**
+   * `BoardDesignRules::getDefaultViaDrillDiameter`.
+   */
+  int64_t default_via_drill_diameter;
+};
+
+/**
+ * The per net class design rule values the resolver reads.
+ *
+ * Wrapper for `NetClass`; see the integration design note, section 2.1.
+ * The two defaults are zero when the net class does not set them, which
+ * is how `std::optional` crosses here.
+ */
+struct PnsNetClassRules {
+  /**
+   * `NetClass::getMinCopperCopperClearance`.
+   */
+  int64_t min_copper_copper_clearance;
+  /**
+   * `NetClass::getMinCopperWidth`.
+   */
+  int64_t min_copper_width;
+  /**
+   * `NetClass::getMinViaDrillDiameter`.
+   */
+  int64_t min_via_drill_diameter;
+  /**
+   * `NetClass::getDefaultTraceWidth`, or zero when it is not set.
+   */
+  int64_t default_trace_width;
+  /**
+   * `NetClass::getDefaultViaDrill`, or zero when it is not set.
+   */
+  int64_t default_via_drill;
+};
+
+/**
+ * The part of a snapshot item that does not depend on its geometry.
+ *
+ * Port of the common fields of `pnsrouter::snapshot::WorldItem`.
+ */
+struct PnsItemHeader {
+  /**
+   * The host's own handle for the board object this came from, counted
+   * from one so that zero can serve as a null.
+   */
+  uint64_t host_id;
+  /**
+   * The net, counted from one, or zero for an object with no net at all.
+   */
+  uint32_t net;
+  /**
+   * The first dense copper layer index the item occupies.
+   */
+  int32_t layer_start;
+  /**
+   * The last dense copper layer index the item occupies, inclusive.
+   */
+  int32_t layer_end;
+  /**
+   * Whether the user pinned the object in place.
+   */
+  bool locked;
+  /**
+   * Whether a trace may start or end on the object.
+   */
+  bool routable;
+  /**
+   * Whether the object is a pad on a pin with no internal connection.
+   */
+  bool free_pad;
+  /**
+   * Whether the object became several engine items.
+   */
+  bool compound_primitive;
+  /**
+   * Whether the object is a board edge, which picks up the copper to
+   * board clearance rule.
+   */
+  bool board_edge;
+  /**
+   * Whether the object is a keepout area, which excludes the copper the
+   * router places instead of keeping a distance from it.
+   */
+  bool keepout;
+  /**
+   * The pad's own copper clearance override in nanometres, or a negative
+   * value when the object has none.
+   */
+  int64_t copper_clearance;
+};
+
+/**
+ * One point in host coordinates, nanometres.
+ *
+ * Mirrors LibrePCB's `Point`, whose two `Length` members are `int64_t`
+ * nanometres.
+ */
+struct PnsPoint {
+  /**
+   * The x coordinate in nanometres.
+   */
+  int64_t x;
+  /**
+   * The y coordinate in nanometres.
+   */
+  int64_t y;
+};
+
+/**
+ * A straight track.
+ */
+struct PnsSegmentGeometry {
+  /**
+   * One end of the centre line.
+   */
+  PnsPoint p1;
+  /**
+   * The other end of the centre line.
+   */
+  PnsPoint p2;
+  /**
+   * The full track width in nanometres.
+   */
+  int64_t width;
+};
+
+/**
+ * A plated through, blind or buried via.
+ *
+ * The engine drills the hole itself from the drill diameter, so the host
+ * never fills a hole for a via.
+ */
+struct PnsViaGeometry {
+  /**
+   * The centre.
+   */
+  PnsPoint pos;
+  /**
+   * The copper diameter in nanometres.
+   */
+  int64_t diameter;
+  /**
+   * The drill diameter in nanometres.
+   */
+  int64_t drill;
+  /**
+   * How far through the copper stack the via reaches.
+   */
+  PnsViaType via_type;
+  /**
+   * Whether the via has no net yet.
+   */
+  bool is_free;
+};
+
+/**
+ * One obstacle shape.
+ *
+ * A flat struct rather than a tagged union so that cbindgen can describe
+ * it to C++ without a variant type. Only the fields
+ * [`PnsShape::kind`] names are read; the rest may hold anything.
+ */
+struct PnsShape {
+  /**
+   * Which fields below are meaningful.
+   */
+  PnsShapeKind kind;
+  /**
+   * The centre of a circle or of a rectangle.
+   */
+  PnsPoint center;
+  /**
+   * A circle radius, a rectangle corner radius, or a capsule's full
+   * width.
+   */
+  int64_t radius;
+  /**
+   * Half the width and half the height of a rectangle.
+   */
+  PnsPoint half_size;
+  /**
+   * The first end of a capsule.
+   */
+  PnsPoint p1;
+  /**
+   * The second end of a capsule.
+   */
+  PnsPoint p2;
+  /**
+   * The vertices of a polygon, never null even when the count is zero.
+   */
+  const PnsPoint *vertices;
+  /**
+   * How many vertices [`PnsShape::vertices`] points at.
+   */
+  size_t vertex_count;
+};
+
+/**
+ * A pad, a board outline, or a copper graphic.
+ */
+struct PnsSolidGeometry {
+  /**
+   * The copper, in board coordinates.
+   */
+  PnsShape shape;
+  /**
+   * The point a trace snaps to.
+   */
+  PnsPoint pos;
+  /**
+   * Whether [`PnsSolidGeometry::hole`] is meaningful.
+   */
+  bool has_hole;
+  /**
+   * The shape drilled through the copper.
+   */
+  PnsShape hole;
+};
+
+/**
+ * A hole with no copper of its own, such as a board mounting hole.
+ */
+struct PnsHoleGeometry {
+  /**
+   * The drilled shape.
+   */
+  PnsShape shape;
+};
+
+/**
+ * How many items of each kind a snapshot holds.
+ *
+ * A debug accessor for the unit tests, which have no other way to see
+ * what the builder produced.
+ */
+struct PnsSnapshotStats {
+  /**
+   * How many copper layers the board has.
+   */
+  uint8_t copper_layer_count;
+  /**
+   * The broad phase inflation radius in nanometres.
+   */
+  int32_t max_clearance;
+  /**
+   * How many items the snapshot holds in total.
+   */
+  size_t item_count;
+  /**
+   * How many of them are tracks.
+   */
+  size_t segment_count;
+  /**
+   * How many of them are vias.
+   */
+  size_t via_count;
+  /**
+   * How many of them are solids.
+   */
+  size_t solid_count;
+  /**
+   * How many of them are bare holes.
+   */
+  size_t hole_count;
+  /**
+   * How many solids carry a drilled hole.
+   */
+  size_t drilled_solid_count;
+  /**
+   * How many nets the snapshot knows.
+   */
+  size_t net_count;
+  /**
+   * How many net classes the snapshot knows.
+   */
+  size_t net_class_count;
+  /**
+   * How many items are keepout obstacles, which is one per triangle of
+   * every keepout zone on every copper layer the zone covers.
+   */
+  size_t keepout_count;
+};
+
+/**
+ * The settings a routing session starts with.
+ *
+ * Only the values the host has a control for. Everything else stays at
+ * `RoutingSettings::default`, which reproduces KiCad's own constructor.
+ */
+struct PnsRouterSettings {
+  /**
+   * Zero for mark obstacles, one for shove, two for walkaround, which is
+   * `pnsrouter::settings::RouterMode`'s own numbering.
+   */
+  uint8_t mode;
+  /**
+   * The track width to place, in nanometres.
+   */
+  int64_t track_width;
+  /**
+   * The via copper diameter to place, in nanometres.
+   */
+  int64_t via_diameter;
+  /**
+   * The via drill diameter to place, in nanometres.
+   */
+  int64_t via_drill;
+  /**
+   * How many times the shove may push before it gives up and the router
+   * falls back to walking around.
+   *
+   * `RoutingSettings::shove_iteration_limit`, whose default is KiCad's
+   * 250. The host is expected to keep it in a sane range. Zero would make
+   * every shove fail immediately.
+   */
+  uint32_t shove_iteration_limit;
+  /**
+   * Whether a route which breaks a rule may be committed anyway.
+   *
+   * `RoutingSettings::allow_drc_violations`, KiCad's "Allow DRC
+   * violations". The engine only honours it in mark obstacles mode, which
+   * is the mode whose job is to show what a route breaks, so it changes
+   * nothing in the other two.
+   */
+  bool allow_drc_violations;
+  /**
+   * Whether corners are built at 90 degrees instead of 45.
+   *
+   * `RoutingSettings::corner_mode`, of which this boundary offers the two
+   * mitered ones: false is `CornerMode::Mitered45` and true is
+   * `CornerMode::Mitered90`.
+   *
+   * A boolean rather than the engine's four valued enum, and that is the
+   * refusal of `CornerMode::Rounded45` and `CornerMode::Rounded90`
+   * itself: a rounded corner is an arc, a LibrePCB `Trace` serialises no
+   * angle (`libs/librepcb/core/geometry/trace.cpp:236`), and a value that
+   * cannot be expressed needs no code to reject it and cannot be reached
+   * by a host that forgets to. If the file format ever carries an arc
+   * trace, this field becomes the enum and the applier grows the arm
+   * [`PnsNewGeometryKind::Arc`] documents.
+   */
+  bool corner_mode_90;
+  /**
+   * Whether the session records everything it is driven with.
+   *
+   * Read by [`ffi_pnsrouter_new`] only, because a recording has to start
+   * from the snapshot the session was built on and that snapshot is gone
+   * by the time [`ffi_pnsrouter_set_settings`] runs. It is ignored there
+   * rather than refused, so that a host can hand the same struct to both
+   * entry points.
+   */
+  bool record_session;
+  /**
+   * The width of one track of a differential pair, in nanometres.
+   *
+   * `Sizes::diff_pair_width`. Zero keeps the crate's own default, which
+   * is KiCad's 0.125 mm.
+   */
+  int64_t diff_pair_width;
+  /**
+   * The copper gap between the two tracks of a differential pair, in
+   * nanometres.
+   *
+   * `Sizes::diff_pair_gap`. Zero keeps the crate's own default, which is
+   * KiCad's 0.18 mm. It has to reach the board's minimum copper to copper
+   * clearance or every pair start is refused with
+   * [`PnsStartResult::PairGapBelowMinClearance`].
+   */
+  int64_t diff_pair_gap;
+  /**
+   * The gap between the two vias of a differential pair, in nanometres.
+   *
+   * `Sizes::diff_pair_via_gap`. Zero means "the same as the track gap",
+   * which is what `Sizes::diff_pair_via_gap_same_as_trace_gap` selects.
+   */
+  int64_t diff_pair_via_gap;
+};
+
+/**
+ * The dimensions a tuning session meanders to.
+ *
+ * Mirrors `pnsrouter::meander::MeanderSettingsRequest`, with its two
+ * `Option<LengthTarget>` spelled as a flag plus a min, opt and max triple
+ * so that the whole thing rides in a `#[repr(C)]` struct.
+ *
+ * There is no corner style field. `MeanderStyle::Round` draws its corners
+ * as arcs, and LibrePCB has no way to store an arc trace, so a rounded
+ * meander would only reach the applier to be refused. `Round` is the
+ * engine's default since the arcs milestone, so this boundary names
+ * `MeanderStyle::Chamfer` itself and never offers the other one.
+ */
+struct PnsMeanderSettings {
+  /**
+   * The shortest meander amplitude in nanometres.
+   */
+  int64_t min_amplitude;
+  /**
+   * The longest meander amplitude in nanometres, which is what
+   * [`ffi_pnsrouter_amplitude_step`] moves.
+   */
+  int64_t max_amplitude;
+  /**
+   * The distance between two meanders in nanometres, which is what
+   * [`ffi_pnsrouter_spacing_step`] moves.
+   */
+  int64_t spacing;
+  /**
+   * How far one amplitude or spacing step moves, in nanometres. Must be
+   * positive or the start is
+   * [`PnsStartResult::InvalidMeanderSettings`].
+   */
+  int64_t step;
+  /**
+   * The corner radius as a percentage of the half period, so 100 is a
+   * radius of exactly half the spacing.
+   */
+  int32_t corner_radius_percentage;
+  /**
+   * Whether every meander goes to the same side of the base line.
+   */
+  bool single_sided;
+  /**
+   * Which side the first meander goes to.
+   */
+  PnsMeanderSide initial_side;
+  /**
+   * Whether the reassembly keeps the ends of the tuned run where they
+   * are. KiCad's host forces this on.
+   */
+  bool keep_endpoints;
+  /**
+   * Whether the four `target_length_*` fields below mean anything. False
+   * is the engine's unconstrained target, against which nothing is ever
+   * too long.
+   */
+  bool has_target_length;
+  /**
+   * The shortest accepted length in nanometres.
+   */
+  int64_t target_length_min;
+  /**
+   * The length the meanders aim for, in nanometres.
+   */
+  int64_t target_length_opt;
+  /**
+   * The longest accepted length in nanometres.
+   */
+  int64_t target_length_max;
+  /**
+   * Whether the three `target_skew_*` fields below mean anything. Only
+   * [`PnsTuningMode::Skew`] reads them.
+   */
+  bool has_target_skew;
+  /**
+   * The smallest accepted skew in nanometres.
+   */
+  int64_t target_skew_min;
+  /**
+   * The skew the meanders aim for, in nanometres.
+   */
+  int64_t target_skew_opt;
+  /**
+   * The largest accepted skew in nanometres.
+   */
+  int64_t target_skew_max;
+};
+
+/**
+ * One polyline of the session's latest preview frame.
+ *
+ * Mirrors `pnsrouter::router::PreviewItem`. The centre line is read point
+ * by point with [`ffi_pnsrouter_preview_item_point`], because a variable
+ * length list cannot ride in a `#[repr(C)]` struct the host did not
+ * allocate.
+ */
+struct PnsPreviewItem {
+  /**
+   * How many points the centre line has.
+   */
+  size_t point_count;
+  /**
+   * The full width in nanometres.
+   */
+  int64_t width;
+  /**
+   * The dense copper layer index to draw on.
+   */
+  int32_t layer;
+  /**
+   * The net, counted from one, or zero for no net.
+   */
+  uint32_t net;
+  /**
+   * How to draw it.
+   */
+  PnsPreviewStyle style;
+  /**
+   * The clearance outline to draw around it in nanometres, or a negative
+   * value when no rule applies.
+   */
+  int64_t clearance;
+};
+
+/**
+ * One via of the session's latest preview frame.
+ *
+ * Mirrors `pnsrouter::router::PreviewVia`.
+ */
+struct PnsPreviewVia {
+  /**
+   * The centre.
+   */
+  PnsPoint pos;
+  /**
+   * The copper diameter in nanometres.
+   */
+  int64_t diameter;
+  /**
+   * The drill diameter in nanometres.
+   */
+  int64_t drill;
+  /**
+   * The first dense copper layer index it spans.
+   */
+  int32_t layer_start;
+  /**
+   * The last dense copper layer index it spans, inclusive.
+   */
+  int32_t layer_end;
+  /**
+   * The net, counted from one, or zero for no net.
+   */
+  uint32_t net;
+  /**
+   * How to draw it.
+   */
+  PnsPreviewStyle style;
+  /**
+   * The clearance outline to draw around it in nanometres, or a negative
+   * value when no rule applies.
+   */
+  int64_t clearance;
+};
+
+/**
+ * One obstacle the route being placed runs into.
+ *
+ * Mirrors `pnsrouter::router::ViolationMarker`, minus the engine item id,
+ * which means nothing to the host.
+ */
+struct PnsViolationMarker {
+  /**
+   * The obstacle as the host knows it, or zero for something this
+   * session created and the host has no id for yet.
+   */
+  uint64_t host_id;
+  /**
+   * The clearance that was asked for and not met, in nanometres.
+   */
+  int64_t clearance;
+  /**
+   * The dense copper layer index to draw the obstacle on instead of its
+   * own, or a negative value to draw it on its own layers.
+   */
+  int32_t forced_layer;
+  /**
+   * Whether the host should hide the obstacle's normal rendering while
+   * this marker is drawn.
+   */
+  bool hide_original;
+};
+
+/**
+ * What a host shows during a length tuning session.
+ *
+ * Mirrors `pnsrouter::router::TuningInfo`, with its options spelled as a
+ * flag plus a value and its whole `MeanderSettings` reduced to the two
+ * numbers [`ffi_pnsrouter_amplitude_step`] and
+ * [`ffi_pnsrouter_spacing_step`] move, which are the only ones that
+ * change while a session runs.
+ *
+ * The engine also hands back the initial side, which it flips when a
+ * meander only fits on the other side of the base line. It is not here:
+ * KiCad carries that flip onto a persistent board item so that re editing
+ * the same pattern draws the same shape, and this host has no such
+ * object. Every tuning gesture is one session started from the toolbar's
+ * own settings.
+ */
+struct PnsTuningInfo {
+  /**
+   * How the tuned line stands against the window in `target_*`.
+   */
+  PnsTuningStatus status;
+  /**
+   * Which of the three modes produced this readout.
+   */
+  PnsTuningMode mode;
+  /**
+   * The length the last move produced, in nanometres. It is a **skew**
+   * in [`PnsTuningMode::Skew`], where it is the same number as
+   * [`PnsTuningInfo::skew`].
+   */
+  int64_t result;
+  /**
+   * Whether [`PnsTuningInfo::delta`] means anything.
+   */
+  bool has_delta;
+  /**
+   * How far [`PnsTuningInfo::result`] has moved from the length the
+   * session started at, in nanometres.
+   */
+  int64_t delta;
+  /**
+   * The shortest length the status was decided against, in nanometres.
+   */
+  int64_t target_min;
+  /**
+   * The length the meanders aimed for, in nanometres.
+   */
+  int64_t target_opt;
+  /**
+   * The longest length the status was decided against, in nanometres.
+   */
+  int64_t target_max;
+  /**
+   * Whether [`PnsTuningInfo::skew`] means anything, which it does in
+   * [`PnsTuningMode::Skew`] only.
+   */
+  bool has_skew;
+  /**
+   * The difference in length between the two lanes, in nanometres.
+   */
+  int64_t skew;
+  /**
+   * Whether the three `skew_target_*` fields mean anything.
+   */
+  bool has_skew_target;
+  /**
+   * The smallest accepted skew in nanometres.
+   */
+  int64_t skew_target_min;
+  /**
+   * The skew the meanders aimed for, in nanometres.
+   */
+  int64_t skew_target_opt;
+  /**
+   * The largest accepted skew in nanometres.
+   */
+  int64_t skew_target_max;
+  /**
+   * Whether [`PnsTuningInfo::coupled_length`] means anything.
+   */
+  bool has_coupled_length;
+  /**
+   * The coupled lane's total length in nanometres, which is what the
+   * skew is measured against.
+   */
+  int64_t coupled_length;
+  /**
+   * The meander amplitude the session is running at, in nanometres.
+   */
+  int64_t amplitude;
+  /**
+   * The meander spacing the session is running at, in nanometres.
+   */
+  int64_t spacing;
+};
+
+/**
+ * One item a host has to create or rewrite after a commit.
+ *
+ * Mirrors `pnsrouter::router::NewItem` with its
+ * `pnsrouter::router::NewGeometry` flattened into the fields
+ * [`PnsNewItem::kind`] names, the same way [`PnsShape`] flattens a shape.
+ */
+struct PnsNewItem {
+  /**
+   * Which of the fields below are meaningful.
+   */
+  PnsNewGeometryKind kind;
+  /**
+   * The net, counted from one, or zero for no net. The engine's orphan
+   * net, which a route started in free space is placed on, also reads
+   * back as zero because the host has no net for it.
+   */
+  uint32_t net;
+  /**
+   * The first dense copper layer index the item occupies.
+   */
+  int32_t layer_start;
+  /**
+   * The last dense copper layer index the item occupies, inclusive.
+   */
+  int32_t layer_end;
+  /**
+   * The host object the item descends from, or zero for a freshly routed
+   * one.
+   */
+  uint64_t source;
+  /**
+   * One end of a segment's or an arc's centre line.
+   */
+  PnsPoint p1;
+  /**
+   * The other end of a segment's or an arc's centre line.
+   */
+  PnsPoint p2;
+  /**
+   * A point of an arc's centre line strictly between its two ends, which
+   * is what says which way round the arc runs. Meaningless for the other
+   * two kinds.
+   */
+  PnsPoint mid;
+  /**
+   * The full width of a segment or an arc in nanometres.
+   */
+  int64_t width;
+  /**
+   * The centre of a via.
+   */
+  PnsPoint pos;
+  /**
+   * The copper diameter of a via in nanometres.
+   */
+  int64_t diameter;
+  /**
+   * The drill diameter of a via in nanometres.
+   */
+  int64_t drill;
+  /**
+   * How far through the copper stack a via reaches.
+   */
+  PnsViaType via_type;
 };
 
 extern "C" {
@@ -526,6 +1773,700 @@ double ffi_math_arc_radius_and_center(double dx,
                                       double angle,
                                       double * NONNULL x,
                                       double * NONNULL y);
+
+/**
+ * Create an empty snapshot of a board with `copper_layer_count` copper
+ * layers.
+ *
+ * The layer indices every later call takes are dense and zero based,
+ * `0 ..= copper_layer_count - 1`; see the integration design note,
+ * section 1.3.
+ */
+PnsSnapshot *ffi_pnsrouter_snapshot_new(uint8_t copper_layer_count);
+
+/**
+ * Delete a [`PnsSnapshot`] that was never handed to
+ * [`ffi_pnsrouter_new`].
+ */
+void ffi_pnsrouter_snapshot_delete(PnsSnapshot *obj);
+
+/**
+ * Set the board wide design rule values.
+ */
+PnsResult ffi_pnsrouter_snapshot_set_board_rules(PnsSnapshot * NONNULL obj,
+                                                 const PnsBoardRules * NONNULL rules);
+
+/**
+ * Add one net class and return its index.
+ *
+ * The index is what [`ffi_pnsrouter_snapshot_add_net`] takes.
+ */
+size_t ffi_pnsrouter_snapshot_add_net_class(PnsSnapshot * NONNULL obj,
+                                            const PnsNetClassRules * NONNULL rules);
+
+/**
+ * Add one net belonging to a net class and return the net number the item
+ * headers take, which is the dense net index plus one.
+ */
+uint32_t ffi_pnsrouter_snapshot_add_net(PnsSnapshot * NONNULL obj,
+                                        size_t net_class_index);
+
+/**
+ * Record that two nets are the two halves of a differential pair.
+ *
+ * `net` and `partner` are net numbers as
+ * [`ffi_pnsrouter_snapshot_add_net`] handed them out, and `polarity` is
+ * `1` for the positive half and `-1` for the negative one. It is called
+ * once per half, so the host does not have to decide which half it is
+ * looking at, and it must be called after both nets were added.
+ *
+ * A net number the snapshot never handed out, a partner equal to the net
+ * itself, or a polarity of zero is ignored rather than stored: the three
+ * resolver hooks then answer "not a pair" and the engine refuses a pair
+ * start cleanly instead of routing two nets that are not coupled.
+ */
+void ffi_pnsrouter_snapshot_set_net_partner(PnsSnapshot * NONNULL obj,
+                                            uint32_t net,
+                                            uint32_t partner,
+                                            int32_t polarity);
+
+/**
+ * The net number of a net's differential pair partner, or zero.
+ *
+ * A read back of what [`ffi_pnsrouter_snapshot_set_net_partner`] stored,
+ * so that the unit tests can prove the table the resolver reads.
+ */
+uint32_t ffi_pnsrouter_snapshot_net_partner(const PnsSnapshot * NONNULL obj,
+                                            uint32_t net);
+
+/**
+ * The differential pair polarity of a net, zero for a net without one.
+ */
+int32_t ffi_pnsrouter_snapshot_net_polarity(const PnsSnapshot * NONNULL obj,
+                                            uint32_t net);
+
+/**
+ * Add one track.
+ *
+ * Wraps `pnsrouter::snapshot::WorldGeometry::Segment`.
+ */
+PnsResult ffi_pnsrouter_snapshot_add_segment(PnsSnapshot * NONNULL obj,
+                                             const PnsItemHeader * NONNULL header,
+                                             const PnsSegmentGeometry * NONNULL geometry);
+
+/**
+ * Add one via.
+ *
+ * Wraps `pnsrouter::snapshot::WorldGeometry::Via`. The engine drills the
+ * hole itself, so no hole crosses here.
+ */
+PnsResult ffi_pnsrouter_snapshot_add_via(PnsSnapshot * NONNULL obj,
+                                         const PnsItemHeader * NONNULL header,
+                                         const PnsViaGeometry * NONNULL geometry);
+
+/**
+ * Add one solid: a pad, a copper polygon or a board outline.
+ *
+ * Wraps `pnsrouter::snapshot::WorldGeometry::Solid`. A pad becomes one
+ * solid per copper layer and the hole rides on exactly one of them; see
+ * the integration design note, section 1.7.
+ *
+ * # Safety
+ *
+ * The shapes' vertex pointers must stay valid for the duration of the
+ * call.
+ */
+PnsResult ffi_pnsrouter_snapshot_add_solid(PnsSnapshot * NONNULL obj,
+                                           const PnsItemHeader * NONNULL header,
+                                           const PnsSolidGeometry * NONNULL geometry);
+
+/**
+ * Add one hole with no copper of its own, such as a board mounting hole.
+ *
+ * Wraps `pnsrouter::snapshot::WorldGeometry::Hole`.
+ *
+ * # Safety
+ *
+ * The shape's vertex pointer must stay valid for the duration of the
+ * call.
+ */
+PnsResult ffi_pnsrouter_snapshot_add_hole(PnsSnapshot * NONNULL obj,
+                                          const PnsItemHeader * NONNULL header,
+                                          const PnsHoleGeometry * NONNULL geometry);
+
+/**
+ * Read back what the snapshot holds, for the unit tests.
+ */
+void ffi_pnsrouter_snapshot_stats(PnsSnapshot * NONNULL obj,
+                                  PnsSnapshotStats * NONNULL out);
+
+/**
+ * The clearance the resolver requires between two host objects.
+ *
+ * A debug entry point for the unit tests, which have no other way to
+ * reach `pnsrouter::rules::RuleResolver`. Answers
+ * [`PnsResult::NoClearance`] where the resolver says the two can never
+ * collide, and [`PnsResult::UnknownItem`] where a host id or a role is
+ * not in the snapshot.
+ *
+ * The keepout rung is asked first, exactly as the engine's own ladder
+ * asks it (`pnsrouter::collide`, the port of
+ * `pcbnew/router/pns_item.cpp:198`), so that the answer a test reads is
+ * the answer a collision would get.
+ */
+PnsResult ffi_pnsrouter_snapshot_clearance(PnsSnapshot * NONNULL obj,
+                                           uint64_t a_host,
+                                           PnsItemRole a_role,
+                                           uint64_t b_host,
+                                           PnsItemRole b_role,
+                                           int32_t * NONNULL out);
+
+/**
+ * One design rule value the resolver answers for a host object.
+ *
+ * A debug entry point for the unit tests, mirroring
+ * `BoardDesignRuleCheckData`'s helper methods.
+ */
+PnsResult ffi_pnsrouter_snapshot_constraint(PnsSnapshot * NONNULL obj,
+                                            PnsConstraintKind kind,
+                                            uint64_t host,
+                                            int32_t * NONNULL out_min,
+                                            int32_t * NONNULL out_opt);
+
+/**
+ * The broad phase inflation radius the snapshot will carry.
+ *
+ * Every answer of [`ffi_pnsrouter_snapshot_clearance`] is bounded by it,
+ * which the unit tests assert.
+ */
+int32_t ffi_pnsrouter_snapshot_max_clearance(PnsSnapshot * NONNULL obj);
+
+/**
+ * Create a routing session, consuming the snapshot.
+ *
+ * Wraps `pnsrouter::router::Router::new`. The snapshot pointer is invalid
+ * afterwards and must not be deleted again.
+ */
+PnsRouter *ffi_pnsrouter_new(PnsSnapshot *snapshot,
+                             const PnsRouterSettings * NONNULL settings);
+
+/**
+ * Delete a [`PnsRouter`] object.
+ */
+void ffi_pnsrouter_delete(PnsRouter *obj);
+
+/**
+ * How many copper layers the session's board has.
+ *
+ * The smallest useful read back, so that a test can prove the session
+ * really was built from the snapshot it was handed.
+ */
+uint8_t ffi_pnsrouter_copper_layer_count(const PnsRouter * NONNULL obj);
+
+/**
+ * Whether a route is currently being placed.
+ *
+ * Wraps `pnsrouter::router::Router::routing_in_progress`.
+ */
+bool ffi_pnsrouter_routing_in_progress(const PnsRouter * NONNULL obj);
+
+/**
+ * Replace the routing mode and the sizes of a session.
+ *
+ * Wraps `pnsrouter::router::Router::set_settings` and
+ * `pnsrouter::router::Router::set_sizes`. A running placement keeps the
+ * sizes it started with, because the crate's placer has no mid route
+ * entry point for them yet; see the port note on `Router::set_sizes`.
+ */
+void ffi_pnsrouter_set_settings(PnsRouter * NONNULL obj,
+                                const PnsRouterSettings * NONNULL settings);
+
+/**
+ * The copper layer the route is being placed on, or a negative value when
+ * nothing is being routed.
+ *
+ * Wraps `pnsrouter::router::Router::current_layer`.
+ */
+int32_t ffi_pnsrouter_current_layer(const PnsRouter * NONNULL obj);
+
+/**
+ * Whether the next fix would place a via.
+ *
+ * Wraps `pnsrouter::router::Router::placing_via`.
+ */
+bool ffi_pnsrouter_placing_via(const PnsRouter * NONNULL obj);
+
+/**
+ * Take the session recording out, in the crate's own text format.
+ *
+ * Wraps `pnsrouter::router::Router::take_recording` followed by
+ * `pnsrouter::eventlog::SessionRecording::to_text`. Taking the recording
+ * ends it, which is the crate's semantics, so a host that wants to keep
+ * recording has to build a new session.
+ *
+ * Answers false and leaves `out` alone when the session was not created
+ * with `record_session`, or when its recording has already been taken.
+ * The text parses back with
+ * `pnsrouter::eventlog::SessionRecording::from_text`, so it can be
+ * dropped into the crate's `tests/fixtures/sessions/` unchanged.
+ */
+bool ffi_pnsrouter_take_recording(PnsRouter * NONNULL obj,
+                                  QString * NONNULL out);
+
+/**
+ * Find every host object under a point and return how many there are.
+ *
+ * Wraps `pnsrouter::router::Router::hover`. `layer` is the dense copper
+ * layer index to filter by, or a negative value for "any layer". The
+ * answer is kept in the session and read back with
+ * [`ffi_pnsrouter_hover_at`], for the same reason the preview is; see
+ * [`PnsRouter`].
+ */
+size_t ffi_pnsrouter_hover(PnsRouter * NONNULL obj, PnsPoint at, int32_t layer);
+
+/**
+ * One host id of the last [`ffi_pnsrouter_hover`].
+ */
+uint64_t ffi_pnsrouter_hover_at(const PnsRouter * NONNULL obj, size_t index);
+
+/**
+ * Whether a route may be started at a point.
+ *
+ * Wraps `pnsrouter::router::Router::is_starting_point_routable`. `start`
+ * is the host object under the cursor, or zero for free space.
+ */
+PnsStartResult ffi_pnsrouter_is_starting_point_routable(const PnsRouter * NONNULL obj,
+                                                        PnsPoint at,
+                                                        uint64_t start,
+                                                        int32_t layer);
+
+/**
+ * Begin routing a track.
+ *
+ * Wraps `pnsrouter::router::Router::start_routing`. `start` is the host
+ * object under the cursor, or zero for free space. On success the
+ * session holds the frame of a placement that has not been moved yet,
+ * and on failure it holds an empty one.
+ */
+PnsStartResult ffi_pnsrouter_start_routing(PnsRouter * NONNULL obj,
+                                           PnsPoint at,
+                                           uint64_t start,
+                                           int32_t layer);
+
+/**
+ * Whether a differential pair may be started at a point.
+ *
+ * Wraps `pnsrouter::router::Router::is_starting_point_routable_diff_pair`.
+ * Unlike the single track gate, `start` may not be zero: the engine has
+ * no other way to learn which two nets are being routed, and a zero is
+ * [`PnsStartResult::PairNeedsStartItem`].
+ */
+PnsStartResult ffi_pnsrouter_is_starting_point_routable_diff_pair(const PnsRouter * NONNULL obj,
+                                                                  PnsPoint at,
+                                                                  uint64_t start,
+                                                                  int32_t layer);
+
+/**
+ * Begin routing a differential pair.
+ *
+ * Wraps `pnsrouter::router::Router::start_routing_diff_pair`. Which two
+ * nets are routed comes from the snapshot's pair table, through the
+ * resolver hooks [`ffi_pnsrouter_snapshot_set_net_partner`] fills in. On
+ * success the session holds the frame of a placement that has not been
+ * moved yet, and on failure it holds an empty one.
+ */
+PnsStartResult ffi_pnsrouter_start_routing_diff_pair(PnsRouter * NONNULL obj,
+                                                     PnsPoint at,
+                                                     uint64_t start,
+                                                     int32_t layer);
+
+/**
+ * Begin length tuning the track under a point.
+ *
+ * Wraps `pnsrouter::router::Router::start_tuning`,
+ * `start_tuning_diff_pair` and `start_tuning_skew`, told apart by `mode`.
+ * Unlike a track placement there is no start gate to ask first and no
+ * layer argument: the engine reads the layer off the clicked track, and
+ * the only refusals are the placer's own.
+ *
+ * `host_id` is required; a zero is
+ * [`PnsStartResult::TuningNeedsStartItem`]. On success the session holds
+ * the frame of a tuning which has not been moved yet, so the cursor has
+ * consumed none of the track, and on failure it holds an empty one.
+ */
+PnsStartResult ffi_pnsrouter_start_tuning(PnsRouter * NONNULL obj,
+                                          PnsPoint at,
+                                          uint64_t host_id,
+                                          PnsTuningMode mode,
+                                          const PnsMeanderSettings * NONNULL settings);
+
+/**
+ * Whether one of the three length tuning modes is running.
+ *
+ * Wraps `pnsrouter::router::RouterState::is_tuning`. A tuning session is
+ * also a routing session for [`ffi_pnsrouter_routing_in_progress`],
+ * because the same move, fix, stop and abort entry points drive it.
+ */
+bool ffi_pnsrouter_is_tuning(const PnsRouter * NONNULL obj);
+
+/**
+ * Nudge the meander amplitude by one step.
+ *
+ * Wraps `pnsrouter::router::Router::amplitude_step`. `sign` is a
+ * direction and not a distance; the distance is
+ * [`PnsMeanderSettings::step`]. This produces no frame, so a host follows
+ * it with a [`ffi_pnsrouter_move_to`] at the same point, which is what
+ * makes the preview follow.
+ *
+ * False when no tuning session is running.
+ */
+bool ffi_pnsrouter_amplitude_step(PnsRouter * NONNULL obj, int32_t sign);
+
+/**
+ * Nudge the meander spacing by one step.
+ *
+ * Wraps `pnsrouter::router::Router::spacing_step`. The new spacing is
+ * floored by the tuned track's width plus its clearance, so a decrease
+ * can be refused by the floor and still answer true: the answer is "a
+ * tuning session took this", not "the value changed". See
+ * [`ffi_pnsrouter_amplitude_step`] for the rest.
+ */
+bool ffi_pnsrouter_spacing_step(PnsRouter * NONNULL obj, int32_t sign);
+
+/**
+ * The nets the session is routing or dragging.
+ *
+ * Wraps `pnsrouter::router::Router::current_nets`. Answers how many nets
+ * there are, which is zero while idle, one for a track or a drag and two
+ * for a differential pair, and writes the net numbers into `out_p` and
+ * `out_n`, the positive half first. A net number of zero is a route with
+ * no net of the host's, which is what a track started in free space gets.
+ */
+uint32_t ffi_pnsrouter_current_nets(const PnsRouter * NONNULL obj,
+                                    uint32_t * NONNULL out_p,
+                                    uint32_t * NONNULL out_n);
+
+/**
+ * Begin dragging existing board objects.
+ *
+ * Wraps `pnsrouter::router::Router::start_dragging`. `host_ids` points at
+ * `host_id_count` board objects to drag; a zero in the list is dropped,
+ * and an empty set is [`PnsStartResult::NothingToDrag`]. The crate picks
+ * the algorithm from the shape of the set: nothing but pads is KiCad's
+ * component drag, which moves the whole footprint and reports the offset
+ * through [`ffi_pnsrouter_commit_moved_solid_at`], more than one track is
+ * a multi drag, and anything else is a single drag.
+ *
+ * `free_angle` reaches the single dragger only and drags the clicked
+ * corner without the 45 degree constraint; every other drag mode is
+ * decided by the crate from the clicked object and the click position.
+ *
+ * On success the session holds the frame of a drag that has not moved
+ * yet, which is empty, so a host follows this with a move exactly as
+ * KiCad's does.
+ *
+ * # Safety
+ *
+ * `host_ids` must point at `host_id_count` readable `u64` for the
+ * duration of the call, or be null when the count is zero.
+ */
+PnsStartResult ffi_pnsrouter_start_dragging(PnsRouter * NONNULL obj,
+                                            PnsPoint at,
+                                            const uint64_t *host_ids,
+                                            size_t host_id_count,
+                                            bool free_angle);
+
+/**
+ * Whether an existing object is being dragged.
+ *
+ * `pnsrouter::router::RouterState::DragSegment`, which is the one thing
+ * [`ffi_pnsrouter_routing_in_progress`] cannot tell apart from a
+ * placement. The state enum itself does not cross: it has three values
+ * and this pair of predicates already answers all of them.
+ */
+bool ffi_pnsrouter_is_dragging(const PnsRouter * NONNULL obj);
+
+/**
+ * Move the end of the route, and store the frame it produced.
+ *
+ * Wraps `pnsrouter::router::Router::move_to`. `at` is already snapped:
+ * snapping is host work. `end` is the host object under the cursor, or
+ * zero for free space.
+ */
+void ffi_pnsrouter_move_to(PnsRouter * NONNULL obj, PnsPoint at, uint64_t end);
+
+/**
+ * Pin the route down to where the cursor is.
+ *
+ * Wraps `pnsrouter::router::Router::fix_route`. A
+ * [`PnsFixOutcome::Continue`] leaves the frame after the fix in the
+ * session; a [`PnsFixOutcome::Finished`] leaves the commit there instead
+ * and clears the frame.
+ */
+PnsFixOutcome ffi_pnsrouter_fix_route(PnsRouter * NONNULL obj,
+                                      PnsPoint at,
+                                      uint64_t end,
+                                      bool force_finish);
+
+/**
+ * Route the rest of the way to the nearest unconnected anchor and finish.
+ *
+ * Wraps `pnsrouter::router::Router::finish`, whose `None` becomes
+ * [`PnsFixOutcome::NotRouting`]: nothing was being routed, nothing
+ * unconnected was left to reach, or the route did not settle on the
+ * anchor. Nothing was committed in that case and the session is left
+ * exactly as it was.
+ */
+PnsFixOutcome ffi_pnsrouter_finish(PnsRouter * NONNULL obj);
+
+/**
+ * Undo the last fix and answer where the undone leg began.
+ *
+ * Wraps `pnsrouter::router::Router::undo_last_segment`, whose answer a
+ * host uses to warp the cursor back there. False when nothing was being
+ * routed or when there was nothing to undo, in which case `out` is not
+ * written.
+ */
+bool ffi_pnsrouter_undo_last_segment(PnsRouter * NONNULL obj,
+                                     PnsPoint * NONNULL out);
+
+/**
+ * Move the route to another copper layer.
+ *
+ * Wraps `pnsrouter::router::Router::switch_layer`, which refuses once a
+ * fix has ended a leg without leaving a via behind.
+ */
+bool ffi_pnsrouter_switch_layer(PnsRouter * NONNULL obj, int32_t layer);
+
+/**
+ * Arm or disarm the via the next fix would place.
+ *
+ * Wraps `pnsrouter::router::Router::toggle_via_placement`. The answer is
+ * whether the request was honoured, not the new state; read that back
+ * with [`ffi_pnsrouter_placing_via`]. The via is only materialised on the
+ * next move, so a host has to move before the preview shows it.
+ */
+bool ffi_pnsrouter_toggle_via_placement(PnsRouter * NONNULL obj);
+
+/**
+ * Turn the route's first corner the other way.
+ *
+ * Wraps `pnsrouter::router::Router::flip_posture`.
+ */
+void ffi_pnsrouter_flip_posture(PnsRouter * NONNULL obj);
+
+/**
+ * Commit what was routed and end the session.
+ *
+ * Wraps `pnsrouter::router::Router::stop_routing`. The commit is left in
+ * the session and read back with the accessors below. An idle session
+ * answers with an empty commit.
+ */
+void ffi_pnsrouter_stop_routing(PnsRouter * NONNULL obj);
+
+/**
+ * Throw the session away without committing anything.
+ *
+ * Wraps `pnsrouter::router::Router::abort_routing`. Both the frame and
+ * the commit are cleared, so a host that reads them afterwards sees
+ * nothing rather than the state the aborted route left behind.
+ */
+void ffi_pnsrouter_abort_routing(PnsRouter * NONNULL obj);
+
+/**
+ * How many polylines the latest frame holds.
+ */
+size_t ffi_pnsrouter_preview_item_count(const PnsRouter * NONNULL obj);
+
+/**
+ * One polyline of the latest frame, minus its points.
+ */
+void ffi_pnsrouter_preview_item(const PnsRouter * NONNULL obj,
+                                size_t index,
+                                PnsPreviewItem * NONNULL out);
+
+/**
+ * One point of one polyline of the latest frame.
+ */
+PnsPoint ffi_pnsrouter_preview_item_point(const PnsRouter * NONNULL obj,
+                                          size_t item_index,
+                                          size_t point_index);
+
+/**
+ * Whether the latest frame holds the via the next fix would place.
+ */
+bool ffi_pnsrouter_preview_has_via(const PnsRouter * NONNULL obj);
+
+/**
+ * The via the next fix would place, when
+ * [`ffi_pnsrouter_preview_has_via`] answers true.
+ */
+void ffi_pnsrouter_preview_via(const PnsRouter * NONNULL obj,
+                               PnsPreviewVia * NONNULL out);
+
+/**
+ * Whether the latest frame holds the N lane's half of a pending
+ * differential pair via.
+ *
+ * `PreviewFrame::via_n`, which is always absent while a single track is
+ * being routed; the P lane's half is [`ffi_pnsrouter_preview_via`].
+ */
+bool ffi_pnsrouter_preview_has_via_n(const PnsRouter * NONNULL obj);
+
+/**
+ * The N lane's half of a pending differential pair via, when
+ * [`ffi_pnsrouter_preview_has_via_n`] answers true.
+ */
+void ffi_pnsrouter_preview_via_n(const PnsRouter * NONNULL obj,
+                                 PnsPreviewVia * NONNULL out);
+
+/**
+ * How many vias this session has already fixed.
+ */
+size_t ffi_pnsrouter_preview_fixed_via_count(const PnsRouter * NONNULL obj);
+
+/**
+ * One via this session has already fixed.
+ */
+void ffi_pnsrouter_preview_fixed_via(const PnsRouter * NONNULL obj,
+                                     size_t index,
+                                     PnsPreviewVia * NONNULL out);
+
+/**
+ * How many points the rat line from the end of the route holds, zero
+ * when there is none.
+ */
+size_t ffi_pnsrouter_preview_ratline_point_count(const PnsRouter * NONNULL obj);
+
+/**
+ * One point of the rat line from the end of the route.
+ */
+PnsPoint ffi_pnsrouter_preview_ratline_point(const PnsRouter * NONNULL obj,
+                                             size_t index);
+
+/**
+ * How many points the N lane's rat line holds, zero when there is none.
+ *
+ * `PreviewFrame::ratline_n`, the second rat line a differential pair
+ * draws; always empty while a single track is being routed.
+ */
+size_t ffi_pnsrouter_preview_ratline_n_point_count(const PnsRouter * NONNULL obj);
+
+/**
+ * One point of the N lane's rat line.
+ */
+PnsPoint ffi_pnsrouter_preview_ratline_n_point(const PnsRouter * NONNULL obj,
+                                               size_t index);
+
+/**
+ * How many obstacles the route being placed runs into.
+ */
+size_t ffi_pnsrouter_preview_violation_count(const PnsRouter * NONNULL obj);
+
+/**
+ * One obstacle the route being placed runs into.
+ */
+void ffi_pnsrouter_preview_violation(const PnsRouter * NONNULL obj,
+                                     size_t index,
+                                     PnsViolationMarker * NONNULL out);
+
+/**
+ * How many board objects the host must stop drawing.
+ */
+size_t ffi_pnsrouter_preview_hidden_count(const PnsRouter * NONNULL obj);
+
+/**
+ * One board object the host must stop drawing.
+ */
+uint64_t ffi_pnsrouter_preview_hidden_at(const PnsRouter * NONNULL obj,
+                                         size_t index);
+
+/**
+ * The tuning readout of the latest frame.
+ *
+ * `PreviewFrame::tuning`, which every move of a tuning session refreshes
+ * and which is absent from every routing and dragging frame. False when
+ * there is none, in which case `out` is not written.
+ */
+bool ffi_pnsrouter_preview_tuning(const PnsRouter * NONNULL obj,
+                                  PnsTuningInfo * NONNULL out);
+
+/**
+ * How many board objects the host must draw at an offset.
+ *
+ * One entry per pad a component drag is moving, and empty for every
+ * other session.
+ */
+size_t ffi_pnsrouter_preview_moved_solid_count(const PnsRouter * NONNULL obj);
+
+/**
+ * One board object the host must draw at an offset, and the offset.
+ *
+ * The pad is also in [`ffi_pnsrouter_preview_hidden_at`], because a host
+ * that cannot draw it moved must at least stop drawing it where it is.
+ */
+void ffi_pnsrouter_preview_moved_solid_at(const PnsRouter * NONNULL obj,
+                                          size_t index,
+                                          uint64_t * NONNULL out_host,
+                                          PnsPoint * NONNULL out_offset);
+
+/**
+ * How many board objects the latest commit deletes.
+ */
+size_t ffi_pnsrouter_commit_removed_count(const PnsRouter * NONNULL obj);
+
+/**
+ * One board object the latest commit deletes.
+ */
+uint64_t ffi_pnsrouter_commit_removed_at(const PnsRouter * NONNULL obj,
+                                         size_t index);
+
+/**
+ * How many board objects the latest commit creates.
+ */
+size_t ffi_pnsrouter_commit_added_count(const PnsRouter * NONNULL obj);
+
+/**
+ * One board object the latest commit creates.
+ */
+void ffi_pnsrouter_commit_added_at(const PnsRouter * NONNULL obj,
+                                   size_t index,
+                                   PnsNewItem * NONNULL out);
+
+/**
+ * How many board objects the latest commit rewrites in place.
+ */
+size_t ffi_pnsrouter_commit_updated_count(const PnsRouter * NONNULL obj);
+
+/**
+ * One board object the latest commit rewrites in place, and the host id
+ * whose identity it keeps.
+ */
+void ffi_pnsrouter_commit_updated_at(const PnsRouter * NONNULL obj,
+                                     size_t index,
+                                     uint64_t * NONNULL out_host,
+                                     PnsNewItem * NONNULL out_item);
+
+/**
+ * How many pads the latest commit moved.
+ *
+ * One entry per pad of the device a component drag moved, and empty for
+ * every other session.
+ */
+size_t ffi_pnsrouter_commit_moved_solid_count(const PnsRouter * NONNULL obj);
+
+/**
+ * One pad the latest commit moved, and how far it moved.
+ *
+ * The pad itself is not in any of the other three lists: the host moves
+ * whatever owns the pad by the offset instead, once per owner, and the
+ * traces the drag re-shaped arrive as ordinary removals and additions
+ * whose endpoints are already the pad's new anchor positions.
+ */
+void ffi_pnsrouter_commit_moved_solid_at(const PnsRouter * NONNULL obj,
+                                         size_t index,
+                                         uint64_t * NONNULL out_host,
+                                         PnsPoint * NONNULL out_offset);
 
 /**
  * Wrapper for [increment_number_in_string]
