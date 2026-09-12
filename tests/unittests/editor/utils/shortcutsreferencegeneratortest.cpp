@@ -50,7 +50,9 @@ class ShortcutsReferenceGeneratorTest : public ::testing::Test {};
 TEST_F(ShortcutsReferenceGeneratorTest, testExportPdfMultipleTimes) {
   FilePath fp = Application::getRandomTempPath().getPathTo("test.pdf");
   ShortcutsReferenceGenerator gen(EditorCommandSet::instance());
-  EXPECT_TRUE(gen.generatePdf(fp)) << "Page layout overflow!";
+  // The layout now paginates, so this only fails on a category which is
+  // taller than a whole column.
+  EXPECT_TRUE(gen.generatePdf(fp)) << "Category taller than a column!";
   EXPECT_TRUE(fp.isExistingFile());
 
   // Export again to see if it doesn't fail on already existing file.
