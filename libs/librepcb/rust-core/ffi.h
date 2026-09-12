@@ -205,8 +205,39 @@ enum class PnsItemRole {
 /**
  * Which fields of a [`PnsNewItem`] are meaningful.
  *
- * Mirrors the two variants of `pnsrouter::router::NewGeometry`, which is
- * all a single track placer emits.
+ * Mirrors the three variants of `pnsrouter::router::NewGeometry`, which
+ * is all a single track placer emits.
+ *
+ * # Why LibrePCB never sees [`PnsNewGeometryKind::Arc`]
+ *
+ * The kind exists so that the boundary can describe what the engine
+ * sends rather than quietly turn a curve into its chord, and so that the
+ * applier can refuse it by name. Nothing LibrePCB can do reaches it
+ * today, and it takes all four of these to be true:
+ *
+ * - The corner mode is mitered. [`PnsRouterSettings::corner_mode_90`] is
+ *   a boolean and `derive_settings` maps it onto `CornerMode::Mitered45`
+ *   or `CornerMode::Mitered90` only, so the engine's two rounded modes,
+ *   the only ones whose `build_initial_trace` emits an arc, cannot be
+ *   selected. `Router::toggle_corner_mode`, which cycles all four, has
+ *   no entry point here on purpose.
+ * - Meanders are chamfered. This revision of the boundary has no tuning
+ *   entry point at all, so no meander placer ever runs; the branch that
+ *   drives one asks for `MeanderStyle::Chamfer` by name rather than
+ *   taking the engine's default, which is `Round` since the arcs
+ *   milestone.
+ * - The snapshot holds no arc. There is no arc adder and none is
+ *   possible, see [`PnsShapeKind`], so the dragger cannot be started on
+ *   an arc and the walkaround's `restore_untouched_arcs` has nothing to
+ *   splice back.
+ * - The optimizer only makes arcs in a rounded mode. `merge_step` builds
+ *   its bypasses with `build_initial_trace` and the session's corner
+ *   mode (`pcbnew/router/pns_optimizer.cpp:883`), so a mitered session's
+ *   bypasses are mitered too.
+ *
+ * If one arrives anyway, one of those four has been broken and the
+ * applier throws rather than storing something the file format cannot
+ * express; see `CmdBoardApplyPnsCommit::performExecute()`.
  */
 enum class PnsNewGeometryKind {
   /**
@@ -219,6 +250,15 @@ enum class PnsNewGeometryKind {
    * [`PnsNewItem::drill`] and [`PnsNewItem::via_type`].
    */
   Via = 1,
+  /**
+   * `NewGeometry::Arc`: [`PnsNewItem::p1`], [`PnsNewItem::mid`],
+   * [`PnsNewItem::p2`] and [`PnsNewItem::width`], KiCad's three point
+   * form with the two endpoints in the segment's own fields.
+   *
+   * Two is a value of its own rather than a renumbering, because
+   * [`PnsNewGeometryKind::Via`] is already one on the C++ side.
+   */
+  Arc = 2,
 };
 
 /**
@@ -292,6 +332,16 @@ enum class PnsResult {
  * rectangles native rather than polygonising everything is what keeps the
  * collision inner loop cheap; see the integration design note, section
  * 1.2.
+ *
+ * There is deliberately no arc, although the engine has one
+ * (`pnsrouter::geometry::shape::ShapeKind::Arc`). Every shape that
+ * crosses here is written by a LibrePCB board object, and the curved
+ * copper LibrePCB does store, a polygon or a zone, arrives flattened as
+ * [`PnsShapeKind::Polygon`]
+ * (`libs/librepcb/core/project/board/boardpnssnapshot.cpp:106`). A trace
+ * carries no angle at all
+ * (`libs/librepcb/core/geometry/trace.cpp:236`), so the snapshot side has
+ * no arc adder either and a snapshot never holds an arc item.
  */
 enum class PnsShapeKind {
   /**
@@ -939,9 +989,18 @@ struct PnsRouterSettings {
   /**
    * Whether corners are built at 90 degrees instead of 45.
    *
-   * `RoutingSettings::corner_mode`, of which the engine has the two
+   * `RoutingSettings::corner_mode`, of which this boundary offers the two
    * mitered ones: false is `CornerMode::Mitered45` and true is
    * `CornerMode::Mitered90`.
+   *
+   * A boolean rather than the engine's four valued enum, and that is the
+   * refusal of `CornerMode::Rounded45` and `CornerMode::Rounded90`
+   * itself: a rounded corner is an arc, a LibrePCB `Trace` serialises no
+   * angle (`libs/librepcb/core/geometry/trace.cpp:236`), and a value that
+   * cannot be expressed needs no code to reject it and cannot be reached
+   * by a host that forgets to. If the file format ever carries an arc
+   * trace, this field becomes the enum and the applier grows the arm
+   * [`PnsNewGeometryKind::Arc`] documents.
    */
   bool corner_mode_90;
   /**
@@ -1093,15 +1152,21 @@ struct PnsNewItem {
    */
   uint64_t source;
   /**
-   * One end of a segment's centre line.
+   * One end of a segment's or an arc's centre line.
    */
   PnsPoint p1;
   /**
-   * The other end of a segment's centre line.
+   * The other end of a segment's or an arc's centre line.
    */
   PnsPoint p2;
   /**
-   * The full width of a segment in nanometres.
+   * A point of an arc's centre line strictly between its two ends, which
+   * is what says which way round the arc runs. Meaningless for the other
+   * two kinds.
+   */
+  PnsPoint mid;
+  /**
+   * The full width of a segment or an arc in nanometres.
    */
   int64_t width;
   /**

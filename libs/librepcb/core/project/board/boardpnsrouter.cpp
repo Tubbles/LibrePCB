@@ -588,6 +588,17 @@ BoardPnsNewItem BoardPnsRouter::toNewItem(
     via.startLayer = toLayer(item.layer_start);
     via.endLayer = toLayer(item.layer_end);
     result.geometry = via;
+  } else if (item.kind == rs::PnsNewGeometryKind::Arc) {
+    // Carried through whole rather than flattened to its chord, so that
+    // CmdBoardApplyPnsCommit can refuse it by name. See
+    // ::librepcb::BoardPnsNewArc for why it cannot arrive.
+    BoardPnsNewArc arc;
+    arc.start = toPoint(item.p1);
+    arc.mid = toPoint(item.mid);
+    arc.end = toPoint(item.p2);
+    arc.width = toPositiveLength(item.width);
+    arc.layer = toLayer(item.layer_start);
+    result.geometry = arc;
   } else {
     BoardPnsNewSegment segment;
     segment.start = toPoint(item.p1);

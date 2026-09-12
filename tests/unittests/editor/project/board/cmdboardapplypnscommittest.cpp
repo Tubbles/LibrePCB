@@ -85,6 +85,27 @@ static BoardPnsNewItem makeSegment(const Point& start, const Point& end,
   return item;
 }
 
+/// A curved trace, which no LibrePCB session can produce
+///
+/// Built by hand for the refusal tests, because the settings boundary offers
+/// neither of the two rounded corner modes and no meander style at all, so
+/// there is no way to route one. See ::librepcb::BoardPnsNewArc.
+static BoardPnsNewItem makeArc(const Point& start, const Point& mid,
+                               const Point& end, const Layer& layer,
+                               NetSignal* net) noexcept {
+  BoardPnsNewArc arc;
+  arc.start = start;
+  arc.mid = mid;
+  arc.end = end;
+  arc.width = traceWidth();
+  arc.layer = &layer;
+
+  BoardPnsNewItem item;
+  item.net = net;
+  item.geometry = arc;
+  return item;
+}
+
 static BoardPnsNewItem makeVia(const Point& pos, NetSignal* net) noexcept {
   BoardPnsNewVia via;
   via.position = pos;
@@ -813,6 +834,59 @@ TEST_F(CmdBoardApplyPnsCommitTest, testRoutedCommitFromPadIntoFreeSpace) {
 
   mUndoStack->redo();
   EXPECT_GT(netLineCount(), lines);
+}
+
+TEST_F(CmdBoardApplyPnsCommitTest, testArcIsRefusedRatherThanFlattened) {
+  const Point start = mm(300, 200);
+  const Point mid = mm(302.5, 202.5);
+  const Point end = mm(305, 200);
+
+  const int segments = netSegmentCount();
+  const int points = netPointCount();
+  const int lines = netLineCount();
+
+  // A straight trace beside the arc, so that the refusal is shown to reject
+  // the whole commit rather than only the item it choked on.
+  BoardPnsCommit commit;
+  commit.added.append(
+      makeSegment(mm(310, 200), mm(315, 200), Layer::topCopper(), mNet));
+  commit.added.append(makeArc(start, mid, end, Layer::topCopper(), mNet));
+
+  EXPECT_THROW(mUndoStack->execCmd(new CmdBoardApplyPnsCommit(*mBoard, commit)),
+               LogicError);
+
+  // The board is exactly as it was, including the straight trace which came
+  // before the arc in the list.
+  EXPECT_EQ(netSegmentCount(), segments);
+  EXPECT_EQ(netPointCount(), points);
+  EXPECT_EQ(netLineCount(), lines);
+  EXPECT_EQ(netLineBetween(*mBoard, start, end), nullptr);
+  EXPECT_EQ(netLineBetween(*mBoard, mm(310, 200), mm(315, 200)), nullptr);
+  EXPECT_FALSE(mUndoStack->canUndo());
+}
+
+TEST_F(CmdBoardApplyPnsCommitTest, testUpdatedArcIsRefusedToo) {
+  const Point p0 = mm(300, 210);
+  const Point p1 = mm(305, 210);
+  BI_NetSegment* segment = addTrace({p0, p1}, Layer::topCopper());
+  BI_NetLine* netLine = segment->getNetLines().first();
+
+  const int lines = netLineCount();
+
+  // An update is a removal plus an addition the router folded together, so
+  // the arc has to be refused on that list as well: letting it through would
+  // remove the straight trace and put nothing back.
+  BoardPnsHostRef ref;
+  ref.netLine = netLine;
+  BoardPnsCommit commit;
+  commit.updated.append(qMakePair(
+      ref, makeArc(p0, mm(302.5, 212.5), p1, Layer::topCopper(), mNet)));
+
+  EXPECT_THROW(mUndoStack->execCmd(new CmdBoardApplyPnsCommit(*mBoard, commit)),
+               LogicError);
+
+  EXPECT_EQ(netLineCount(), lines);
+  EXPECT_NE(netLineBetween(*mBoard, p0, p1), nullptr);
 }
 
 /*******************************************************************************
