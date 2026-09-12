@@ -144,6 +144,23 @@ private:  // Methods
   bool performExecute() override;
 
   /**
+   * @brief Refuse a commit which carries a curved trace
+   *
+   * LibrePCB has no arc trace: a ::librepcb::Trace serialises a layer, a
+   * width and two anchors and no angle
+   * (`libs/librepcb/core/geometry/trace.cpp:236`). The router can produce one,
+   * in the two rounded corner modes and with round meander corners, but
+   * neither is offered at the settings boundary, so an arc reaching here means
+   * that boundary has a hole in it. It is thrown rather than dropped, because
+   * dropping it would leave a gap in the copper the user cannot see, and
+   * rather than flattened, because a flattened arc is a different track which
+   * the next session would read back as a polyline.
+   *
+   * @throws ::librepcb::LogicError if the commit carries an arc
+   */
+  void checkNoArcs() const;
+
+  /**
    * @brief Get the new geometry of an updated via which only moved
    *
    * @return The via geometry to move the board object to, or `nullptr` if

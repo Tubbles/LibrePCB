@@ -80,6 +80,16 @@ pub enum PnsResult {
 /// rectangles native rather than polygonising everything is what keeps the
 /// collision inner loop cheap; see the integration design note, section
 /// 1.2.
+///
+/// There is deliberately no arc, although the engine has one
+/// (`pnsrouter::geometry::shape::ShapeKind::Arc`). Every shape that
+/// crosses here is written by a LibrePCB board object, and the curved
+/// copper LibrePCB does store, a polygon or a zone, arrives flattened as
+/// [`PnsShapeKind::Polygon`]
+/// (`libs/librepcb/core/project/board/boardpnssnapshot.cpp:106`). A trace
+/// carries no angle at all
+/// (`libs/librepcb/core/geometry/trace.cpp:236`), so the snapshot side has
+/// no arc adder either and a snapshot never holds an arc item.
 #[repr(C)]
 #[allow(dead_code)]
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -388,9 +398,18 @@ pub struct PnsRouterSettings {
   pub allow_drc_violations: bool,
   /// Whether corners are built at 90 degrees instead of 45.
   ///
-  /// `RoutingSettings::corner_mode`, of which the engine has the two
+  /// `RoutingSettings::corner_mode`, of which this boundary offers the two
   /// mitered ones: false is `CornerMode::Mitered45` and true is
   /// `CornerMode::Mitered90`.
+  ///
+  /// A boolean rather than the engine's four valued enum, and that is the
+  /// refusal of `CornerMode::Rounded45` and `CornerMode::Rounded90`
+  /// itself: a rounded corner is an arc, a LibrePCB `Trace` serialises no
+  /// angle (`libs/librepcb/core/geometry/trace.cpp:236`), and a value that
+  /// cannot be expressed needs no code to reject it and cannot be reached
+  /// by a host that forgets to. If the file format ever carries an arc
+  /// trace, this field becomes the enum and the applier grows the arm
+  /// [`PnsNewGeometryKind::Arc`] documents.
   pub corner_mode_90: bool,
   /// Whether the session records everything it is driven with.
   ///
@@ -1418,6 +1437,13 @@ extern "C" fn ffi_pnsrouter_snapshot_stats(
       WorldGeometry::Via { .. } => stats.via_count += 1,
       WorldGeometry::Solid { .. } => stats.solid_count += 1,
       WorldGeometry::Hole { .. } => stats.hole_count += 1,
+      // No entry point above adds one, because LibrePCB has no arc
+      // traces; see [`PnsShapeKind`]. The counters would stop adding up
+      // to `item_count` if one ever appeared, which is what the debug
+      // assertion says out loud.
+      WorldGeometry::Arc { .. } => {
+        debug_assert!(false, "the snapshot has no arc adder");
+      }
     }
 
     if item.hole.is_some() {
@@ -1596,8 +1622,38 @@ pub enum PnsPreviewStyle {
 
 /// Which fields of a [`PnsNewItem`] are meaningful.
 ///
-/// Mirrors the two variants of `pnsrouter::router::NewGeometry`, which is
-/// all a single track placer emits.
+/// Mirrors the three variants of `pnsrouter::router::NewGeometry`, which
+/// is all a single track placer emits.
+///
+/// # Why LibrePCB never sees [`PnsNewGeometryKind::Arc`]
+///
+/// The kind exists so that the boundary can describe what the engine
+/// sends rather than quietly turn a curve into its chord, and so that the
+/// applier can refuse it by name. Nothing LibrePCB can do reaches it
+/// today, and it takes all four of these to be true:
+///
+/// - The corner mode is mitered. [`PnsRouterSettings::corner_mode_90`] is
+///   a boolean and `derive_settings` maps it onto `CornerMode::Mitered45`
+///   or `CornerMode::Mitered90` only, so the engine's two rounded modes,
+///   the only ones whose `build_initial_trace` emits an arc, cannot be
+///   selected. `Router::toggle_corner_mode`, which cycles all four, has
+///   no entry point here on purpose.
+/// - Meanders are chamfered. [`PnsMeanderSettings`] carries no corner
+///   style field, so every tuning session started here asks for
+///   `MeanderStyle::Chamfer` by name rather than taking the engine's
+///   default, which is `Round` since the arcs milestone.
+/// - The snapshot holds no arc. There is no arc adder and none is
+///   possible, see [`PnsShapeKind`], so the dragger cannot be started on
+///   an arc and the walkaround's `restore_untouched_arcs` has nothing to
+///   splice back.
+/// - The optimizer only makes arcs in a rounded mode. `merge_step` builds
+///   its bypasses with `build_initial_trace` and the session's corner
+///   mode (`pcbnew/router/pns_optimizer.cpp:883`), so a mitered session's
+///   bypasses are mitered too.
+///
+/// If one arrives anyway, one of those four has been broken and the
+/// applier throws rather than storing something the file format cannot
+/// express; see `CmdBoardApplyPnsCommit::performExecute()`.
 #[repr(C)]
 #[allow(dead_code)]
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -1608,6 +1664,13 @@ pub enum PnsNewGeometryKind {
   /// `NewGeometry::Via`: [`PnsNewItem::pos`], [`PnsNewItem::diameter`],
   /// [`PnsNewItem::drill`] and [`PnsNewItem::via_type`].
   Via = 1,
+  /// `NewGeometry::Arc`: [`PnsNewItem::p1`], [`PnsNewItem::mid`],
+  /// [`PnsNewItem::p2`] and [`PnsNewItem::width`], KiCad's three point
+  /// form with the two endpoints in the segment's own fields.
+  ///
+  /// Two is a value of its own rather than a renumbering, because
+  /// [`PnsNewGeometryKind::Via`] is already one on the C++ side.
+  Arc = 2,
 }
 
 /// Why a routing session refused to start.
@@ -1795,11 +1858,15 @@ pub struct PnsNewItem {
   /// The host object the item descends from, or zero for a freshly routed
   /// one.
   pub source: u64,
-  /// One end of a segment's centre line.
+  /// One end of a segment's or an arc's centre line.
   pub p1: PnsPoint,
-  /// The other end of a segment's centre line.
+  /// The other end of a segment's or an arc's centre line.
   pub p2: PnsPoint,
-  /// The full width of a segment in nanometres.
+  /// A point of an arc's centre line strictly between its two ends, which
+  /// is what says which way round the arc runs. Meaningless for the other
+  /// two kinds.
+  pub mid: PnsPoint,
+  /// The full width of a segment or an arc in nanometres.
   pub width: i64,
   /// The centre of a via.
   pub pos: PnsPoint,
@@ -1872,10 +1939,11 @@ pub enum PnsMeanderSide {
 /// `Option<LengthTarget>` spelled as a flag plus a min, opt and max triple
 /// so that the whole thing rides in a `#[repr(C)]` struct.
 ///
-/// There is no corner style field: the engine draws chamfered corners only
-/// (`MeanderStyle::Round` needs arcs, which are on hold), and a value has
-/// to be expressible before it can be refused, so this boundary asks for
-/// `MeanderStyle::Chamfer` and never offers the other one.
+/// There is no corner style field. `MeanderStyle::Round` draws its corners
+/// as arcs, and LibrePCB has no way to store an arc trace, so a rounded
+/// meander would only reach the applier to be refused. `Round` is the
+/// engine's default since the arcs milestone, so this boundary names
+/// `MeanderStyle::Chamfer` itself and never offers the other one.
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct PnsMeanderSettings {
@@ -3213,6 +3281,7 @@ fn to_ffi_new_item(item: &NewItem) -> PnsNewItem {
     source: item.source.map_or(0, |host| host.0),
     p1: PnsPoint { x: 0, y: 0 },
     p2: PnsPoint { x: 0, y: 0 },
+    mid: PnsPoint { x: 0, y: 0 },
     width: 0,
     pos: PnsPoint { x: 0, y: 0 },
     diameter: 0,
@@ -3225,6 +3294,23 @@ fn to_ffi_new_item(item: &NewItem) -> PnsNewItem {
       out.kind = PnsNewGeometryKind::Segment;
       out.p1 = to_ffi_point(seg.a);
       out.p2 = to_ffi_point(seg.b);
+      out.width = i64::from(width);
+    }
+    // The three points cross unchanged. Turning them into an angle here
+    // would be the wrong place for it and lossy besides
+    // (`Toolbox::arcAngleFrom3Points` says so of itself,
+    // `libs/librepcb/core/utils/toolbox.h:237`), and the applier refuses
+    // the item anyway; see [`PnsNewGeometryKind::Arc`].
+    NewGeometry::Arc {
+      start,
+      mid,
+      end,
+      width,
+    } => {
+      out.kind = PnsNewGeometryKind::Arc;
+      out.p1 = to_ffi_point(start);
+      out.p2 = to_ffi_point(end);
+      out.mid = to_ffi_point(mid);
       out.width = i64::from(width);
     }
     NewGeometry::Via {
@@ -3309,7 +3395,8 @@ fn to_meander_request(settings: &PnsMeanderSettings) -> MeanderSettingsRequest {
     max_amplitude: to_meander_length(settings.max_amplitude),
     spacing: to_meander_length(settings.spacing),
     step: to_meander_length(settings.step),
-    // The one style the engine can draw; see [`PnsMeanderSettings`].
+    // Named rather than left to the engine's default, which is `Round`
+    // and draws its corners as arcs. See [`PnsMeanderSettings`].
     corner_style: MeanderStyle::Chamfer,
     corner_radius_percentage: settings.corner_radius_percentage,
     single_sided: settings.single_sided,
@@ -3367,5 +3454,66 @@ fn to_ffi_tuning(tuning: &TuningInfo) -> PnsTuningInfo {
     coupled_length: tuning.coupled_length.unwrap_or(0),
     amplitude: i64::from(tuning.settings.max_amplitude()),
     spacing: i64::from(tuning.settings.spacing()),
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// An arc the engine committed crosses as its three points.
+  ///
+  /// The case is unreachable from LibrePCB, for the four reasons
+  /// [`PnsNewGeometryKind`] lists, but the conversion is what makes the
+  /// refusal in `CmdBoardApplyPnsCommit` possible: without the arc kind
+  /// and the mid point, an arc would arrive as the segment between its
+  /// endpoints and be stored as a straight trace across the chord.
+  #[test]
+  fn an_arc_commit_item_crosses_as_the_arc_kind_with_its_mid_point() {
+    let item = NewItem {
+      geometry: NewGeometry::Arc {
+        start: Vec2::new(1_000_000, 2_000_000),
+        mid: Vec2::new(1_500_000, 2_500_000),
+        end: Vec2::new(2_000_000, 2_000_000),
+        width: 250_000,
+      },
+      net: None,
+      layers: LayerRange::new(0, 0),
+      source: None,
+    };
+
+    let out = to_ffi_new_item(&item);
+
+    assert_eq!(out.kind, PnsNewGeometryKind::Arc);
+    assert_eq!((out.p1.x, out.p1.y), (1_000_000, 2_000_000));
+    assert_eq!((out.mid.x, out.mid.y), (1_500_000, 2_500_000));
+    assert_eq!((out.p2.x, out.p2.y), (2_000_000, 2_000_000));
+    assert_eq!(out.width, 250_000);
+  }
+
+  /// A straight track still crosses as a segment with no mid point.
+  ///
+  /// The companion of the case above: the mid point is a new field on a
+  /// struct every commit item goes through, so the kind a LibrePCB
+  /// session does produce has to be shown to be unmoved by it.
+  #[test]
+  fn a_segment_commit_item_still_crosses_as_the_segment_kind() {
+    let item = NewItem {
+      geometry: NewGeometry::Segment {
+        seg: Seg::new(Vec2::new(0, 0), Vec2::new(1_000_000, 0)),
+        width: 250_000,
+      },
+      net: None,
+      layers: LayerRange::new(0, 0),
+      source: None,
+    };
+
+    let out = to_ffi_new_item(&item);
+
+    assert_eq!(out.kind, PnsNewGeometryKind::Segment);
+    assert_eq!((out.p1.x, out.p1.y), (0, 0));
+    assert_eq!((out.p2.x, out.p2.y), (1_000_000, 0));
+    assert_eq!((out.mid.x, out.mid.y), (0, 0));
+    assert_eq!(out.width, 250_000);
   }
 }

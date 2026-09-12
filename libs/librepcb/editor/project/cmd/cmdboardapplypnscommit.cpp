@@ -71,6 +71,11 @@ CmdBoardApplyPnsCommit::~CmdBoardApplyPnsCommit() noexcept {
  ******************************************************************************/
 
 bool CmdBoardApplyPnsCommit::performExecute() {
+  // Before anything is executed, because a commit which cannot be applied
+  // whole must not be applied in part. An arc means the router was driven
+  // in a way this host does not offer, see checkNoArcs().
+  checkNoArcs();  // can throw
+
   // If an error occurs, undo all already executed child commands.
   auto undoScopeGuard = scopeGuard([&]() { performUndo(); });
 
@@ -171,6 +176,27 @@ bool CmdBoardApplyPnsCommit::performExecute() {
 /*******************************************************************************
  *  Private Methods
  ******************************************************************************/
+
+void CmdBoardApplyPnsCommit::checkNoArcs() const {
+  // Both lists, because an update is a removal plus an addition the router
+  // folded together: letting an arc through there would take a trace off the
+  // board and put nothing back.
+  bool found = false;
+  foreach (const BoardPnsNewItem& item, mCommit.added) {
+    found = found || item.getArc();
+  }
+  for (const auto& pair : mCommit.updated) {
+    found = found || pair.second.getArc();
+  }
+  if (found) {
+    throw LogicError(__FILE__, __LINE__,
+                     "The router produced a curved trace, which LibrePCB "
+                     "cannot store: the board file format holds no arc "
+                     "traces. The corner modes and the meander styles which "
+                     "produce one are not offered by this host, so reaching "
+                     "this is a bug at the router boundary.");
+  }
+}
 
 const BoardPnsNewVia* CmdBoardApplyPnsCommit::getViaMove(
     const BoardPnsHostRef& ref, const BoardPnsNewItem& item) noexcept {

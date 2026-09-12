@@ -280,12 +280,38 @@ struct BoardPnsNewVia final {
 };
 
 /**
- * @brief One trace or via a routing session produced
+ * @brief The curved trace half of a ::librepcb::BoardPnsNewItem
+ *
+ * LibrePCB cannot store one: a ::librepcb::Trace serialises a layer, a width
+ * and two anchors and no angle (`libs/librepcb/core/geometry/trace.cpp:236`),
+ * and the board file format is stable. The struct exists so that an arc the
+ * engine sent arrives as an arc and is refused by
+ * ::librepcb::editor::CmdBoardApplyPnsCommit, instead of arriving as the
+ * straight trace across its chord. Nothing a LibrePCB session can do produces
+ * one, for the four reasons the `PnsNewGeometryKind` documentation in
+ * `libs/librepcb/rust-core/src/ffi/router_ffi.rs` lists.
+ *
+ * The three points are KiCad's own arc form, which the engine uses
+ * throughout: the two ends plus any point of the curve strictly between them,
+ * whose side of the chord says which way round the arc runs. There is no
+ * centre and no angle, because neither survives the conversion exactly.
+ */
+struct BoardPnsNewArc final {
+  Point start;
+  Point mid;
+  Point end;
+  PositiveLength width = PositiveLength(Length(1));
+  const Layer* layer = nullptr;
+};
+
+/**
+ * @brief One trace, arc or via a routing session produced
  *
  * A single track placer emits nothing else. The geometry is a variant rather
- * than both structs plus a discriminator, so that a via cannot carry a trace
- * width and a trace cannot carry a drill diameter. Read it with #getSegment()
- * and #getVia(), each of which answers `nullptr` for the other kind.
+ * than all three structs plus a discriminator, so that a via cannot carry a
+ * trace width and a trace cannot carry a drill diameter. Read it with
+ * #getSegment(), #getVia() and #getArc(), each of which answers `nullptr` for
+ * the other kinds.
  */
 struct BoardPnsNewItem final {
   /// The net, or `nullptr` for no net. A route placed in free space has
@@ -299,16 +325,24 @@ struct BoardPnsNewItem final {
   BoardPnsHostRef source;
 
   /// What was placed.
-  std::variant<BoardPnsNewSegment, BoardPnsNewVia> geometry;
+  std::variant<BoardPnsNewSegment, BoardPnsNewVia, BoardPnsNewArc> geometry;
 
-  /// @brief Get the trace, or `nullptr` if this item is a via
+  /// @brief Get the straight trace, or `nullptr` if this item is not one
   const BoardPnsNewSegment* getSegment() const noexcept {
     return std::get_if<BoardPnsNewSegment>(&geometry);
   }
 
-  /// @brief Get the via, or `nullptr` if this item is a trace
+  /// @brief Get the via, or `nullptr` if this item is not one
   const BoardPnsNewVia* getVia() const noexcept {
     return std::get_if<BoardPnsNewVia>(&geometry);
+  }
+
+  /// @brief Get the arc, or `nullptr` if this item is not one
+  ///
+  /// Never anything but `nullptr` for a commit a LibrePCB session produced,
+  /// see ::librepcb::BoardPnsNewArc.
+  const BoardPnsNewArc* getArc() const noexcept {
+    return std::get_if<BoardPnsNewArc>(&geometry);
   }
 };
 
