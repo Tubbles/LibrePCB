@@ -83,6 +83,19 @@ static const PositiveLength sDefaultTuningSpacing(600000);  // 0.6 mm.
 static const PositiveLength sDefaultTuningTolerance(100000);  // 0.1 mm.
 
 /**
+ * A length rounded up to the next whole millimetre
+ *
+ * What a tuning target is prefilled with: the trace's own length would
+ * already count as tuned, and a round number above it is the natural one
+ * to raise from.
+ */
+static Length roundUpToWholeMillimetre(const Length& length) noexcept {
+  const qint64 millimetre = 1000000;
+  const qint64 nanometres = length.toNm();
+  return Length(((nanometres + millimetre - 1) / millimetre) * millimetre);
+}
+
+/**
  * The gap a differential pair starts at on one board
  *
  * The board's minimum copper to copper clearance wins over the router's
@@ -117,6 +130,7 @@ BoardEditorState_RouteTrace::BoardEditorState_RouteTrace(
     mDiffPairViaGap(std::nullopt),
     mTuningMode(std::nullopt),
     mTuningTarget(0),
+    mTuningTargetPrefillPending(false),
     mTuningTolerance(sDefaultTuningTolerance),
     mTuningMinAmplitude(sDefaultTuningMinAmplitude),
     mTuningMaxAmplitude(sDefaultTuningMaxAmplitude),
@@ -1027,6 +1041,11 @@ void BoardEditorState_RouteTrace::startTuning(
     return;
   }
 
+  // Zero skew is what a skew session wants, so only a length mode has an
+  // unset target worth filling in.
+  mTuningTargetPrefillPending =
+      (mTuningTarget == 0) && (*mTuningMode != BoardPnsTuningMode::Skew);
+
   // The tuned trace decides the layer, like the start item of a route.
   const Layer& layer = getStartLayer(cursor.item);
   if (&layer != mCurrentLayer) {
@@ -1067,6 +1086,20 @@ BoardPnsRouter::TuningSettings
   settings.target = mTuningTarget;
   settings.tolerance = *mTuningTolerance;
   return settings;
+}
+
+void BoardEditorState_RouteTrace::prefillTuningTarget() noexcept {
+  if ((!mRouter) || (!mTuningTargetPrefillPending)) return;
+
+  // The readout's delta is measured against the length the session started
+  // at, so the two together give that length back; without a delta the
+  // frame measured nothing and a later one has to.
+  const std::optional<BoardPnsTuningInfo>& tuning =
+      mRouter->getPreview().tuning;
+  if ((!tuning) || (!tuning->delta)) return;
+
+  mTuningTargetPrefillPending = false;
+  setTuningTarget(roundUpToWholeMillimetre(tuning->result - *tuning->delta));
 }
 
 void BoardEditorState_RouteTrace::updateTuningReadout() noexcept {
@@ -1160,6 +1193,7 @@ void BoardEditorState_RouteTrace::moveToCursor() noexcept {
 
   // Every frame of a tuning session carries a fresh readout, and the
   // meandered copper alone does not say whether it reached the target.
+  prefillTuningTarget();
   updateTuningReadout();
 }
 

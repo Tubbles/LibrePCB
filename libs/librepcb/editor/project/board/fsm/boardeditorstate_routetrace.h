@@ -436,6 +436,18 @@ private:  // Methods
   BoardPnsRouter::TuningSettings getTuningSettings() const noexcept;
 
   /**
+   * @brief Fill in an unset length target from the trace being tuned
+   *
+   * Runs once per session which a length mode started without a target,
+   * on the first frame which measured the trace, and sets the target to
+   * that length rounded up to the next whole millimetre, so that the
+   * field holds a number to raise rather than a zero. The router takes
+   * the target only at the start, so the running session keeps its zero
+   * and the new value applies from the next one.
+   */
+  void prefillTuningTarget() noexcept;
+
+  /**
    * @brief Show the live tuning readout of the last frame in the status bar
    *
    * Called after every event which produces a frame, so the numbers follow
@@ -576,8 +588,13 @@ private:  // Data
   /// What the meanders aim for, which is a skew in
   /// ::librepcb::BoardPnsTuningMode::Skew. Signed and allowed to be zero,
   /// which is the value a skew session wants, and which in the two length
-  /// modes reports every trace as too long until the user types a target.
+  /// modes reports every trace as too long until the user types a target;
+  /// #prefillTuningTarget() fills one in from the trace a session tunes.
   Length mTuningTarget;
+
+  /// Whether the running tuning session was started without a length
+  /// target and the next measured frame has to fill one in.
+  bool mTuningTargetPrefillPending;
 
   PositiveLength mTuningTolerance;  ///< how far off #mTuningTarget is tuned
   PositiveLength mTuningMinAmplitude;  ///< the shallowest meander
