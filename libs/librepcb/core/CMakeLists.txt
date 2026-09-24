@@ -354,6 +354,10 @@ add_library(
   project/board/boardpickplacegenerator.h
   project/board/boardplanefragmentsbuilder.cpp
   project/board/boardplanefragmentsbuilder.h
+  project/board/boardpnsrouter.cpp
+  project/board/boardpnsrouter.h
+  project/board/boardpnssnapshot.cpp
+  project/board/boardpnssnapshot.h
   project/board/boardpolygondata.cpp
   project/board/boardpolygondata.h
   project/board/boardspecctraexport.cpp
@@ -414,6 +418,8 @@ add_library(
   project/circuit/componentinstance.h
   project/circuit/componentsignalinstance.cpp
   project/circuit/componentsignalinstance.h
+  project/circuit/differentialpairs.cpp
+  project/circuit/differentialpairs.h
   project/circuit/netclass.cpp
   project/circuit/netclass.h
   project/circuit/netsignal.cpp

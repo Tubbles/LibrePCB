@@ -30,6 +30,7 @@
 #include "ui_renamenetsegmentdialog.h"
 
 #include <librepcb/core/project/circuit/circuit.h>
+#include <librepcb/core/project/circuit/differentialpairs.h>
 #include <librepcb/core/project/circuit/netsignal.h>
 #include <librepcb/core/project/schematic/items/si_netsegment.h>
 #include <librepcb/core/utils/toolbox.h>
@@ -82,6 +83,16 @@ RenameNetSegmentDialog::RenameNetSegmentDialog(UndoStack& undoStack,
     mUi->cbxNetName->setCurrentIndex(index);
   } else {
     mUi->cbxNetName->setCurrentText(*segment.getNetSignal().getName());
+  }
+
+  // Differential pairs are derived from the net names, so the partner is a
+  // read-only information here - it changes only by renaming the nets.
+  if (const NetSignal* partner =
+          DifferentialPairs::partnerOf(segment.getNetSignal())) {
+    mUi->lblDiffPairPartner->setText(
+        tr("Differential pair partner: %1").arg(*partner->getName()));
+  } else {
+    mUi->lblDiffPairPartner->hide();
   }
 
   int segmentCount = segment.getNetSignal().getSchematicNetSegments().count();

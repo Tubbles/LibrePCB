@@ -1124,6 +1124,16 @@ export global EditorCommandSet {
         key: "w",
     };
 
+    in property <EditorCommand> tool-route-trace: {
+        id: "tool_route_trace",
+        icon: @image-url("../../../../img/draw-trace.svg"),
+        text: "Route Trace (Push & Shove)",
+        status-tip: "Draw copper traces with the push and shove router",
+        shortcut: "Shift+W",
+        modifiers: { alt: false, control: false, shift: true, meta: false },
+        key: "W",
+    };
+
     in property <EditorCommand> tool-via: {
         id: "tool_via",
         icon: @image-url("../../../../img/via.svg"),
@@ -1424,6 +1434,106 @@ export global EditorCommandSet {
         key: "5",
     };
 
+    in property <EditorCommand> router-mode-cycle: {
+        id: "router_mode_cycle",
+        icon: @image-url(""),
+        text: "Cycle Routing Mode",
+        status-tip: "Routing mode: Mark obstacles, walk around them or shove them",
+        shortcut: "Shift+S",
+        modifiers: { alt: false, control: false, shift: true, meta: false },
+        key: "S",
+    };
+
+    in property <EditorCommand> router-corner-mode: {
+        id: "router_corner_mode",
+        icon: @image-url(""),
+        text: "Toggle Corner Mode",
+        status-tip: "Corner mode: 45° segments or 90° segments only",
+        shortcut: "Shift+A",
+        modifiers: { alt: false, control: false, shift: true, meta: false },
+        key: "A",
+    };
+
+    in property <EditorCommand> router-flip-posture: {
+        id: "router_flip_posture",
+        icon: @image-url(""),
+        text: "Flip Posture",
+        status-tip: "Turn the routed trace's first corner the other way",
+        shortcut: "Shift+P",
+        modifiers: { alt: false, control: false, shift: true, meta: false },
+        key: "P",
+    };
+
+    in property <EditorCommand> router-via-toggle: {
+        id: "router_via_toggle",
+        icon: @image-url(""),
+        text: "Toggle Via Placement",
+        status-tip: "Place a via where the routed trace is fixed next",
+        shortcut: "Shift+V",
+        modifiers: { alt: false, control: false, shift: true, meta: false },
+        key: "V",
+    };
+
+    in property <EditorCommand> router-diff-pair-toggle: {
+        id: "router_diff_pair_toggle",
+        icon: @image-url(""),
+        text: "Toggle Differential Pair",
+        status-tip: "Route both nets of a differential pair at once",
+        shortcut: "Shift+D",
+        modifiers: { alt: false, control: false, shift: true, meta: false },
+        key: "D",
+    };
+
+    in property <EditorCommand> router-tuning-mode-cycle: {
+        id: "router_tuning_mode_cycle",
+        icon: @image-url(""),
+        text: "Cycle Length Tuning Mode",
+        status-tip: "Length tuning mode: Off, single trace, differential pair or differential pair skew",
+        shortcut: "Shift+T",
+        modifiers: { alt: false, control: false, shift: true, meta: false },
+        key: "T",
+    };
+
+    in property <EditorCommand> router-spacing-decrease: {
+        id: "router_spacing_decrease",
+        icon: @image-url(""),
+        text: "Decrease Meander Spacing",
+        status-tip: "Move the meanders of the tuned trace closer together",
+        shortcut: "Shift+1",
+        modifiers: { alt: false, control: false, shift: true, meta: false },
+        key: "1",
+    };
+
+    in property <EditorCommand> router-spacing-increase: {
+        id: "router_spacing_increase",
+        icon: @image-url(""),
+        text: "Increase Meander Spacing",
+        status-tip: "Move the meanders of the tuned trace further apart",
+        shortcut: "Shift+2",
+        modifiers: { alt: false, control: false, shift: true, meta: false },
+        key: "2",
+    };
+
+    in property <EditorCommand> router-amplitude-decrease: {
+        id: "router_amplitude_decrease",
+        icon: @image-url(""),
+        text: "Decrease Meander Amplitude",
+        status-tip: "Make the meanders of the tuned trace shallower",
+        shortcut: "Shift+3",
+        modifiers: { alt: false, control: false, shift: true, meta: false },
+        key: "3",
+    };
+
+    in property <EditorCommand> router-amplitude-increase: {
+        id: "router_amplitude_increase",
+        icon: @image-url(""),
+        text: "Increase Meander Amplitude",
+        status-tip: "Make the meanders of the tuned trace deeper",
+        shortcut: "Shift+4",
+        modifiers: { alt: false, control: false, shift: true, meta: false },
+        key: "4",
+    };
+
     in property <EditorCommand> shape-round: {
         id: "shape_round",
         icon: @image-url("../../../font-awesome/svgs/solid/circle.svg"),
@@ -1672,6 +1782,16 @@ export global EditorCommandSet {
         shortcut: "Ctrl+F1",
         modifiers: { alt: false, control: true, shift: false, meta: false },
         key: Key.F1,
+    };
+
+    in property <EditorCommand> record-routing-sessions: {
+        id: "record_routing_sessions",
+        icon: @image-url("../../../font-awesome/svgs/solid/circle.svg"),
+        text: "Record Routing Sessions...",
+        status-tip: "Write every push and shove routing session to a file, to attach to a bug report",
+        shortcut: "",
+        modifiers: { alt: false, control: false, shift: false, meta: false },
+        key: "",
     };
 
     in property <EditorCommand> vertex-add: {

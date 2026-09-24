@@ -807,6 +807,10 @@ void MainWindow::trigger(ui::Action a) noexcept {
       handler.shortcutsReference();
       break;
     }
+    case ui::Action::RecordRoutingSessions: {
+      mApp.startPnsSessionRecording(mWidget);
+      break;
+    }
     case ui::Action::Quit: {
       mApp.quit(mWidget);
       break;

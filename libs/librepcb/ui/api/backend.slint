@@ -108,6 +108,8 @@ export global Backend {
         } else if action == TabAction.tool-wire {
             Data.sections[section].schematic-tabs[tab].tool = EditorTool.wire;
             Data.sections[section].board-2d-tabs[tab].tool = EditorTool.wire;
+        } else if action == TabAction.tool-route-trace {
+            Data.sections[section].board-2d-tabs[tab].tool = EditorTool.route-trace;
         } else if action == TabAction.tool-bus {
             Data.sections[section].schematic-tabs[tab].tool = EditorTool.bus;
         } else if action == TabAction.tool-label {

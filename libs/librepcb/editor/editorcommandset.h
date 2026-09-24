@@ -1189,6 +1189,15 @@ public:
       {QKeySequence(Qt::Key_W)},
       &categoryTools,
   };
+  EditorCommand toolRouteTrace{
+      "tool_route_trace",  // clang-format break
+      QT_TR_NOOP("Route Trace (Push && Shove)"),
+      QT_TR_NOOP("Draw copper traces with the push and shove router"),
+      ":/img/draw-trace.svg",
+      EditorCommand::Flags(),
+      {QKeySequence(Qt::SHIFT | Qt::Key_W)},
+      &categoryTools,
+  };
   EditorCommand toolVia{
       "tool_via",  // clang-format break
       QT_TR_NOOP("Add Via"),
@@ -1462,6 +1471,98 @@ public:
       ":/img/command_toolbars/wire_straight.png",
       EditorCommand::Flags(),
       {QKeySequence(Qt::Key_5)},
+      &categoryCommands,
+  };
+  EditorCommand routerModeCycle{
+      "router_mode_cycle",  // clang-format break
+      QT_TR_NOOP("Cycle Routing Mode"),
+      QT_TR_NOOP(
+          "Routing mode: Mark obstacles, walk around them or shove them"),
+      nullptr,
+      EditorCommand::Flags(),
+      {QKeySequence(Qt::SHIFT | Qt::Key_S)},
+      &categoryCommands,
+  };
+  EditorCommand routerCornerMode{
+      "router_corner_mode",  // clang-format break
+      QT_TR_NOOP("Toggle Corner Mode"),
+      QT_TR_NOOP("Corner mode: 45° segments or 90° segments only"),
+      nullptr,
+      EditorCommand::Flags(),
+      {QKeySequence(Qt::SHIFT | Qt::Key_A)},
+      &categoryCommands,
+  };
+  EditorCommand routerFlipPosture{
+      "router_flip_posture",  // clang-format break
+      QT_TR_NOOP("Flip Posture"),
+      QT_TR_NOOP("Turn the routed trace's first corner the other way"),
+      nullptr,
+      EditorCommand::Flags(),
+      {QKeySequence(Qt::SHIFT | Qt::Key_P)},
+      &categoryCommands,
+  };
+  EditorCommand routerViaToggle{
+      "router_via_toggle",  // clang-format break
+      QT_TR_NOOP("Toggle Via Placement"),
+      QT_TR_NOOP("Place a via where the routed trace is fixed next"),
+      nullptr,
+      EditorCommand::Flags(),
+      {QKeySequence(Qt::SHIFT | Qt::Key_V)},
+      &categoryCommands,
+  };
+  EditorCommand routerDiffPairToggle{
+      "router_diff_pair_toggle",  // clang-format break
+      QT_TR_NOOP("Toggle Differential Pair"),
+      QT_TR_NOOP("Route both nets of a differential pair at once"),
+      nullptr,
+      EditorCommand::Flags(),
+      {QKeySequence(Qt::SHIFT | Qt::Key_D)},
+      &categoryCommands,
+  };
+  EditorCommand routerTuningModeCycle{
+      "router_tuning_mode_cycle",  // clang-format break
+      QT_TR_NOOP("Cycle Length Tuning Mode"),
+      QT_TR_NOOP("Length tuning mode: Off, single trace, differential pair "
+                 "or differential pair skew"),
+      nullptr,
+      EditorCommand::Flags(),
+      {QKeySequence(Qt::SHIFT | Qt::Key_T)},
+      &categoryCommands,
+  };
+  EditorCommand routerSpacingDecrease{
+      "router_spacing_decrease",  // clang-format break
+      QT_TR_NOOP("Decrease Meander Spacing"),
+      QT_TR_NOOP("Move the meanders of the tuned trace closer together"),
+      nullptr,
+      EditorCommand::Flags(),
+      {QKeySequence(Qt::SHIFT | Qt::Key_1)},
+      &categoryCommands,
+  };
+  EditorCommand routerSpacingIncrease{
+      "router_spacing_increase",  // clang-format break
+      QT_TR_NOOP("Increase Meander Spacing"),
+      QT_TR_NOOP("Move the meanders of the tuned trace further apart"),
+      nullptr,
+      EditorCommand::Flags(),
+      {QKeySequence(Qt::SHIFT | Qt::Key_2)},
+      &categoryCommands,
+  };
+  EditorCommand routerAmplitudeDecrease{
+      "router_amplitude_decrease",  // clang-format break
+      QT_TR_NOOP("Decrease Meander Amplitude"),
+      QT_TR_NOOP("Make the meanders of the tuned trace shallower"),
+      nullptr,
+      EditorCommand::Flags(),
+      {QKeySequence(Qt::SHIFT | Qt::Key_3)},
+      &categoryCommands,
+  };
+  EditorCommand routerAmplitudeIncrease{
+      "router_amplitude_increase",  // clang-format break
+      QT_TR_NOOP("Increase Meander Amplitude"),
+      QT_TR_NOOP("Make the meanders of the tuned trace deeper"),
+      nullptr,
+      EditorCommand::Flags(),
+      {QKeySequence(Qt::SHIFT | Qt::Key_4)},
       &categoryCommands,
   };
   EditorCommand shapeRound{
@@ -1755,6 +1856,17 @@ public:
       ":/fa/solid/keyboard.svg",
       EditorCommand::Flags(),
       {QKeySequence(Qt::CTRL | Qt::Key_F1)},
+      &categoryHelp,
+  };
+  EditorCommand recordRoutingSessions{
+      "record_routing_sessions",  // clang-format break
+      QT_TR_NOOP("Record Routing Sessions"),
+      QT_TR_NOOP(
+          "Write every push and shove routing session to a file, to attach "
+          "to a bug report"),
+      ":/fa/solid/circle.svg",
+      EditorCommand::Flag::OpensPopup,
+      {},
       &categoryHelp,
   };
 
