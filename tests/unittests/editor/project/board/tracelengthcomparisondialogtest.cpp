@@ -59,6 +59,11 @@ protected:
     const QTableWidgetItem* item = table.item(row, column);
     return item ? item->text() : QString();
   }
+
+  static QString headerText(const QTableWidget& table, int column) {
+    const QTableWidgetItem* item = table.horizontalHeaderItem(column);
+    return item ? item->text() : QString();
+  }
 };
 
 /*******************************************************************************
@@ -71,12 +76,12 @@ TEST_F(TraceLengthComparisonDialogTest, testTableAndLiveUpdate) {
   QTableWidget& table =
       TestHelpers::getChild<QTableWidget>(dialog, "tableWidget");
   EXPECT_EQ(2, table.rowCount());
-  EXPECT_EQ(7, table.columnCount());
+  EXPECT_EQ(6, table.columnCount());
   EXPECT_EQ("NET1", cellText(table, 0, 0).toStdString());
   EXPECT_EQ("15.0", cellText(table, 0, 1).toStdString());
   EXPECT_EQ("NET2", cellText(table, 1, 0).toStdString());
   EXPECT_EQ("10.0", cellText(table, 1, 1).toStdString());
-  EXPECT_EQ("-5.0", cellText(table, 1, 4).toStdString());
+  EXPECT_EQ("-5.0", cellText(table, 1, 3).toStdString());
 
   // Without a bus, the default skew is 10% of the unit interval, which is
   // 100ps at the default rate of 1Gbps and therefore met.
@@ -85,14 +90,40 @@ TEST_F(TraceLengthComparisonDialogTest, testTableAndLiveUpdate) {
   EXPECT_EQ(0, cbxSkewMode.currentIndex());
   EXPECT_TRUE(
       TestHelpers::getChild<QLabel>(dialog, "lblSkewSource").isHidden());
-  EXPECT_EQ("In Spec", cellText(table, 0, 6).toStdString());
-  EXPECT_EQ("In Spec", cellText(table, 1, 6).toStdString());
+  EXPECT_EQ("In Spec", cellText(table, 0, 5).toStdString());
+  EXPECT_EQ("In Spec", cellText(table, 1, 5).toStdString());
 
   // Tightening the budget to 1% (10ps) must update the table right away.
   TestHelpers::getChild<QDoubleSpinBox>(dialog, "spbxSkewPercent")
       .setValue(1.0);
-  EXPECT_EQ("In Spec", cellText(table, 0, 6).toStdString());
-  EXPECT_EQ("Out of Spec", cellText(table, 1, 6).toStdString());
+  EXPECT_EQ("In Spec", cellText(table, 0, 5).toStdString());
+  EXPECT_EQ("Out of Spec", cellText(table, 1, 5).toStdString());
+}
+
+TEST_F(TraceLengthComparisonDialogTest, testLengthUnit) {
+  TraceLengthComparisonDialog dialogMm(mSegments, {},
+                                       LengthUnit::millimeters(), "test",
+                                       nullptr);
+  QTableWidget& tableMm =
+      TestHelpers::getChild<QTableWidget>(dialogMm, "tableWidget");
+  EXPECT_EQ("Length [mm]", headerText(tableMm, 1).toStdString());
+  EXPECT_EQ("Difference [mm]", headerText(tableMm, 3).toStdString());
+  EXPECT_TRUE(TestHelpers::getChild<QLabel>(dialogMm, "lblUnitInterval")
+                  .text()
+                  .endsWith(" mm)"));
+
+  // The same traces in inches: 15mm are 0.590551...in, 5mm 0.19685in.
+  TraceLengthComparisonDialog dialogIn(mSegments, {}, LengthUnit::inches(),
+                                       "test", nullptr);
+  QTableWidget& tableIn =
+      TestHelpers::getChild<QTableWidget>(dialogIn, "tableWidget");
+  EXPECT_EQ("Length [″]", headerText(tableIn, 1).toStdString());
+  EXPECT_EQ("Difference [″]", headerText(tableIn, 3).toStdString());
+  EXPECT_EQ("0.590551", cellText(tableIn, 0, 1).toStdString());
+  EXPECT_EQ("-0.19685", cellText(tableIn, 1, 3).toStdString());
+  EXPECT_TRUE(TestHelpers::getChild<QLabel>(dialogIn, "lblUnitInterval")
+                  .text()
+                  .endsWith(" ″)"));
 }
 
 TEST_F(TraceLengthComparisonDialogTest, testBusDefault) {
@@ -117,8 +148,8 @@ TEST_F(TraceLengthComparisonDialogTest, testBusDefault) {
   // 1.27mm are about 8.5ps, so the 5mm difference is out of spec.
   QTableWidget& table =
       TestHelpers::getChild<QTableWidget>(dialog, "tableWidget");
-  EXPECT_EQ("In Spec", cellText(table, 0, 6).toStdString());
-  EXPECT_EQ("Out of Spec", cellText(table, 1, 6).toStdString());
+  EXPECT_EQ("In Spec", cellText(table, 0, 5).toStdString());
+  EXPECT_EQ("Out of Spec", cellText(table, 1, 5).toStdString());
 }
 
 /*******************************************************************************

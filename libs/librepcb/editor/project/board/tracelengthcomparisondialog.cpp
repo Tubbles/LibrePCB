@@ -47,6 +47,7 @@ TraceLengthComparisonDialog::TraceLengthComparisonDialog(
     const QString& settingsPrefix, QWidget* parent) noexcept
   : QDialog(parent),
     mSegments(segments),
+    mLengthUnit(lengthUnit),
     mUi(new Ui::TraceLengthComparisonDialog),
     mSettingsPrefix(settingsPrefix),
     mBusDefaultApplied(false) {
@@ -63,13 +64,13 @@ TraceLengthComparisonDialog::TraceLengthComparisonDialog(
   mUi->lblFootnote->setText("ⓘ " % mUi->lblFootnote->text());
 
   // Setup the table.
-  mUi->tableWidget->setColumnCount(7);
+  const QString unit = lengthUnit.toShortStringTr();
+  mUi->tableWidget->setColumnCount(6);
   mUi->tableWidget->setHorizontalHeaderLabels({
       tr("Net"),
-      tr("Length [mm]"),
-      tr("Length [in]"),
+      tr("Length [%1]").arg(unit),
       tr("Delay [ps]"),
-      tr("Difference [mm]"),
+      tr("Difference [%1]").arg(unit),
       tr("Difference [ps]"),
       tr("Status"),
   });
@@ -227,6 +228,14 @@ TraceLengthComparisonSettings TraceLengthComparisonDialog::getSettings()
   return settings;
 }
 
+QString TraceLengthComparisonDialog::formatLength(
+    const Length& length, const QLocale& locale) const noexcept {
+  // One decimal more than usual, like the trace length in the properties.
+  return Toolbox::floatToString(mLengthUnit.convertToUnit(length),
+                                mLengthUnit.getReasonableNumberOfDecimals() + 1,
+                                locale);
+}
+
 void TraceLengthComparisonDialog::updateTable() noexcept {
   const QLocale locale;
   const TraceLengthComparisonSettings settings = getSettings();
@@ -234,29 +243,34 @@ void TraceLengthComparisonDialog::updateTable() noexcept {
       compareTraceLengths(mSegments, settings);
 
   // Show the resolved inputs, they are what the status column is based on.
+  // The skew is converted as a float because it is not limited to the range
+  // of a Length. One millimeter is 1000000 nanometers.
   const qreal allowedSkewMm = settings.allowedSkewPs *
       traceVelocityMmPerPs(settings.effectiveDielectricConstant);
+  const qreal allowedSkewInUnit =
+      allowedSkewMm * mLengthUnit.convertToUnit(Length(1000000));
   mUi->lblUnitInterval->setText(
-      tr("%1 ps, allowed skew %2 ps (%3 mm)")
+      tr("%1 ps, allowed skew %2 ps (%3 %4)")
           .arg(Toolbox::floatToString(settings.unitIntervalPs, 1, locale),
                Toolbox::floatToString(settings.allowedSkewPs, 1, locale),
-               Toolbox::floatToString(allowedSkewMm, 3, locale)));
+               Toolbox::floatToString(
+                   allowedSkewInUnit,
+                   mLengthUnit.getReasonableNumberOfDecimals(), locale),
+               mLengthUnit.toShortStringTr()));
 
   mUi->tableWidget->setRowCount(rows.count());
   for (int row = 0; row < rows.count(); ++row) {
     const TraceLengthComparisonRow& data = rows.at(row);
     QStringList texts{data.netName};
     if (data.warning == TraceLengthWarning::None) {
-      texts.append(Toolbox::floatToString(data.length->toMm(), 6, locale));
-      texts.append(Toolbox::floatToString(data.length->toInch(), 6, locale));
+      texts.append(formatLength(*data.length, locale));
       texts.append(Toolbox::floatToString(data.delayPs, 1, locale));
-      texts.append(
-          Toolbox::floatToString(data.differenceToLongest.toMm(), 6, locale));
+      texts.append(formatLength(data.differenceToLongest, locale));
       texts.append(
           Toolbox::floatToString(data.differenceToLongestPs, 1, locale));
       texts.append(data.inSpec ? tr("In Spec") : tr("Out of Spec"));
     } else {
-      texts.append({QString(), QString(), QString(), QString(), QString(),
+      texts.append({QString(), QString(), QString(), QString(),
                     traceLengthWarningText(data.warning)});
     }
     const bool highlight =

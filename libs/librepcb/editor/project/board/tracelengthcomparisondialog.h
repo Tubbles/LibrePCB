@@ -25,6 +25,8 @@
  ******************************************************************************/
 #include "tracelengthcomparison.h"
 
+#include <librepcb/core/types/lengthunit.h>
+
 #include <QtCore>
 #include <QtWidgets>
 
@@ -32,9 +34,6 @@
  *  Namespace / Forward Declarations
  ******************************************************************************/
 namespace librepcb {
-
-class LengthUnit;
-
 namespace editor {
 
 namespace Ui {
@@ -95,10 +94,13 @@ private:  // Methods
   void applyBusDefault(const QVector<TraceLengthBus>& buses) noexcept;
   void updateSkewInputVisibility() noexcept;
   TraceLengthComparisonSettings getSettings() const noexcept;
+  QString formatLength(const Length& length,
+                       const QLocale& locale) const noexcept;
   void updateTable() noexcept;
 
 private:  // Data
   const QVector<TraceLengthSegment> mSegments;
+  const LengthUnit mLengthUnit;
   QScopedPointer<Ui::TraceLengthComparisonDialog> mUi;
   QString mSettingsPrefix;
   /// True if the allowed skew was preset from a bus instead of the settings
