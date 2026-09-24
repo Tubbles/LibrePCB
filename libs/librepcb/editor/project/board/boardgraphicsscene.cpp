@@ -247,13 +247,21 @@ void BoardGraphicsScene::selectItemsInRect(const Point& p1,
                                            const Point& p2) noexcept {
   GraphicsScene::setSelectionRect(p1, p2);
   const QRectF rectPx = QRectF(p1.toPxQPointF(), p2.toPxQPointF()).normalized();
-  // A path intersection is expensive, in particular for stroke texts, and
-  // this runs on every mouse move for every item on the board. An item whose
-  // bounding rect misses the selection rect is answered without it, which
-  // does not change the result because a shape lies within its bounding rect.
+  // This runs on every mouse move for every item on the board.
+  // QPainterPath::intersects() already rejects a path whose control point
+  // rect misses the selection rect, so the cost is in building the shape,
+  // and only a stroke text is expensive there: its shape unites two paths.
+  // A stroke text is therefore tested against the bounding rect of its
+  // children first, which contains its shape. The scene bounding rect is of
+  // no use for such a test: item groups whose children are not added with
+  // QGraphicsItemGroup::addToGroup(), like most items here, have an empty one.
   auto intersectsRect = [&rectPx](const QGraphicsItem& item) {
-    return item.sceneBoundingRect().intersects(rectPx) &&
-        item.mapToScene(item.shape()).intersects(rectPx);
+    return item.mapToScene(item.shape()).intersects(rectPx);
+  };
+  auto textIntersectsRect = [&](const QGraphicsItem& item) {
+    return item.mapRectToScene(item.childrenBoundingRect())
+               .intersects(rectPx) &&
+        intersectsRect(item);
   };
   // For now we select the shole device if one of its pads is within the
   // selection rect, see https://github.com/LibrePCB/LibrePCB/pull/1533.
@@ -299,7 +307,7 @@ void BoardGraphicsScene::selectItemsInRect(const Point& p1,
     // on the values layer to delete them.
     auto device = item->getDeviceGraphicsItem().lock();
     item->setSelected((device && device->isSelected()) ||
-                      intersectsRect(*item));
+                      textIntersectsRect(*item));
   }
   foreach (auto item, mHoles) {
     item->setSelected(intersectsRect(*item));
