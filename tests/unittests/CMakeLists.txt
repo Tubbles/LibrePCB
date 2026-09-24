@@ -126,6 +126,7 @@ add_executable(
   editor/modelview/pathmodeltest.cpp
   editor/project/addcomponentdialogtest.cpp
   editor/project/board/boardclipboarddatatest.cpp
+  editor/project/board/boardgraphicsscenetest.cpp
   editor/project/board/boardpnspreviewtest.cpp
   editor/project/board/cmdboardapplypnscommittest.cpp
   editor/project/board/cmdboardspecctraimporttest.cpp
