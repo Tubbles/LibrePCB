@@ -1,0 +1,314 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>librepcb::editor::TraceLengthComparisonDialog</class>
+ <widget class="QDialog" name="librepcb::editor::TraceLengthComparisonDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>800</width>
+    <height>500</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Compare Trace Lengths</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <layout class="QFormLayout" name="formLayout">
+     <property name="fieldGrowthPolicy">
+      <enum>QFormLayout::FieldGrowthPolicy::AllNonFixedFieldsGrow</enum>
+     </property>
+     <item row="0" column="0">
+      <widget class="QLabel" name="lblRate">
+       <property name="text">
+        <string>Data Rate / Clock:</string>
+       </property>
+      </widget>
+     </item>
+     <item row="0" column="1">
+      <layout class="QHBoxLayout" name="horizontalLayout">
+       <item>
+        <widget class="QDoubleSpinBox" name="spbxRate">
+         <property name="toolTip">
+          <string>The data rate or the clock frequency of the compared signals.</string>
+         </property>
+         <property name="decimals">
+          <number>3</number>
+         </property>
+         <property name="minimum">
+          <double>0.001000000000000</double>
+         </property>
+         <property name="maximum">
+          <double>1000000.000000000000000</double>
+         </property>
+         <property name="singleStep">
+          <double>0.100000000000000</double>
+         </property>
+         <property name="value">
+          <double>1.000000000000000</double>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QComboBox" name="cbxRateUnit"/>
+       </item>
+       <item>
+        <spacer name="horizontalSpacer">
+         <property name="orientation">
+          <enum>Qt::Orientation::Horizontal</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>40</width>
+           <height>20</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </item>
+     <item row="1" column="1">
+      <widget class="QLabel" name="lblRateNote">
+       <property name="font">
+        <font>
+         <italic>true</italic>
+        </font>
+       </property>
+       <property name="text">
+        <string>The unit interval of a data rate is one divided by the rate, the unit interval of a clock is its period.</string>
+       </property>
+       <property name="wordWrap">
+        <bool>true</bool>
+       </property>
+      </widget>
+     </item>
+     <item row="2" column="0">
+      <widget class="QLabel" name="lblSkew">
+       <property name="text">
+        <string>Allowed Skew:</string>
+       </property>
+      </widget>
+     </item>
+     <item row="2" column="1">
+      <layout class="QHBoxLayout" name="horizontalLayout_2">
+       <item>
+        <widget class="QComboBox" name="cbxSkewMode"/>
+       </item>
+       <item>
+        <widget class="QDoubleSpinBox" name="spbxSkewPercent">
+         <property name="toolTip">
+          <string>The tolerated delay difference, as a percentage of the unit interval.</string>
+         </property>
+         <property name="suffix">
+          <string notr="true"> %</string>
+         </property>
+         <property name="decimals">
+          <number>1</number>
+         </property>
+         <property name="maximum">
+          <double>100.000000000000000</double>
+         </property>
+         <property name="value">
+          <double>10.000000000000000</double>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QDoubleSpinBox" name="spbxSkewPs">
+         <property name="toolTip">
+          <string>The tolerated delay difference between the compared nets.</string>
+         </property>
+         <property name="suffix">
+          <string notr="true"> ps</string>
+         </property>
+         <property name="decimals">
+          <number>1</number>
+         </property>
+         <property name="maximum">
+          <double>1000000.000000000000000</double>
+         </property>
+         <property name="value">
+          <double>100.000000000000000</double>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="librepcb::editor::UnsignedLengthEdit" name="edtSkewLength" native="true">
+         <property name="toolTip">
+          <string>The tolerated length difference between the compared nets.</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="horizontalSpacer_2">
+         <property name="orientation">
+          <enum>Qt::Orientation::Horizontal</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>40</width>
+           <height>20</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </item>
+     <item row="3" column="1">
+      <widget class="QLabel" name="lblSkewSource">
+       <property name="font">
+        <font>
+         <italic>true</italic>
+        </font>
+       </property>
+       <property name="text">
+        <string notr="true"/>
+       </property>
+       <property name="wordWrap">
+        <bool>true</bool>
+       </property>
+      </widget>
+     </item>
+     <item row="4" column="0">
+      <widget class="QLabel" name="lblDielectricConstant">
+       <property name="text">
+        <string>Effective Dielectric Constant:</string>
+       </property>
+      </widget>
+     </item>
+     <item row="4" column="1">
+      <layout class="QHBoxLayout" name="horizontalLayout_3">
+       <item>
+        <widget class="QDoubleSpinBox" name="spbxDielectricConstant">
+         <property name="toolTip">
+          <string>The effective relative permittivity seen by the traces. On FR4, a microstrip sees about 3.0 to 3.5 and a stripline about 4.0 to 4.5, so adjust this to your stackup.</string>
+         </property>
+         <property name="decimals">
+          <number>2</number>
+         </property>
+         <property name="minimum">
+          <double>1.000000000000000</double>
+         </property>
+         <property name="maximum">
+          <double>20.000000000000000</double>
+         </property>
+         <property name="singleStep">
+          <double>0.100000000000000</double>
+         </property>
+         <property name="value">
+          <double>4.000000000000000</double>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="horizontalSpacer_3">
+         <property name="orientation">
+          <enum>Qt::Orientation::Horizontal</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>40</width>
+           <height>20</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </item>
+     <item row="5" column="0">
+      <widget class="QLabel" name="lblUnitIntervalLabel">
+       <property name="text">
+        <string>Unit Interval:</string>
+       </property>
+      </widget>
+     </item>
+     <item row="5" column="1">
+      <widget class="QLabel" name="lblUnitInterval">
+       <property name="text">
+        <string notr="true">-</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QTableWidget" name="tableWidget">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+       <horstretch>0</horstretch>
+       <verstretch>1</verstretch>
+      </sizepolicy>
+     </property>
+     <property name="verticalScrollMode">
+      <enum>QAbstractItemView::ScrollMode::ScrollPerPixel</enum>
+     </property>
+     <property name="horizontalScrollMode">
+      <enum>QAbstractItemView::ScrollMode::ScrollPerPixel</enum>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_4">
+     <item>
+      <widget class="QLabel" name="lblFootnote">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+         <horstretch>0</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="font">
+        <font>
+         <italic>true</italic>
+        </font>
+       </property>
+       <property name="text">
+        <string>Trace segment lengths only, via barrels and pad to die lengths are not counted.</string>
+       </property>
+       <property name="wordWrap">
+        <bool>true</bool>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QDialogButtonBox" name="buttonBox">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+         <horstretch>0</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="orientation">
+        <enum>Qt::Orientation::Horizontal</enum>
+       </property>
+       <property name="standardButtons">
+        <set>QDialogButtonBox::StandardButton::Close</set>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>librepcb::editor::UnsignedLengthEdit</class>
+   <extends>QWidget</extends>
+   <header location="global">librepcb/editor/widgets/unsignedlengthedit.h</header>
+   <container>1</container>
+  </customwidget>
+ </customwidgets>
+ <tabstops>
+  <tabstop>spbxRate</tabstop>
+  <tabstop>cbxRateUnit</tabstop>
+  <tabstop>cbxSkewMode</tabstop>
+  <tabstop>spbxSkewPercent</tabstop>
+  <tabstop>spbxSkewPs</tabstop>
+  <tabstop>edtSkewLength</tabstop>
+  <tabstop>spbxDielectricConstant</tabstop>
+  <tabstop>tableWidget</tabstop>
+ </tabstops>
+ <resources/>
+ <connections/>
+</ui>

@@ -187,6 +187,7 @@ public:
     out.set_vertex_remove(l2s(cmd.vertexRemove, out.get_vertex_remove()));
     out.set_trace_select_whole(l2s(cmd.traceSelectWhole, out.get_trace_select_whole()));
     out.set_trace_measure_length(l2s(cmd.traceMeasureLength, out.get_trace_measure_length()));
+    out.set_compare_trace_lengths(l2s(cmd.compareTraceLengths, out.get_compare_trace_lengths()));
     out.set_trace_remove_whole(l2s(cmd.traceRemoveWhole, out.get_trace_remove_whole()));
     out.set_locked(l2s(cmd.locked, out.get_locked()));
     out.set_visible(l2s(cmd.visible, out.get_visible()));

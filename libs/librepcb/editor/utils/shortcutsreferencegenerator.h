@@ -73,10 +73,14 @@ public:
   /**
    * @brief Generate the PDF
    *
+   * Categories are laid out in columns and continue on a new page once the
+   * last column of a page is full.
+   *
    * @param fp    Destination PDF file path.
    *
    * @retval true on success.
-   * @retval false If the PDF was generated, but the layout has overflown.
+   * @retval false If the PDF was generated, but a category is taller than a
+   *               whole column, which no pagination can fix.
    *
    * @throw Exception in case of a fatal error.
    */
@@ -87,6 +91,7 @@ public:
       const ShortcutsReferenceGenerator& rhs) = delete;
 
 private:  // Methods
+  void drawFooter(QPdfWriter& writer, QPainter& painter) const noexcept;
   void drawSectionTitle(QPdfWriter& writer, QPainter& painter, qreal x1,
                         qreal x2, qreal y, const QString& text) const noexcept;
   void drawCommandCategory(QPdfWriter& writer, QPainter& painter, qreal x,
@@ -109,8 +114,13 @@ private:  // Data
   static constexpr qreal sRowHeight = 2.9;
   static constexpr qreal sCategorySpacing = 5;
   static constexpr qreal sColumnSpacing = 3.5;
-  static constexpr qreal sColumnWidth = (sPageWidth - 3 * sColumnSpacing) / 4;
+  static constexpr int sColumnCount = 4;
+  static constexpr qreal sColumnWidth =
+      (sPageWidth - (sColumnCount - 1) * sColumnSpacing) / sColumnCount;
   static constexpr qreal sShortcutsWidth = 28;
+  static constexpr qreal sFirstPageCategoryY = 25;  // Below the logo.
+  static constexpr qreal sNextPageTitleY = 6;
+  static constexpr qreal sNextPageCategoryY = 12;
 };
 
 }  // namespace editor
