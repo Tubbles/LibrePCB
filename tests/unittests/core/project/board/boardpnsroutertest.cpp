@@ -1764,6 +1764,17 @@ TEST_F(BoardPnsRouterTest, testDiffPairGapBelowMinClearanceIsRefused) {
             BoardPnsRouter::StartResult::PairGapBelowMinClearance);
 }
 
+TEST(BoardPnsRouterSettingsTest,
+     testDefaultDiffPairGapReachesDefaultClearance) {
+  // A default gap below the default clearance would have every pair start
+  // on a board with the default rules refused until the gap is widened.
+  const BoardPnsRouter::Settings settings = makeSettings();
+  const BoardDesignRuleCheckSettings drcSettings;
+  EXPECT_GE(*settings.diffPairGap, *drcSettings.getMinCopperCopperClearance());
+  EXPECT_EQ((*settings.diffPairGap).toNm(), 200000);
+  EXPECT_EQ((*settings.diffPairWidth).toNm(), 125000);
+}
+
 /*******************************************************************************
  *  Length tuning
  ******************************************************************************/

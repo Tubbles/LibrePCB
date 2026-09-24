@@ -443,15 +443,17 @@ public:
     /// which could supply one.
     PositiveLength diffPairWidth = PositiveLength(Length(125000));
 
-    /// The copper gap between the two traces of a differential pair. The
-    /// router's own default, KiCad's 0.18 mm, for the same reason.
+    /// The copper gap between the two traces of a differential pair.
+    /// LibrePCB's default minimum copper to copper clearance, 0.2 mm,
+    /// rather than the router's own default, KiCad's 0.18 mm, which a
+    /// board with the default rules refuses.
     ///
     /// It has to reach the board's minimum copper to copper clearance or
     /// every pair start is refused with
     /// ::librepcb::BoardPnsRouter::StartResult::PairGapBelowMinClearance;
     /// that is the only consistency check the router makes between the
     /// pair geometry and the clearance rules.
-    PositiveLength diffPairGap = PositiveLength(Length(180000));
+    PositiveLength diffPairGap = PositiveLength(Length(200000));
 
     /// The gap between the two vias of a differential pair, or
     /// `std::nullopt` for "the same as #diffPairGap".

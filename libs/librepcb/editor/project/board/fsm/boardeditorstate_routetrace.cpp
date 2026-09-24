@@ -67,8 +67,11 @@ namespace editor {
 /// router's own default because LibrePCB has no design rule for it.
 static const PositiveLength sDefaultDiffPairWidth(125000);
 
-/// The gap a differential pair starts at, the router's own default.
-static const PositiveLength sDefaultDiffPairGap(180000);
+/// The gap a differential pair starts at: LibrePCB's default minimum
+/// copper to copper clearance, the smallest gap the router accepts on a
+/// board with the default rules. The router's own default is KiCad's
+/// 0.18 mm, which it refuses there.
+static const PositiveLength sDefaultDiffPairGap(200000);
 
 /// The meander dimensions a tuning session starts at, the router's own
 /// defaults, which are KiCad's.
