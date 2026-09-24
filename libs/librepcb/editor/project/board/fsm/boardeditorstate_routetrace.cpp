@@ -1085,11 +1085,28 @@ void BoardEditorState_RouteTrace::updateTuningReadout() noexcept {
                    .arg(unit.format(tuning->target.min - tuning->result,
                                     locale));
       break;
-    case BoardPnsTuningStatus::TooLong:
-      status = tr("Too long by %1")
-                   .arg(unit.format(tuning->result - tuning->target.max,
-                                    locale));
+    case BoardPnsTuningStatus::TooLong: {
+      // A tuner only adds length, so a session which is too long without
+      // having grown was aimed wrong rather than overshot, and the remedy
+      // is a different target or the other lane, not a different meander.
+      const bool grown = tuning->delta && (*tuning->delta > 0);
+      if (grown) {
+        status = tr("Too long by %1")
+                     .arg(unit.format(tuning->result - tuning->target.max,
+                                      locale));
+      } else if (tuning->mode == BoardPnsTuningMode::Skew) {
+        status = tr("This lane is already longer than the other by %1, "
+                    "click the shorter lane")
+                     .arg(unit.format(tuning->skew.value_or(tuning->result),
+                                      locale));
+      } else {
+        status = tr("Target %1 is below the current length %2, raise the "
+                    "target")
+                     .arg(unit.format(tuning->target.opt, locale))
+                     .arg(unit.format(tuning->result, locale));
+      }
       break;
+    }
     case BoardPnsTuningStatus::Tuned:
     default:
       status = tr("Tuned");
