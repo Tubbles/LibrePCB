@@ -366,6 +366,8 @@ dependencies = [
 [[package]]
 name = "pnsrouter"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aec530db44d21ed2a501b28c0e43ef050efff1efe41ea018f08ec16664725021"
 dependencies = [
  "rstar",
 ]
