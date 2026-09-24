@@ -247,6 +247,22 @@ void BoardGraphicsScene::selectItemsInRect(const Point& p1,
                                            const Point& p2) noexcept {
   GraphicsScene::setSelectionRect(p1, p2);
   const QRectF rectPx = QRectF(p1.toPxQPointF(), p2.toPxQPointF()).normalized();
+  // This runs on every mouse move for every item on the board.
+  // QPainterPath::intersects() already rejects a path whose control point
+  // rect misses the selection rect, so the cost is in building the shape,
+  // and only a stroke text is expensive there: its shape unites two paths.
+  // A stroke text is therefore tested against the bounding rect of its
+  // children first, which contains its shape. The scene bounding rect is of
+  // no use for such a test: item groups whose children are not added with
+  // QGraphicsItemGroup::addToGroup(), like most items here, have an empty one.
+  auto intersectsRect = [&rectPx](const QGraphicsItem& item) {
+    return item.mapToScene(item.shape()).intersects(rectPx);
+  };
+  auto textIntersectsRect = [&](const QGraphicsItem& item) {
+    return item.mapRectToScene(item.childrenBoundingRect())
+               .intersects(rectPx) &&
+        intersectsRect(item);
+  };
   // For now we select the shole device if one of its pads is within the
   // selection rect, see https://github.com/LibrePCB/LibrePCB/pull/1533.
   // In case this turns out to be problematic in some cases, we should
@@ -255,34 +271,34 @@ void BoardGraphicsScene::selectItemsInRect(const Point& p1,
   foreach (auto item, mPads) {
     if (auto device = item->getDeviceGraphicsItem().lock()) {
       if ((!selectedDevices.contains(device)) &&
-          item->mapToScene(item->shape()).intersects(rectPx)) {
+          intersectsRect(*item)) {
         selectedDevices.insert(device);
       }
     } else {
-      item->setSelected(item->mapToScene(item->shape()).intersects(rectPx));
+      item->setSelected(intersectsRect(*item));
     }
   }
   foreach (auto item, mDevices) {
     item->setSelected(selectedDevices.contains(item) ||
-                      item->mapToScene(item->shape()).intersects(rectPx));
+                      intersectsRect(*item));
   }
   foreach (auto item, mVias) {
-    item->setSelected(item->mapToScene(item->shape()).intersects(rectPx));
+    item->setSelected(intersectsRect(*item));
   }
   foreach (auto item, mNetPoints) {
-    item->setSelected(item->mapToScene(item->shape()).intersects(rectPx));
+    item->setSelected(intersectsRect(*item));
   }
   foreach (auto item, mNetLines) {
-    item->setSelected(item->mapToScene(item->shape()).intersects(rectPx));
+    item->setSelected(intersectsRect(*item));
   }
   foreach (auto item, mPlanes) {
-    item->setSelected(item->mapToScene(item->shape()).intersects(rectPx));
+    item->setSelected(intersectsRect(*item));
   }
   foreach (auto item, mZones) {
-    item->setSelected(item->mapToScene(item->shape()).intersects(rectPx));
+    item->setSelected(intersectsRect(*item));
   }
   foreach (auto item, mPolygons) {
-    item->setSelected(item->mapToScene(item->shape()).intersects(rectPx));
+    item->setSelected(intersectsRect(*item));
   }
   foreach (auto item, mStrokeTexts) {
     // Propagate selection of devices to their stroke texts to allow moving
@@ -291,10 +307,10 @@ void BoardGraphicsScene::selectItemsInRect(const Point& p1,
     // on the values layer to delete them.
     auto device = item->getDeviceGraphicsItem().lock();
     item->setSelected((device && device->isSelected()) ||
-                      item->mapToScene(item->shape()).intersects(rectPx));
+                      textIntersectsRect(*item));
   }
   foreach (auto item, mHoles) {
-    item->setSelected(item->mapToScene(item->shape()).intersects(rectPx));
+    item->setSelected(intersectsRect(*item));
   }
 }
 
