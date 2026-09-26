@@ -45,6 +45,7 @@ namespace editor {
 class BoardEditorFsmAdapter;
 class BoardEditorState;
 class GraphicsLayerList;
+class PnsSessionRecorder;
 class UndoStack;
 struct GraphicsSceneKeyEvent;
 struct GraphicsSceneMouseEvent;
@@ -91,6 +92,8 @@ public:
     DRAW_ZONE,
     /// ::librepcb::editor::BoardEditorState_DrawTrace
     DRAW_TRACE,
+    /// ::librepcb::editor::BoardEditorState_RouteTrace
+    ROUTE_TRACE,
     /// ::librepcb::editor::BoardEditorState_Measure
     MEASURE,
   };
@@ -103,6 +106,10 @@ public:
     UndoStack& undoStack;
     GraphicsLayerList& layers;
     BoardEditorFsmAdapter& adapter;
+
+    /// Application wide, so that recording switched on from any window
+    /// reaches the router tool of every board.
+    PnsSessionRecorder& pnsRecorder;
   };
 
   // Constructors / Destructor
@@ -128,6 +135,7 @@ public:
   bool processDrawPlane() noexcept;
   bool processDrawZone() noexcept;
   bool processDrawTrace() noexcept;
+  bool processRouteTrace() noexcept;
   bool processImportDxf() noexcept;
   bool processMeasure() noexcept;
   bool processAbortCommand() noexcept;

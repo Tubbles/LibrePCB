@@ -51,6 +51,7 @@ class MainWindow;
 class Notification;
 class NotificationsModel;
 class OrganizationsDbModel;
+class PnsSessionRecorder;
 class ProjectEditor;
 class ProjectLibraryUpdater;
 class QuickAccessModel;
@@ -125,6 +126,23 @@ public:
   bool requestClosingAllProjects() noexcept;
   void openProjectLibraryUpdater(const FilePath& project) noexcept;
 
+  // Push & Shove Router
+  PnsSessionRecorder& getPnsSessionRecorder() noexcept {
+    return *mPnsSessionRecorder;
+  }
+
+  /**
+   * @brief Start recording push and shove routing sessions
+   *
+   * Asks for the directory to write into and opens the window which reports
+   * what is being recorded, or raises that window if recording is already
+   * running. The recorder is stopped when the window is destroyed, which is
+   * what makes closing it the same as pressing its stop button.
+   *
+   * @param parent  Parent widget for the directory chooser and the window.
+   */
+  void startPnsSessionRecording(QWidget* parent) noexcept;
+
   // Window Management
   NotificationsModel& getNotifications() noexcept { return *mNotifications; }
   std::shared_ptr<MainWindow> createNewWindow(int id = -1,
@@ -167,6 +185,10 @@ private:
   const UiTheme* const& mTheme;
   bool mLibrariesContainStandardComponents;
   std::unique_ptr<GraphicsLayerList> mPreviewLayers;
+  /// Declared before #mWindows so that a window which is being destroyed
+  /// can still stop the recorder.
+  std::unique_ptr<PnsSessionRecorder> mPnsSessionRecorder;
+  QPointer<QWidget> mPnsRecordingWindow;
   std::shared_ptr<LibraryElementCache> mLibraryElementCache;
   std::shared_ptr<NotificationsModel> mNotifications;
   std::shared_ptr<Notification> mNotificationNoLibrariesInstalled;

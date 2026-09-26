@@ -7,6 +7,7 @@ import {
     PadShape,
     PanelPage,
     ProjectAction,
+    RouterMode,
     SchematicAction,
     TabAction,
     TabType,
@@ -16,6 +17,7 @@ import { Backend } from "backend.slint";
 import { Constants } from "constants.slint";
 import { Data } from "data.slint";
 import { EditorCommandSet as Cmd } from "editorcommandset.slint";
+import { Helpers } from "helpers.slint";
 
 export global Shortcuts {
     property <int> section: Data.current-section-index;
@@ -992,6 +994,67 @@ export global Shortcuts {
                 Data.current-section.board-2d-tabs[tab].tool-wire-mode = WireMode.straight;
                 return true;
             }
+        } else if Data.current-section.board-2d-tabs[tab].tool == EditorTool.route-trace {
+            if Backend.is-shortcut(event, Cmd.layer-up) && (Data.current-section.board-2d-tabs[tab].tool-layer.current-index > 0) {
+                Data.current-section.board-2d-tabs[tab].tool-layer.current-index -= 1;
+                return true;
+            } else if Backend.is-shortcut(event, Cmd.layer-down) && (Data.current-section.board-2d-tabs[tab].tool-layer.current-index < (Data.current-section.board-2d-tabs[tab].tool-layer.items.length - 1)) {
+                Data.current-section.board-2d-tabs[tab].tool-layer.current-index += 1;
+                return true;
+            } else if Backend.is-shortcut(event, Cmd.flip-horizontal) {
+                // Support 'f' shortcut for toggling between top/bottom layers,
+                // like the draw trace tool does.
+                Data.current-section.board-2d-tabs[tab].tool-layer.current-index = (Data.current-section.board-2d-tabs[tab].tool-layer.items.length - 1) - Data.current-section.board-2d-tabs[tab].tool-layer.current-index;
+                return true;
+            } else if Backend.is-shortcut(event, Cmd.line-width-increase) {
+                Data.current-section.board-2d-tabs[tab].tool-line-width.increase = true;
+                return true;
+            } else if Backend.is-shortcut(event, Cmd.line-width-decrease) && Data.current-section.board-2d-tabs[tab].tool-line-width.can-decrease {
+                Data.current-section.board-2d-tabs[tab].tool-line-width.decrease = true;
+                return true;
+            } else if Backend.is-shortcut(event, Cmd.size-increase) {
+                Data.current-section.board-2d-tabs[tab].tool-size.increase = true;
+                return true;
+            } else if Backend.is-shortcut(event, Cmd.size-decrease) && Data.current-section.board-2d-tabs[tab].tool-size.can-decrease {
+                Data.current-section.board-2d-tabs[tab].tool-size.decrease = true;
+                return true;
+            } else if Backend.is-shortcut(event, Cmd.drill-increase) {
+                Data.current-section.board-2d-tabs[tab].tool-drill.increase = true;
+                return true;
+            } else if Backend.is-shortcut(event, Cmd.drill-decrease) && Data.current-section.board-2d-tabs[tab].tool-drill.can-decrease {
+                Data.current-section.board-2d-tabs[tab].tool-drill.decrease = true;
+                return true;
+            } else if Backend.is-shortcut(event, Cmd.router-mode-cycle) {
+                Data.current-section.board-2d-tabs[tab].tool-router-mode = Helpers.get-next-router-mode(Data.current-section.board-2d-tabs[tab].tool-router-mode);
+                return true;
+            } else if Backend.is-shortcut(event, Cmd.router-corner-mode) {
+                Data.current-section.board-2d-tabs[tab].tool-router-corner-mode = !Data.current-section.board-2d-tabs[tab].tool-router-corner-mode;
+                return true;
+            } else if Backend.is-shortcut(event, Cmd.router-flip-posture) {
+                Backend.trigger-tab(section, tab, TabAction.router-flip-posture);
+                return true;
+            } else if Backend.is-shortcut(event, Cmd.router-via-toggle) {
+                Backend.trigger-tab(section, tab, TabAction.router-via-toggle);
+                return true;
+            } else if Backend.is-shortcut(event, Cmd.router-diff-pair-toggle) {
+                Data.current-section.board-2d-tabs[tab].tool-router-diff-pair = !Data.current-section.board-2d-tabs[tab].tool-router-diff-pair;
+                return true;
+            } else if Backend.is-shortcut(event, Cmd.router-tuning-mode-cycle) {
+                Data.current-section.board-2d-tabs[tab].tool-router-tuning-mode = Helpers.get-next-router-tuning-mode(Data.current-section.board-2d-tabs[tab].tool-router-tuning-mode);
+                return true;
+            } else if Backend.is-shortcut(event, Cmd.router-spacing-decrease) {
+                Backend.trigger-tab(section, tab, TabAction.router-spacing-decrease);
+                return true;
+            } else if Backend.is-shortcut(event, Cmd.router-spacing-increase) {
+                Backend.trigger-tab(section, tab, TabAction.router-spacing-increase);
+                return true;
+            } else if Backend.is-shortcut(event, Cmd.router-amplitude-decrease) {
+                Backend.trigger-tab(section, tab, TabAction.router-amplitude-decrease);
+                return true;
+            } else if Backend.is-shortcut(event, Cmd.router-amplitude-increase) {
+                Backend.trigger-tab(section, tab, TabAction.router-amplitude-increase);
+                return true;
+            }
         } else if Data.current-section.board-2d-tabs[tab].tool == EditorTool.via {
             if Backend.is-shortcut(event, Cmd.size-increase) {
                 Data.current-section.board-2d-tabs[tab].tool-size.increase = true;
@@ -1166,6 +1229,9 @@ export global Shortcuts {
             return true;
         } else if Backend.is-shortcut(event, Cmd.tool-wire) {
             Backend.trigger-tab(section, tab, TabAction.tool-wire);
+            return true;
+        } else if Backend.is-shortcut(event, Cmd.tool-route-trace) {
+            Backend.trigger-tab(section, tab, TabAction.tool-route-trace);
             return true;
         } else if Backend.is-shortcut(event, Cmd.tool-via) {
             Backend.trigger-tab(section, tab, TabAction.tool-via);

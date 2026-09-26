@@ -336,6 +336,32 @@ public:
   WorkspaceSettingsItem_GenericValue<GridStyle> boardGridStyle;
 
   /**
+   * @brief Push & shove router: shove iterations per mouse move
+   *
+   * How many times the router may push a colliding trace aside before it
+   * gives up and walks around instead. Bounds the time one mouse move can
+   * take on a densely populated board.
+   *
+   * Readers are expected to clamp the value to a sane range, see
+   * ::librepcb::editor::BoardEditorState_RouteTrace.
+   *
+   * Default: 250 (the value KiCad's router uses)
+   */
+  WorkspaceSettingsItem_GenericValue<uint> pnsShoveIterationLimit;
+
+  /**
+   * @brief Push & shove router: commit routes which break design rules
+   *
+   * KiCad's "Allow DRC violations". Only the router's "mark obstacles" mode
+   * acts on it: that mode puts the trace where the user pointed and marks
+   * what it runs into, and this decides whether such a trace may then be
+   * committed. The design rule check reports it afterwards either way.
+   *
+   * Default: false
+   */
+  WorkspaceSettingsItem_GenericValue<bool> pnsAllowDrcViolations;
+
+  /**
    * @brief Schematic color schemes
    *
    * @see ::librepcb::WorkspaceSettingsItem_ColorSchemes

@@ -455,6 +455,8 @@ add_library(
   project/board/boardplanepropertiesdialog.cpp
   project/board/boardplanepropertiesdialog.h
   project/board/boardplanepropertiesdialog.ui
+  project/board/boardpnspreview.cpp
+  project/board/boardpnspreview.h
   project/board/boardselectionquery.cpp
   project/board/boardselectionquery.h
   project/board/boardsetupdialog.cpp
@@ -491,6 +493,8 @@ add_library(
   project/board/fsm/boardeditorstate_drawzone.h
   project/board/fsm/boardeditorstate_measure.cpp
   project/board/fsm/boardeditorstate_measure.h
+  project/board/fsm/boardeditorstate_routetrace.cpp
+  project/board/fsm/boardeditorstate_routetrace.h
   project/board/fsm/boardeditorstate_select.cpp
   project/board/fsm/boardeditorstate_select.h
   project/board/graphicsitems/bgi_airwire.cpp
@@ -515,6 +519,10 @@ add_library(
   project/board/graphicsitems/bgi_via.h
   project/board/graphicsitems/bgi_zone.cpp
   project/board/graphicsitems/bgi_zone.h
+  project/board/pnsrecordingwindow.cpp
+  project/board/pnsrecordingwindow.h
+  project/board/pnssessionrecorder.cpp
+  project/board/pnssessionrecorder.h
   project/board/tracelengthcomparison.cpp
   project/board/tracelengthcomparison.h
   project/board/tracelengthcomparisondialog.cpp
@@ -537,6 +545,8 @@ add_library(
   project/cmd/cmdassemblyvariantremove.h
   project/cmd/cmdboardadd.cpp
   project/cmd/cmdboardadd.h
+  project/cmd/cmdboardapplypnscommit.cpp
+  project/cmd/cmdboardapplypnscommit.h
   project/cmd/cmdboardedit.cpp
   project/cmd/cmdboardedit.h
   project/cmd/cmdboardholeadd.cpp

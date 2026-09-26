@@ -53,6 +53,7 @@
 #include "fsm/boardeditorstate_drawpolygon.h"
 #include "fsm/boardeditorstate_drawtrace.h"
 #include "fsm/boardeditorstate_drawzone.h"
+#include "fsm/boardeditorstate_routetrace.h"
 #include "graphicsitems/bgi_device.h"
 #include "graphicsitems/bgi_netline.h"
 #include "graphicsitems/bgi_pad.h"
@@ -140,6 +141,55 @@ static BoardEditorState_DrawTrace::WireMode s2l(ui::WireMode v) noexcept {
   }
 }
 
+static ui::RouterMode l2s(BoardPnsRouter::Mode v) noexcept {
+  if (v == BoardPnsRouter::Mode::MarkObstacles) {
+    return ui::RouterMode::MarkObstacles;
+  } else if (v == BoardPnsRouter::Mode::Walkaround) {
+    return ui::RouterMode::Walkaround;
+  } else if (v == BoardPnsRouter::Mode::Shove) {
+    return ui::RouterMode::Shove;
+  } else {
+    return ui::RouterMode::Walkaround;
+  }
+}
+
+static BoardPnsRouter::Mode s2l(ui::RouterMode v) noexcept {
+  if (v == ui::RouterMode::MarkObstacles) {
+    return BoardPnsRouter::Mode::MarkObstacles;
+  } else if (v == ui::RouterMode::Walkaround) {
+    return BoardPnsRouter::Mode::Walkaround;
+  } else if (v == ui::RouterMode::Shove) {
+    return BoardPnsRouter::Mode::Shove;
+  } else {
+    return BoardPnsRouter::Mode::Walkaround;
+  }
+}
+
+static ui::RouterTuningMode l2s(
+    const std::optional<BoardPnsTuningMode>& v) noexcept {
+  if (v == BoardPnsTuningMode::Single) {
+    return ui::RouterTuningMode::Single;
+  } else if (v == BoardPnsTuningMode::DiffPair) {
+    return ui::RouterTuningMode::DiffPair;
+  } else if (v == BoardPnsTuningMode::Skew) {
+    return ui::RouterTuningMode::Skew;
+  } else {
+    return ui::RouterTuningMode::Off;
+  }
+}
+
+static std::optional<BoardPnsTuningMode> s2l(ui::RouterTuningMode v) noexcept {
+  if (v == ui::RouterTuningMode::Single) {
+    return BoardPnsTuningMode::Single;
+  } else if (v == ui::RouterTuningMode::DiffPair) {
+    return BoardPnsTuningMode::DiffPair;
+  } else if (v == ui::RouterTuningMode::Skew) {
+    return BoardPnsTuningMode::Skew;
+  } else {
+    return std::nullopt;
+  }
+}
+
 /*******************************************************************************
  *  Constructors / Destructor
  ******************************************************************************/
@@ -171,6 +221,10 @@ Board2dTab::Board2dTab(GuiApplication& app, BoardEditor& editor,
     mTool(ui::EditorTool::Select),
     mToolCursorShape(Qt::ArrowCursor),
     mToolWireMode(BoardEditorState_DrawTrace::WireMode::HV),
+    mToolRouterMode(ui::RouterMode::Walkaround),
+    mToolRouterCornerMode(false),
+    mToolRouterDiffPair(false),
+    mToolRouterTuningMode(ui::RouterTuningMode::Off),
     mToolNets(std::make_shared<slint::VectorModel<slint::SharedString>>()),
     mToolNet({true, std::nullopt}),
     mToolLayers(std::make_shared<slint::VectorModel<slint::SharedString>>()),
@@ -178,6 +232,15 @@ Board2dTab::Board2dTab(GuiApplication& app, BoardEditor& editor,
     mToolLineWidth(app.getWorkspace().getSettings()),
     mToolSize(app.getWorkspace().getSettings()),
     mToolDrill(app.getWorkspace().getSettings()),
+    mToolDiffPairWidth(app.getWorkspace().getSettings()),
+    mToolDiffPairGap(app.getWorkspace().getSettings()),
+    mToolDiffPairViaGap(app.getWorkspace().getSettings()),
+    mToolDiffPairViaGapAuto(true),
+    mToolTuningTarget(app.getWorkspace().getSettings()),
+    mToolTuningTolerance(app.getWorkspace().getSettings()),
+    mToolTuningMinAmplitude(app.getWorkspace().getSettings()),
+    mToolTuningMaxAmplitude(app.getWorkspace().getSettings()),
+    mToolTuningSpacing(app.getWorkspace().getSettings()),
     mToolFilled(false),
     mToolMirrored(false),
     mToolValueSuggestions(
@@ -285,6 +348,7 @@ Board2dTab::Board2dTab(GuiApplication& app, BoardEditor& editor,
   BoardEditorFsm::Context fsmContext{
       mApp.getWorkspace(),           mProject, mBoard,
       mProjectEditor.getUndoStack(), *mLayers, *this,
+      mApp.getPnsSessionRecorder(),
   };
   mFsm.reset(new BoardEditorFsm(fsmContext));
 
@@ -402,6 +466,10 @@ ui::Board2dTabData Board2dTab::getDerivedUiData() const noexcept {
                              : mToolCursorShape),  // Tool cursor
       q2s(mToolOverlayText),  // Tool overlay text
       l2s(mToolWireMode),  // Tool wire mode
+      mToolRouterMode,  // Tool router mode
+      mToolRouterCornerMode,  // Tool router corner mode
+      mToolRouterDiffPair,  // Tool router differential pair
+      mToolRouterTuningMode,  // Tool router length tuning mode
       ui::ComboBoxData{
           // Tool net
           mToolNets,  // Items,
@@ -416,6 +484,15 @@ ui::Board2dTabData Board2dTab::getDerivedUiData() const noexcept {
       mToolLineWidth.getUiData(),  // Tool line width
       mToolSize.getUiData(),  // Tool size
       mToolDrill.getUiData(),  // Tool drill
+      mToolDiffPairWidth.getUiData(),  // Tool differential pair width
+      mToolDiffPairGap.getUiData(),  // Tool differential pair gap
+      mToolDiffPairViaGap.getUiData(),  // Tool differential pair via gap
+      mToolDiffPairViaGapAuto,  // Tool differential pair via gap "auto"
+      mToolTuningTarget.getUiData(),  // Tool tuning target
+      mToolTuningTolerance.getUiData(),  // Tool tuning tolerance
+      mToolTuningMinAmplitude.getUiData(),  // Tool tuning min amplitude
+      mToolTuningMaxAmplitude.getUiData(),  // Tool tuning max amplitude
+      mToolTuningSpacing.getUiData(),  // Tool tuning spacing
       ui::AngleEditData{
           // Tool angle
           l2s(mToolAngle),  // Angle
@@ -521,6 +598,29 @@ void Board2dTab::setDerivedUiData(const ui::Board2dTabData& data) noexcept {
 
   // Tool wire mode
   emit wireModeRequested(s2l(data.tool_wire_mode));
+
+  // Tool router mode
+  emit routerModeRequested(s2l(data.tool_router_mode));
+  emit routerCornerModeRequested(data.tool_router_corner_mode);
+  emit routerDiffPairRequested(data.tool_router_diff_pair);
+  emit routerTuningModeRequested(s2l(data.tool_router_tuning_mode));
+
+  // Tool length tuning dimensions
+  mToolTuningTarget.setUiData(data.tool_tuning_target);
+  mToolTuningTolerance.setUiData(data.tool_tuning_tolerance);
+  mToolTuningMinAmplitude.setUiData(data.tool_tuning_min_amplitude);
+  mToolTuningMaxAmplitude.setUiData(data.tool_tuning_max_amplitude);
+  mToolTuningSpacing.setUiData(data.tool_tuning_spacing);
+
+  // Tool differential pair sizes
+  mToolDiffPairWidth.setUiData(data.tool_diff_pair_width);
+  mToolDiffPairGap.setUiData(data.tool_diff_pair_gap);
+  mToolDiffPairViaGap.setUiData(data.tool_diff_pair_via_gap);
+  emit diffPairViaGapRequested(
+      ((mToolDiffPairViaGap.getValue() > 0) &&
+       (!data.tool_diff_pair_via_gap_auto))
+          ? std::make_optional(PositiveLength(mToolDiffPairViaGap.getValue()))
+          : std::nullopt);
 
   // Tool line width
   mToolLineWidth.setUiData(data.tool_line_width);
@@ -958,6 +1058,10 @@ void Board2dTab::trigger(ui::TabAction a) noexcept {
       mFsm->processDrawTrace();
       break;
     }
+    case ui::TabAction::ToolRouteTrace: {
+      mFsm->processRouteTrace();
+      break;
+    }
     case ui::TabAction::ToolVia: {
       mFsm->processAddVia();
       break;
@@ -1016,6 +1120,30 @@ void Board2dTab::trigger(ui::TabAction a) noexcept {
     }
     case ui::TabAction::ToolMeasure: {
       mFsm->processMeasure();
+      break;
+    }
+    case ui::TabAction::RouterFlipPosture: {
+      emit routerFlipPostureRequested();  // Connected to current FSM state.
+      break;
+    }
+    case ui::TabAction::RouterViaToggle: {
+      emit routerViaToggleRequested();  // Connected to current FSM state.
+      break;
+    }
+    case ui::TabAction::RouterSpacingDecrease: {
+      emit routerSpacingStepRequested(-1);  // Connected to current FSM state.
+      break;
+    }
+    case ui::TabAction::RouterSpacingIncrease: {
+      emit routerSpacingStepRequested(1);
+      break;
+    }
+    case ui::TabAction::RouterAmplitudeDecrease: {
+      emit routerAmplitudeStepRequested(-1);
+      break;
+    }
+    case ui::TabAction::RouterAmplitudeIncrease: {
+      emit routerAmplitudeStepRequested(1);
       break;
     }
     case ui::TabAction::ToolbarTraceWidthSaveInBoard: {
@@ -1381,6 +1509,239 @@ void Board2dTab::fsmToolEnter(BoardEditorState_DrawTrace& state) noexcept {
   mFsmStateConnections.append(connect(this, &Board2dTab::viaSizeRequested,
                                       &state,
                                       &BoardEditorState_DrawTrace::setViaSize));
+
+  onDerivedUiDataChanged.notify();
+}
+
+void Board2dTab::fsmToolEnter(BoardEditorState_RouteTrace& state) noexcept {
+  mTool = ui::EditorTool::RouteTrace;
+  mToolNetClassName = QString();
+  mToolFilled = false;
+
+  // Routing mode
+  auto setMode = [this](BoardPnsRouter::Mode mode) {
+    mToolRouterMode = l2s(mode);
+    onDerivedUiDataChanged.notify();
+  };
+  setMode(state.getMode());
+  mFsmStateConnections.append(connect(
+      &state, &BoardEditorState_RouteTrace::modeChanged, this, setMode));
+  mFsmStateConnections.append(
+      connect(this, &Board2dTab::routerModeRequested, &state,
+              &BoardEditorState_RouteTrace::setMode));
+
+  // Corner mode
+  auto setCornerMode = [this](bool corners90) {
+    mToolRouterCornerMode = corners90;
+    onDerivedUiDataChanged.notify();
+  };
+  setCornerMode(state.getCornerMode());
+  mFsmStateConnections.append(
+      connect(&state, &BoardEditorState_RouteTrace::cornerModeChanged, this,
+              setCornerMode));
+  mFsmStateConnections.append(
+      connect(this, &Board2dTab::routerCornerModeRequested, &state,
+              &BoardEditorState_RouteTrace::setCornerMode));
+
+  // Posture and via placement
+  mFsmStateConnections.append(
+      connect(this, &Board2dTab::routerFlipPostureRequested, &state,
+              &BoardEditorState_RouteTrace::flipPosture));
+  mFsmStateConnections.append(
+      connect(this, &Board2dTab::routerViaToggleRequested, &state,
+              &BoardEditorState_RouteTrace::toggleVia));
+
+  // Differential pair switch
+  auto setDiffPair = [this](bool diffPair) {
+    mToolRouterDiffPair = diffPair;
+    onDerivedUiDataChanged.notify();
+  };
+  setDiffPair(state.getDiffPair());
+  mFsmStateConnections.append(connect(
+      &state, &BoardEditorState_RouteTrace::diffPairChanged, this,
+      setDiffPair));
+  mFsmStateConnections.append(
+      connect(this, &Board2dTab::routerDiffPairRequested, &state,
+              &BoardEditorState_RouteTrace::setDiffPair));
+
+  // Differential pair trace width
+  mToolDiffPairWidth.configure(state.getDiffPairWidth(),
+                               LengthEditContext::Steps::generic(),
+                               "board_editor/route_trace/diff_pair_width");
+  mFsmStateConnections.append(
+      connect(&state, &BoardEditorState_RouteTrace::diffPairWidthChanged,
+              &mToolDiffPairWidth, &LengthEditContext::setValuePositive));
+  mFsmStateConnections.append(
+      connect(&mToolDiffPairWidth, &LengthEditContext::valueChangedPositive,
+              &state, &BoardEditorState_RouteTrace::setDiffPairWidth));
+
+  // Differential pair gap
+  mToolDiffPairGap.configure(state.getDiffPairGap(),
+                             LengthEditContext::Steps::generic(),
+                             "board_editor/route_trace/diff_pair_gap");
+  mFsmStateConnections.append(
+      connect(&state, &BoardEditorState_RouteTrace::diffPairGapChanged,
+              &mToolDiffPairGap, &LengthEditContext::setValuePositive));
+  mFsmStateConnections.append(
+      connect(&mToolDiffPairGap, &LengthEditContext::valueChangedPositive,
+              &state, &BoardEditorState_RouteTrace::setDiffPairGap));
+
+  // Differential pair via gap, whose "auto" is "the same as the trace gap".
+  mToolDiffPairViaGap.configure(state.getDiffPairViaGap(),
+                                LengthEditContext::Steps::generic(),
+                                "board_editor/route_trace/diff_pair_via_gap");
+  auto setDiffPairViaGap = [this](bool autoGap, const PositiveLength& gap) {
+    mToolDiffPairViaGap.setValuePositive(gap);
+    mToolDiffPairViaGapAuto = autoGap;
+    onDerivedUiDataChanged.notify();
+  };
+  setDiffPairViaGap(state.getAutoDiffPairViaGap(), state.getDiffPairViaGap());
+  mFsmStateConnections.append(
+      connect(&state, &BoardEditorState_RouteTrace::diffPairViaGapChanged,
+              this, setDiffPairViaGap));
+  mFsmStateConnections.append(
+      connect(this, &Board2dTab::diffPairViaGapRequested, &state,
+              &BoardEditorState_RouteTrace::setDiffPairViaGap));
+
+  // Length tuning mode
+  auto setTuningMode = [this](const std::optional<BoardPnsTuningMode>& mode) {
+    mToolRouterTuningMode = l2s(mode);
+    onDerivedUiDataChanged.notify();
+  };
+  setTuningMode(state.getTuningMode());
+  mFsmStateConnections.append(
+      connect(&state, &BoardEditorState_RouteTrace::tuningModeChanged, this,
+              setTuningMode));
+  mFsmStateConnections.append(
+      connect(this, &Board2dTab::routerTuningModeRequested, &state,
+              &BoardEditorState_RouteTrace::setTuningMode));
+
+  // The two live meander adjustments, which have no toolbar control: the
+  // keys are the only way to reach them, like the posture flip.
+  mFsmStateConnections.append(
+      connect(this, &Board2dTab::routerAmplitudeStepRequested, &state,
+              &BoardEditorState_RouteTrace::amplitudeStep));
+  mFsmStateConnections.append(
+      connect(this, &Board2dTab::routerSpacingStepRequested, &state,
+              &BoardEditorState_RouteTrace::spacingStep));
+
+  // Length tuning target, which is a skew in the skew mode and may be zero
+  // or negative, so it is the signed editor rather than the positive one.
+  mToolTuningTarget.configure(state.getTuningTarget(),
+                              LengthEditContext::Steps::generic(),
+                              "board_editor/route_trace/tuning_target");
+  mFsmStateConnections.append(
+      connect(&state, &BoardEditorState_RouteTrace::tuningTargetChanged,
+              &mToolTuningTarget, &LengthEditContext::setValue));
+  mFsmStateConnections.append(
+      connect(&mToolTuningTarget, &LengthEditContext::valueChanged, &state,
+              &BoardEditorState_RouteTrace::setTuningTarget));
+
+  // Length tuning tolerance
+  mToolTuningTolerance.configure(state.getTuningTolerance(),
+                                 LengthEditContext::Steps::generic(),
+                                 "board_editor/route_trace/tuning_tolerance");
+  mFsmStateConnections.append(
+      connect(&state, &BoardEditorState_RouteTrace::tuningToleranceChanged,
+              &mToolTuningTolerance, &LengthEditContext::setValuePositive));
+  mFsmStateConnections.append(
+      connect(&mToolTuningTolerance, &LengthEditContext::valueChangedPositive,
+              &state, &BoardEditorState_RouteTrace::setTuningTolerance));
+
+  // Meander amplitude range
+  mToolTuningMinAmplitude.configure(
+      state.getTuningMinAmplitude(), LengthEditContext::Steps::generic(),
+      "board_editor/route_trace/tuning_min_amplitude");
+  mFsmStateConnections.append(
+      connect(&state, &BoardEditorState_RouteTrace::tuningMinAmplitudeChanged,
+              &mToolTuningMinAmplitude, &LengthEditContext::setValuePositive));
+  mFsmStateConnections.append(
+      connect(&mToolTuningMinAmplitude,
+              &LengthEditContext::valueChangedPositive, &state,
+              &BoardEditorState_RouteTrace::setTuningMinAmplitude));
+
+  mToolTuningMaxAmplitude.configure(
+      state.getTuningMaxAmplitude(), LengthEditContext::Steps::generic(),
+      "board_editor/route_trace/tuning_max_amplitude");
+  mFsmStateConnections.append(
+      connect(&state, &BoardEditorState_RouteTrace::tuningMaxAmplitudeChanged,
+              &mToolTuningMaxAmplitude, &LengthEditContext::setValuePositive));
+  mFsmStateConnections.append(
+      connect(&mToolTuningMaxAmplitude,
+              &LengthEditContext::valueChangedPositive, &state,
+              &BoardEditorState_RouteTrace::setTuningMaxAmplitude));
+
+  // Meander spacing
+  mToolTuningSpacing.configure(state.getTuningSpacing(),
+                               LengthEditContext::Steps::generic(),
+                               "board_editor/route_trace/tuning_spacing");
+  mFsmStateConnections.append(
+      connect(&state, &BoardEditorState_RouteTrace::tuningSpacingChanged,
+              &mToolTuningSpacing, &LengthEditContext::setValuePositive));
+  mFsmStateConnections.append(
+      connect(&mToolTuningSpacing, &LengthEditContext::valueChangedPositive,
+              &state, &BoardEditorState_RouteTrace::setTuningSpacing));
+
+  // Trace width
+  mToolLineWidth.configure(state.getWidth(),
+                           LengthEditContext::Steps::generic(),
+                           "board_editor/draw_trace/width");
+  mFsmStateConnections.append(
+      connect(&state, &BoardEditorState_RouteTrace::widthChanged,
+              &mToolLineWidth, &LengthEditContext::setValuePositive));
+  mFsmStateConnections.append(
+      connect(&mToolLineWidth, &LengthEditContext::valueChangedPositive, &state,
+              &BoardEditorState_RouteTrace::setWidth));
+
+  // Layers
+  mToolLayersQt = Layer::sorted(state.getAvailableLayers());
+  mToolLayers->clear();
+  for (const Layer* layer : std::as_const(mToolLayersQt)) {
+    mToolLayers->push_back(q2s(layer->getNameTr()));
+  }
+
+  // Layer
+  auto setLayer = [this](const Layer& layer) {
+    mToolLayer = &layer;
+    onDerivedUiDataChanged.notify();
+  };
+  setLayer(state.getLayer());
+  mFsmStateConnections.append(connect(
+      &state, &BoardEditorState_RouteTrace::layerChanged, this, setLayer));
+  mFsmStateConnections.append(connect(this, &Board2dTab::layerRequested, &state,
+                                      &BoardEditorState_RouteTrace::setLayer));
+
+  // Via drill
+  mToolDrill.configure(state.getViaDrillDiameter(),
+                       LengthEditContext::Steps::drillDiameter(),
+                       "board_editor/add_via/drill");  // From via tool.
+  auto setViaDrill = [this](bool autoDrill, const PositiveLength& drill) {
+    mToolDrill.setValuePositive(drill);
+    mToolPressFit = autoDrill;
+    onDerivedUiDataChanged.notify();
+  };
+  setViaDrill(state.getViaAutoDrillDiameter(), state.getViaDrillDiameter());
+  mFsmStateConnections.append(
+      connect(&state, &BoardEditorState_RouteTrace::viaDrillDiameterChanged,
+              this, setViaDrill));
+  mFsmStateConnections.append(
+      connect(this, &Board2dTab::viaDrillRequested, &state,
+              &BoardEditorState_RouteTrace::setViaDrillDiameter));
+
+  // Via size
+  mToolSize.configure(state.getViaSize(), LengthEditContext::Steps::generic(),
+                      "board_editor/add_via/size");  // From via tool.
+  auto setViaSize = [this](bool autoSize, const PositiveLength& size) {
+    mToolSize.setValuePositive(size);
+    mToolMirrored = autoSize;
+    onDerivedUiDataChanged.notify();
+  };
+  setViaSize(state.getAutoViaSize(), state.getViaSize());
+  mFsmStateConnections.append(connect(
+      &state, &BoardEditorState_RouteTrace::viaSizeChanged, this, setViaSize));
+  mFsmStateConnections.append(
+      connect(this, &Board2dTab::viaSizeRequested, &state,
+              &BoardEditorState_RouteTrace::setViaSize));
 
   onDerivedUiDataChanged.notify();
 }
