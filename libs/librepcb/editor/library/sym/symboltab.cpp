@@ -129,6 +129,13 @@ SymbolTab::SymbolTab(LibraryEditor& editor, std::unique_ptr<Symbol> sym,
       &WorkspaceSettingsItem::edited, this, [this]() {
         mView->setUseOpenGl(mApp.getWorkspace().getSettings().useOpenGl.get());
       });
+  mView->setNavigationStyle(
+      mApp.getWorkspace().getSettings().navigationStyle.get());
+  connect(&mApp.getWorkspace().getSettings().navigationStyle,
+          &WorkspaceSettingsItem::edited, this, [this]() {
+            mView->setNavigationStyle(
+                mApp.getWorkspace().getSettings().navigationStyle.get());
+          });
   connect(mView.get(), &SlintGraphicsView::transformChanged, this,
           &SymbolTab::requestRepaint);
   connect(mView.get(), &SlintGraphicsView::stateChanged, this,

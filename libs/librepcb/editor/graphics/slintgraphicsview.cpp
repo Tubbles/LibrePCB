@@ -37,6 +37,12 @@ namespace editor {
 
 static const qreal sScrollFactor = 0.07;
 
+// Touchpad style zoom: 100 px of vertical pointer motion double or halve the
+// scale, moving up zooms in.
+static qreal touchpadZoomFactor(qreal screenDeltaY) noexcept {
+  return qPow(2, -screenDeltaY / qreal(100));
+}
+
 static qreal boundedScaleFactor(qreal scale) noexcept {
   // Limit zoom factor to avoid crashes due to numerical issues when zooming
   // extensively (e.g. possible with free running scroll wheels).
@@ -55,6 +61,7 @@ SlintGraphicsView::SlintGraphicsView(const QRectF& defaultSceneRect,
     mDefaultMargins(defaultMargins),
     mEventHandler(nullptr),
     mMirror(false),
+    mNavigationStyle(NavigationStyle::Default),
     mAnimation(new QVariantAnimation(this)) {
   mAnimation->setDuration(500);
   mAnimation->setEasingCurve(QEasingCurve::InOutCubic);
@@ -138,6 +145,11 @@ void SlintGraphicsView::setMirror(bool mirror) noexcept {
     mMirror = mirror;
     emit transformChanged();
   }
+}
+
+void SlintGraphicsView::setNavigationStyle(NavigationStyle style) noexcept {
+  mNavigationStyle = style;
+  mTouchpadGesture = TouchpadGesture::None;
 }
 
 slint::Image SlintGraphicsView::render(GraphicsScene& scene, float width,
@@ -286,6 +298,9 @@ void SlintGraphicsView::pointerEvent(
       mEventHandler->graphicsSceneRightMouseButtonReleased(mMouseEvent);
     }
   } else if (e.kind == PointerEventKind::Move) {
+    if (touchpadMove(pos, e.modifiers)) {
+      return;
+    }
     if ((!mPanning) && (mMouseEvent.buttons.testFlag(Qt::RightButton))) {
       const QPointF d = pos - mPanningStartScreenPos;
       const qreal distance = std::sqrt(d.x() * d.x() + d.y() * d.y());
@@ -430,6 +445,35 @@ QMarginsF SlintGraphicsView::defaultEditorMargins() noexcept {
 /*******************************************************************************
  *  Private Methods
  ******************************************************************************/
+
+SlintGraphicsView::TouchpadGesture SlintGraphicsView::touchpadGestureFor(
+    const slint::private_api::KeyboardModifiers& modifiers) const noexcept {
+  if ((mNavigationStyle != NavigationStyle::Touchpad) ||
+      (mMouseEvent.buttons != Qt::NoButton) || (!modifiers.shift)) {
+    return TouchpadGesture::None;
+  }
+  return modifiers.control ? TouchpadGesture::Zoom : TouchpadGesture::Pan;
+}
+
+// Applies a touchpad gesture for a pointer move and returns whether one is
+// active. The first move of a gesture only records the position, so a
+// modifier pressed during motion does not cause a jump.
+bool SlintGraphicsView::touchpadMove(
+    const QPointF& pos,
+    const slint::private_api::KeyboardModifiers& modifiers) noexcept {
+  const TouchpadGesture gesture = touchpadGestureFor(modifiers);
+  const bool continued = (gesture == mTouchpadGesture);
+  const QPointF lastPos = mTouchpadLastScreenPos;
+  mTouchpadGesture = gesture;
+  mTouchpadLastScreenPos = pos;
+  if (continued && (gesture == TouchpadGesture::Pan)) {
+    // Keep the scene point under the pointer, like the middle button drag.
+    scroll(mapToScenePosPx(lastPos, 1) - mapToScenePosPx(pos, 1));
+  } else if (continued && (gesture == TouchpadGesture::Zoom)) {
+    zoom(pos, touchpadZoomFactor(pos.y() - lastPos.y()));
+  }
+  return (gesture != TouchpadGesture::None);
+}
 
 void SlintGraphicsView::scroll(const QPointF& delta) noexcept {
   Projection projection = mProjection;

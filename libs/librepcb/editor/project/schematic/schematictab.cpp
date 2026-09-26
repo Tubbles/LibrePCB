@@ -159,6 +159,13 @@ SchematicTab::SchematicTab(GuiApplication& app, SchematicEditor& editor,
       &WorkspaceSettingsItem::edited, this, [this]() {
         mView->setUseOpenGl(mApp.getWorkspace().getSettings().useOpenGl.get());
       });
+  mView->setNavigationStyle(
+      mApp.getWorkspace().getSettings().navigationStyle.get());
+  connect(&mApp.getWorkspace().getSettings().navigationStyle,
+          &WorkspaceSettingsItem::edited, this, [this]() {
+            mView->setNavigationStyle(
+                mApp.getWorkspace().getSettings().navigationStyle.get());
+          });
   connect(mView.get(), &SlintGraphicsView::transformChanged, this,
           &SchematicTab::requestRepaint);
   connect(mView.get(), &SlintGraphicsView::stateChanged, this,
