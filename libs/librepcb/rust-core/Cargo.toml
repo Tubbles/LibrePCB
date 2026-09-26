@@ -20,7 +20,7 @@ lz-str = "0.2.1"  # Keep in sync with interactive-html-bom
 
 # Interactive push and shove router engine, taken from crates.io. Its
 # source lives at https://github.com/Tubbles/pnsrouter.
-pnsrouter = "0.1"
+pnsrouter = "0.1.1"
 
 [dependencies.regex]
 version = "1.11"
