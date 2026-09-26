@@ -173,6 +173,13 @@ PackageTab::PackageTab(LibraryEditor& editor, std::unique_ptr<Package> pkg,
       &WorkspaceSettingsItem::edited, this, [this]() {
         mView->setUseOpenGl(mApp.getWorkspace().getSettings().useOpenGl.get());
       });
+  mView->setNavigationStyle(
+      mApp.getWorkspace().getSettings().navigationStyle.get());
+  connect(&mApp.getWorkspace().getSettings().navigationStyle,
+          &WorkspaceSettingsItem::edited, this, [this]() {
+            mView->setNavigationStyle(
+                mApp.getWorkspace().getSettings().navigationStyle.get());
+          });
   connect(mView.get(), &SlintGraphicsView::transformChanged, this,
           &PackageTab::requestRepaint);
   connect(mView.get(), &SlintGraphicsView::stateChanged, this,
@@ -621,6 +628,13 @@ void PackageTab::activate() noexcept {
           [this]() { onDerivedUiDataChanged.notify(); });
   connect(mOpenGlView.get(), &SlintOpenGlView::contentChanged, this,
           &PackageTab::requestRepaint);
+  mOpenGlView->setNavigationStyle(
+      mApp.getWorkspace().getSettings().navigationStyle.get());
+  connect(&mApp.getWorkspace().getSettings().navigationStyle,
+          &WorkspaceSettingsItem::edited, mOpenGlView.get(), [this]() {
+            mOpenGlView->setNavigationStyle(
+                mApp.getWorkspace().getSettings().navigationStyle.get());
+          });
 
   mOpenGlSceneBuilder = std::make_unique<OpenGlSceneBuilder>();
   connect(mOpenGlSceneBuilder.get(), &OpenGlSceneBuilder::objectAdded,

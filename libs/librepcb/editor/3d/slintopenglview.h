@@ -25,6 +25,8 @@
  ******************************************************************************/
 #include "openglobject.h"
 
+#include <librepcb/core/types/enums.h>
+
 #include <QtCore>
 #include <QtOpenGL>
 
@@ -104,6 +106,7 @@ public:
 
   // Setters
   void setBackgroundColor(QColor color) noexcept;
+  void setNavigationStyle(NavigationStyle style) noexcept;
 
   // General Methods
   void addObject(std::shared_ptr<OpenGlObject> obj) noexcept;
@@ -128,6 +131,18 @@ signals:
   void contentChanged();
 
 private:  // Methods
+  /**
+   * @brief Gestures of the touchpad navigation style, as in FreeCAD
+   *
+   * Shift with pointer motion pans, Ctrl+Shift with vertical pointer motion
+   * zooms about the pointer, Alt with pointer motion rotates.
+   */
+  enum class TouchpadGesture { None, Pan, Zoom, Rotate };
+  TouchpadGesture touchpadGestureFor(
+      const slint::private_api::KeyboardModifiers& modifiers) const noexcept;
+  bool touchpadMove(
+      const QPointF& pos,
+      const slint::private_api::KeyboardModifiers& modifiers) noexcept;
   void initializeGl() noexcept;
   void zoom(const QPointF& center, qreal factor) noexcept;
   void smoothTo(const OpenGlProjection& projection) noexcept;
@@ -151,6 +166,9 @@ private:  // Data
   QMatrix4x4 mMousePressTransform;
   QPointF mMousePressCenter;
   QSet<slint::private_api::PointerEventButton> mPressedMouseButtons;
+  NavigationStyle mNavigationStyle;
+  TouchpadGesture mTouchpadGesture;
+  QPointF mTouchpadLastPos;  ///< Pointer position of the last move
 
   // Transform Animation
   OpenGlProjection mAnimationDataStart;

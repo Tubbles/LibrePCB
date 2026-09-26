@@ -296,6 +296,26 @@
          </item>
         </layout>
        </item>
+       <item row="9" column="0">
+        <widget class="QLabel" name="lblNavigationStyle">
+         <property name="toolTip">
+          <string>In the touchpad style, Shift with pointer motion pans, and Ctrl+Shift with vertical pointer motion zooms about the pointer (moving up zooms in), in the 2D editors and the 3D viewer alike. Alt with pointer motion rotates the 3D view, and Alt instead of Shift disables grid snapping in the 2D tools. The mouse buttons and the wheel keep working as in the default style. Applies immediately.</string>
+         </property>
+         <property name="text">
+          <string>Navigation Style:</string>
+         </property>
+        </widget>
+       </item>
+       <item row="9" column="1">
+        <widget class="QComboBox" name="cbxNavigationStyle">
+         <property name="toolTip">
+          <string>In the touchpad style, Shift with pointer motion pans, and Ctrl+Shift with vertical pointer motion zooms about the pointer (moving up zooms in), in the 2D editors and the 3D viewer alike. Alt with pointer motion rotates the 3D view, and Alt instead of Shift disables grid snapping in the 2D tools. The mouse buttons and the wheel keep working as in the default style. Applies immediately.</string>
+         </property>
+         <property name="insertPolicy">
+          <enum>QComboBox::InsertPolicy::NoInsert</enum>
+         </property>
+        </widget>
+       </item>
       </layout>
      </widget>
      <widget class="QWidget" name="appearanceTab">

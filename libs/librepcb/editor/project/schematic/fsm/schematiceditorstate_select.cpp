@@ -385,7 +385,7 @@ bool SchematicEditorState_Select::processGraphicsSceneMouseMoved(
         return false;
       }
       Point pos = e.scenePos;
-      if (!e.modifiers.testFlag(Qt::ShiftModifier)) {
+      if (!e.modifiers.testFlag(EditorToolbox::snapOverrideModifier())) {
         pos.mapToGrid(getGridInterval());
       }
       const Point relPos = pos.rotated(-mSelectedImage->getRotation(),

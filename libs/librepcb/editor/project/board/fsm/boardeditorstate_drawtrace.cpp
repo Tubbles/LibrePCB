@@ -23,6 +23,7 @@
 #include "boardeditorstate_drawtrace.h"
 
 #include "../../../undostack.h"
+#include "../../../utils/editortoolbox.h"
 #include "../../cmd/cmdboardedit.h"
 #include "../../cmd/cmdboardnetsegmentadd.h"
 #include "../../cmd/cmdboardnetsegmentaddelements.h"
@@ -139,16 +140,12 @@ bool BoardEditorState_DrawTrace::processAbortCommand() noexcept {
 
 bool BoardEditorState_DrawTrace::processKeyPressed(
     const GraphicsSceneKeyEvent& e) noexcept {
-  switch (e.key) {
-    case Qt::Key_Shift:
-      if (mSubState == SubState_PositioningNetPoint) {
-        mCurrentSnapActive = false;
-        updateNetpointPositions();
-        return true;
-      }
-      break;
-    default:
-      break;
+  if (e.key == EditorToolbox::snapOverrideKey()) {
+    if (mSubState == SubState_PositioningNetPoint) {
+      mCurrentSnapActive = false;
+      updateNetpointPositions();
+      return true;
+    }
   }
 
   return false;
@@ -156,16 +153,12 @@ bool BoardEditorState_DrawTrace::processKeyPressed(
 
 bool BoardEditorState_DrawTrace::processKeyReleased(
     const GraphicsSceneKeyEvent& e) noexcept {
-  switch (e.key) {
-    case Qt::Key_Shift:
-      if (mSubState == SubState_PositioningNetPoint) {
-        mCurrentSnapActive = true;
-        updateNetpointPositions();
-        return true;
-      }
-      break;
-    default:
-      break;
+  if (e.key == EditorToolbox::snapOverrideKey()) {
+    if (mSubState == SubState_PositioningNetPoint) {
+      mCurrentSnapActive = true;
+      updateNetpointPositions();
+      return true;
+    }
   }
 
   return false;
@@ -176,7 +169,8 @@ bool BoardEditorState_DrawTrace::processGraphicsSceneMouseMoved(
   if (mSubState == SubState_PositioningNetPoint) {
     // Update snap, in case we missed the key pressed/released events for some
     // reason (e.g. focus issue).
-    mCurrentSnapActive = !e.modifiers.testFlag(Qt::ShiftModifier);
+    mCurrentSnapActive =
+        !e.modifiers.testFlag(EditorToolbox::snapOverrideModifier());
     mCursorPos = e.scenePos;
     updateNetpointPositions();
     return true;
@@ -201,7 +195,7 @@ bool BoardEditorState_DrawTrace::processGraphicsSceneLeftMouseButtonPressed(
     // To disable taking over the trace width from existing traces under the
     // cursor, SHIFT can be pressed.
     const bool autoWidthFromExistingTraces =
-        !e.modifiers.testFlag(Qt::ShiftModifier);
+        !e.modifiers.testFlag(EditorToolbox::snapOverrideModifier());
     startPositioning(scene->getBoard(), pos, autoWidthFromExistingTraces);
     return true;
   }

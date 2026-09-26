@@ -165,6 +165,9 @@ DeviceTab::DeviceTab(LibraryEditor& editor, std::unique_ptr<Device> dev,
   connect(&mApp.getWorkspace().getSettings().useOpenGl,
           &WorkspaceSettingsItem::edited, this,
           &DeviceTab::applyWorkspaceSettings);
+  connect(&mApp.getWorkspace().getSettings().navigationStyle,
+          &WorkspaceSettingsItem::edited, this,
+          &DeviceTab::applyWorkspaceSettings);
   connect(&mApp.getWorkspace().getSettings().schematicColorSchemes,
           &WorkspaceSettingsItem_ColorSchemes::colorsModified, this,
           &DeviceTab::applyWorkspaceSettings);
@@ -1223,6 +1226,8 @@ void DeviceTab::applyWorkspaceSettings() noexcept {
                                             selection.secondary);
     mComponentView->setUseOpenGl(
         mApp.getWorkspace().getSettings().useOpenGl.get());
+    mComponentView->setNavigationStyle(
+        mApp.getWorkspace().getSettings().navigationStyle.get());
   }
 
   {
@@ -1238,6 +1243,8 @@ void DeviceTab::applyWorkspaceSettings() noexcept {
                                           selection.secondary);
     mPackageView->setUseOpenGl(
         mApp.getWorkspace().getSettings().useOpenGl.get());
+    mPackageView->setNavigationStyle(
+        mApp.getWorkspace().getSettings().navigationStyle.get());
   }
 
   onDerivedUiDataChanged.notify();

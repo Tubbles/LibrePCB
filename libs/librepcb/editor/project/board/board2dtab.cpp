@@ -280,6 +280,13 @@ Board2dTab::Board2dTab(GuiApplication& app, BoardEditor& editor,
       &WorkspaceSettingsItem::edited, this, [this]() {
         mView->setUseOpenGl(mApp.getWorkspace().getSettings().useOpenGl.get());
       });
+  mView->setNavigationStyle(
+      mApp.getWorkspace().getSettings().navigationStyle.get());
+  connect(&mApp.getWorkspace().getSettings().navigationStyle,
+          &WorkspaceSettingsItem::edited, this, [this]() {
+            mView->setNavigationStyle(
+                mApp.getWorkspace().getSettings().navigationStyle.get());
+          });
   connect(mView.get(), &SlintGraphicsView::transformChanged, this,
           &Board2dTab::requestRepaint);
   connect(mView.get(), &SlintGraphicsView::stateChanged, this,

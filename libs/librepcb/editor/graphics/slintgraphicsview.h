@@ -25,6 +25,7 @@
  ******************************************************************************/
 #include "graphicsscene.h"
 
+#include <librepcb/core/types/enums.h>
 #include <librepcb/core/types/point.h>
 
 #include <QtCore>
@@ -101,6 +102,7 @@ public:
   void setUseOpenGl(bool use) noexcept;
   void setEventHandler(IF_GraphicsViewEventHandler* obj) noexcept;
   void setMirror(bool mirror) noexcept;
+  void setNavigationStyle(NavigationStyle style) noexcept;
   slint::Image render(GraphicsScene& scene, float width, float height) noexcept;
   void pointerEvent(const QPointF& pos,
                     slint::private_api::PointerEvent e) noexcept;
@@ -132,6 +134,20 @@ signals:
   void transformChanged();
 
 private:  // Methods
+  /**
+   * @brief Pan and zoom gestures of the touchpad navigation style
+   *
+   * As in FreeCAD, Shift with pointer motion pans and Ctrl+Shift with
+   * vertical pointer motion zooms about the pointer. The tools then take
+   * Alt instead of Shift to disable grid snapping, see
+   * ::librepcb::editor::EditorToolbox::snapOverrideModifier().
+   */
+  enum class TouchpadGesture { None, Pan, Zoom };
+  TouchpadGesture touchpadGestureFor(
+      const slint::private_api::KeyboardModifiers& modifiers) const noexcept;
+  bool touchpadMove(
+      const QPointF& pos,
+      const slint::private_api::KeyboardModifiers& modifiers) noexcept;
   void scroll(const QPointF& delta) noexcept;
   void zoom(QPointF center, qreal factor) noexcept;
   void smoothTo(const Projection& projection) noexcept;
@@ -149,6 +165,7 @@ private:  // Data
   Projection mProjection;
   QSizeF mViewSize;
   bool mMirror;
+  NavigationStyle mNavigationStyle;
 
   GraphicsSceneMouseEvent mMouseEvent;
   QDeadlineTimer mLeftMouseButtonDoubleClickTimer;
@@ -156,6 +173,9 @@ private:  // Data
   bool mPanning = false;
   QPointF mPanningStartScreenPos;
   QPointF mPanningStartScenePos;
+
+  TouchpadGesture mTouchpadGesture = TouchpadGesture::None;
+  QPointF mTouchpadLastScreenPos;  ///< Pointer position of the last move
 
   Projection mAnimationDataStart;
   Projection mAnimationDataDelta;

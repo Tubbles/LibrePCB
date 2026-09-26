@@ -95,7 +95,7 @@ bool PackageEditorState_DrawZone::exit() noexcept {
 
 bool PackageEditorState_DrawZone::processKeyPressed(
     const GraphicsSceneKeyEvent& e) noexcept {
-  if (e.key == Qt::Key_Shift) {
+  if (e.key == EditorToolbox::snapOverrideKey()) {
     updateCursorPosition(e.modifiers);
     return true;
   }
@@ -105,7 +105,7 @@ bool PackageEditorState_DrawZone::processKeyPressed(
 
 bool PackageEditorState_DrawZone::processKeyReleased(
     const GraphicsSceneKeyEvent& e) noexcept {
-  if (e.key == Qt::Key_Shift) {
+  if (e.key == EditorToolbox::snapOverrideKey()) {
     updateCursorPosition(e.modifiers);
     return true;
   }
@@ -300,7 +300,7 @@ bool PackageEditorState_DrawZone::addNextSegment() noexcept {
 void PackageEditorState_DrawZone::updateCursorPosition(
     Qt::KeyboardModifiers modifiers) noexcept {
   mCursorPos = mLastScenePos;
-  if (!modifiers.testFlag(Qt::ShiftModifier)) {
+  if (!modifiers.testFlag(EditorToolbox::snapOverrideModifier())) {
     mCursorPos.mapToGrid(getGridInterval());
   }
   mAdapter.fsmSetSceneCursor(mCursorPos, true, false);
@@ -358,10 +358,11 @@ void PackageEditorState_DrawZone::updateOverlayText() noexcept {
 }
 
 void PackageEditorState_DrawZone::updateStatusBarMessage() noexcept {
+  const QString snapKey =
+      EditorToolbox::modifierKeyText(EditorToolbox::snapOverrideModifier());
   QString note = " " %
       tr("(press %1 to disable snap, %2 to abort)")
-          .arg(EditorToolbox::modifierKeyText(Qt::ShiftModifier),
-               tr("right click"));
+          .arg(snapKey, tr("right click"));
 
   if (!mIsUndoCmdActive) {
     mAdapter.fsmSetStatusBarMessage(tr("Click to specify the first point") %
