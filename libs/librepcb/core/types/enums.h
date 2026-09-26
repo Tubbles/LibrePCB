@@ -54,6 +54,19 @@ enum class GridStyle : int {
   Lines,
 };
 
+/**
+ * @brief Navigation style for the 2D and 3D graphics views
+ *
+ * The touchpad style adds pan, zoom and rotate gestures made of modifier keys
+ * and pointer motion without any mouse button, modelled after FreeCAD's
+ * "Touchpad" navigation style. The mouse gestures of the default style keep
+ * working in both styles.
+ */
+enum class NavigationStyle : int {
+  Default,
+  Touchpad,
+};
+
 /*******************************************************************************
  *  End of File
  ******************************************************************************/
@@ -62,5 +75,6 @@ enum class GridStyle : int {
 
 Q_DECLARE_METATYPE(librepcb::AutoUpdateMode)
 Q_DECLARE_METATYPE(librepcb::GridStyle)
+Q_DECLARE_METATYPE(librepcb::NavigationStyle)
 
 #endif

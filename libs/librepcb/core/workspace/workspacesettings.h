@@ -214,6 +214,13 @@ public:
   WorkspaceSettingsItem_GenericValue<bool> useOpenGl;
 
   /**
+   * @brief Navigation style of the 2D and 3D graphics views
+   *
+   * Default: ::librepcb::NavigationStyle::Default
+   */
+  WorkspaceSettingsItem_GenericValue<NavigationStyle> navigationStyle;
+
+  /**
    * @brief User name
    *
    * Used when creating new library elements or projects.

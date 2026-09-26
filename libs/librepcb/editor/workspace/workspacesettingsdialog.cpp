@@ -400,6 +400,16 @@ WorkspaceSettingsDialog::WorkspaceSettingsDialog(Workspace& workspace,
     setup(mUi->cbxBoardGridStyle, mSettings.boardGridStyle);
   }
 
+  // Initialize navigation style.
+  {
+    mUi->cbxNavigationStyle->addItem(
+        tr("Default", "Navigation style"),
+        QVariant::fromValue(NavigationStyle::Default));
+    mUi->cbxNavigationStyle->addItem(
+        tr("Touchpad", "Navigation style"),
+        QVariant::fromValue(NavigationStyle::Touchpad));
+  }
+
   // Initialize automatic library update mode.
   {
     mUi->cbxLibrariesAutoUpdateMode->addItem(
@@ -742,6 +752,10 @@ void WorkspaceSettingsDialog::loadSettings() noexcept {
   // Use OpenGL
   mUi->cbxUseOpenGl->setChecked(mSettings.useOpenGl.get());
 
+  // Navigation Style
+  mUi->cbxNavigationStyle->setCurrentIndex(mUi->cbxNavigationStyle->findData(
+      QVariant::fromValue(mSettings.navigationStyle.get())));
+
   // User Name
   mUi->edtUserName->setText(mSettings.userName.get());
 
@@ -805,6 +819,12 @@ void WorkspaceSettingsDialog::saveSettings() noexcept {
 
     // Use OpenGL
     mSettings.useOpenGl.set(mUi->cbxUseOpenGl->isChecked());
+
+    // Navigation Style
+    if (mUi->cbxNavigationStyle->currentIndex() >= 0) {
+      mSettings.navigationStyle.set(
+          mUi->cbxNavigationStyle->currentData().value<NavigationStyle>());
+    }
 
     // User Name
     mSettings.userName.set(mUi->edtUserName->text().trimmed());
