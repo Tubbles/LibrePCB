@@ -23,6 +23,7 @@
 #include "boardeditorstate_routetrace.h"
 
 #include "../../../undostack.h"
+#include "../../../utils/editortoolbox.h"
 #include "../../cmd/cmdboardapplypnscommit.h"
 #include "../boardgraphicsscene.h"
 #include "../boardpnspreview.h"
@@ -254,12 +255,13 @@ bool BoardEditorState_RouteTrace::processKeyPressed(
     return false;
   }
 
+  if (e.key == EditorToolbox::snapOverrideKey()) {
+    mSnapActive = false;
+    moveToCursor();
+    return true;
+  }
+
   switch (e.key) {
-    case Qt::Key_Shift: {
-      mSnapActive = false;
-      moveToCursor();
-      return true;
-    }
     case Qt::Key_Backspace: {
       // The router clears its head when a segment is undone, so the route
       // only becomes visible again after a move.
@@ -280,14 +282,10 @@ bool BoardEditorState_RouteTrace::processKeyReleased(
     return false;
   }
 
-  switch (e.key) {
-    case Qt::Key_Shift: {
-      mSnapActive = true;
-      moveToCursor();
-      return true;
-    }
-    default:
-      break;
+  if (e.key == EditorToolbox::snapOverrideKey()) {
+    mSnapActive = true;
+    moveToCursor();
+    return true;
   }
 
   return false;
@@ -297,7 +295,7 @@ bool BoardEditorState_RouteTrace::processGraphicsSceneMouseMoved(
     const GraphicsSceneMouseEvent& e) noexcept {
   // Update snap, in case we missed the key pressed/released events for some
   // reason (e.g. focus issue).
-  mSnapActive = !e.modifiers.testFlag(Qt::ShiftModifier);
+  mSnapActive = !e.modifiers.testFlag(EditorToolbox::snapOverrideModifier());
   mCursorPos = e.scenePos;
 
   if (mPendingDrag) {
@@ -326,7 +324,7 @@ bool BoardEditorState_RouteTrace::processGraphicsSceneLeftMouseButtonPressed(
     const GraphicsSceneMouseEvent& e) noexcept {
   if (!mRouter) return false;
 
-  mSnapActive = !e.modifiers.testFlag(Qt::ShiftModifier);
+  mSnapActive = !e.modifiers.testFlag(EditorToolbox::snapOverrideModifier());
   mCursorPos = e.scenePos;
   mPendingDrag = std::nullopt;
 
@@ -358,7 +356,7 @@ bool BoardEditorState_RouteTrace::processGraphicsSceneLeftMouseButtonReleased(
     const GraphicsSceneMouseEvent& e) noexcept {
   if (!mRouter) return false;
 
-  mSnapActive = !e.modifiers.testFlag(Qt::ShiftModifier);
+  mSnapActive = !e.modifiers.testFlag(EditorToolbox::snapOverrideModifier());
   mCursorPos = e.scenePos;
 
   if (mRouter->isDragging()) {
@@ -395,7 +393,7 @@ bool BoardEditorState_RouteTrace::
     return processGraphicsSceneLeftMouseButtonPressed(e);
   }
 
-  mSnapActive = !e.modifiers.testFlag(Qt::ShiftModifier);
+  mSnapActive = !e.modifiers.testFlag(EditorToolbox::snapOverrideModifier());
   mCursorPos = e.scenePos;
   fixRoute(snapCursor(), true);
   return true;

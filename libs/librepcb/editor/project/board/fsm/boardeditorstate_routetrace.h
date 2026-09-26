@@ -313,8 +313,9 @@ private:  // Methods
    *
    * While routing, the search is restricted to the layer being routed on and
    * to the net being routed, which is what the draw trace tool does for its
-   * end anchor. Shift disables it, in which case the plain grid point is
-   * returned.
+   * end anchor. The snap override modifier of
+   * EditorToolbox::snapOverrideModifier() disables it, in which case the
+   * plain grid point is returned.
    */
   SnappedCursor snapCursor() noexcept;
 
