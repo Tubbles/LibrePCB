@@ -184,6 +184,22 @@ QString EditorToolbox::modifierKeyText(Qt::KeyboardModifier modifier) noexcept {
   }
 }
 
+static NavigationStyle sNavigationStyle = NavigationStyle::Default;
+
+void EditorToolbox::setNavigationStyle(NavigationStyle style) noexcept {
+  sNavigationStyle = style;
+}
+
+Qt::KeyboardModifier EditorToolbox::snapOverrideModifier() noexcept {
+  return (sNavigationStyle == NavigationStyle::Touchpad) ? Qt::AltModifier
+                                                         : Qt::ShiftModifier;
+}
+
+Qt::Key EditorToolbox::snapOverrideKey() noexcept {
+  return (sNavigationStyle == NavigationStyle::Touchpad) ? Qt::Key_Alt
+                                                         : Qt::Key_Shift;
+}
+
 QString EditorToolbox::toSingleLine(const QString& s) noexcept {
   return QString(s).replace("\n", "\\n");
 }

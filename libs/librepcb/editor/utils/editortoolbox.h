@@ -24,6 +24,7 @@
  *  Includes
  ******************************************************************************/
 #include <librepcb/core/library/resource.h>
+#include <librepcb/core/types/enums.h>
 #include <librepcb/core/types/point.h>
 #include <librepcb/core/types/uuid.h>
 
@@ -94,6 +95,34 @@ public:
    * @return The display text for the given modifier.
    */
   static QString modifierKeyText(Qt::KeyboardModifier modifier) noexcept;
+
+  /**
+   * @brief Set the navigation style which decides the snap override key
+   *
+   * The graphics views follow the workspace setting per view, but the
+   * tools have no access to the workspace settings, so the application
+   * sets the style here whenever the setting changes.
+   *
+   * @param style  The navigation style of the workspace settings.
+   */
+  static void setNavigationStyle(NavigationStyle style) noexcept;
+
+  /**
+   * @brief Get the modifier which disables grid snapping in the tools
+   *
+   * Shift in the default navigation style. The touchpad navigation style
+   * pans with Shift and pointer motion, so Alt takes over there.
+   *
+   * @return Qt::ShiftModifier or Qt::AltModifier.
+   */
+  static Qt::KeyboardModifier snapOverrideModifier() noexcept;
+
+  /**
+   * @brief Get the key of #snapOverrideModifier(), for key press events
+   *
+   * @return Qt::Key_Shift or Qt::Key_Alt.
+   */
+  static Qt::Key snapOverrideKey() noexcept;
 
   /**
    * @brief Escape newlines to convert a multi-line to a single-line string

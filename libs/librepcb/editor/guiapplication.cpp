@@ -114,6 +114,14 @@ GuiApplication::GuiApplication(Workspace& ws, bool fileFormatIsOutdated,
     mProjects(new UiObjectList<ProjectEditor, ui::ProjectData>()),
     mLibraries(new UiObjectList<LibraryEditor, ui::LibraryData>()),
     mWindows(new UiObjectList<MainWindow, int>()) {
+  // The tools pick their snap override key from the navigation style.
+  EditorToolbox::setNavigationStyle(ws.getSettings().navigationStyle.get());
+  connect(&ws.getSettings().navigationStyle, &WorkspaceSettingsItem::edited,
+          this, [this]() {
+            EditorToolbox::setNavigationStyle(
+                mWorkspace.getSettings().navigationStyle.get());
+          });
+
   QSettings cs;
 
   // Check if this is the first run with this application version. This can

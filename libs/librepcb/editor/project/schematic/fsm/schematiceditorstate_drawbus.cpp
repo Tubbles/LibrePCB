@@ -25,6 +25,7 @@
 #include "../../../editorcommandset.h"
 #include "../../../undocommandgroup.h"
 #include "../../../undostack.h"
+#include "../../../utils/editortoolbox.h"
 #include "../../cmd/cmdbusadd.h"
 #include "../../cmd/cmdchangebusofschematicbussegment.h"
 #include "../../cmd/cmdcombineschematicbussegments.h"
@@ -116,17 +117,10 @@ bool SchematicEditorState_DrawBus::processAbortCommand() noexcept {
 
 bool SchematicEditorState_DrawBus::processKeyPressed(
     const GraphicsSceneKeyEvent& e) noexcept {
-  switch (e.key) {
-    case Qt::Key_Shift: {
-      if (mSubState == SubState::POSITIONING_JUNCTION) {
-        updateJunctionPositions(false);
-        return true;
-      }
-      break;
-    }
-
-    default: {
-      break;
+  if (e.key == EditorToolbox::snapOverrideKey()) {
+    if (mSubState == SubState::POSITIONING_JUNCTION) {
+      updateJunctionPositions(false);
+      return true;
     }
   }
 
@@ -135,17 +129,10 @@ bool SchematicEditorState_DrawBus::processKeyPressed(
 
 bool SchematicEditorState_DrawBus::processKeyReleased(
     const GraphicsSceneKeyEvent& e) noexcept {
-  switch (e.key) {
-    case Qt::Key_Shift: {
-      if (mSubState == SubState::POSITIONING_JUNCTION) {
-        updateJunctionPositions(true);
-        return true;
-      }
-      break;
-    }
-
-    default: {
-      break;
+  if (e.key == EditorToolbox::snapOverrideKey()) {
+    if (mSubState == SubState::POSITIONING_JUNCTION) {
+      updateJunctionPositions(true);
+      return true;
     }
   }
 
@@ -157,7 +144,8 @@ bool SchematicEditorState_DrawBus::processGraphicsSceneMouseMoved(
   mCursorPos = e.scenePos;
 
   if (mSubState == SubState::POSITIONING_JUNCTION) {
-    const bool snap = !e.modifiers.testFlag(Qt::ShiftModifier);
+    const bool snap =
+        !e.modifiers.testFlag(EditorToolbox::snapOverrideModifier());
     updateJunctionPositions(snap);
     return true;
   }
@@ -174,7 +162,8 @@ bool SchematicEditorState_DrawBus::processGraphicsSceneLeftMouseButtonPressed(
   if (!scene) return false;
 
   mCursorPos = e.scenePos;
-  const bool snap = !e.modifiers.testFlag(Qt::ShiftModifier);
+  const bool snap =
+      !e.modifiers.testFlag(EditorToolbox::snapOverrideModifier());
 
   if (mSubState == SubState::IDLE) {
     // start adding junctions/lines
@@ -194,7 +183,8 @@ bool SchematicEditorState_DrawBus::
   if (!scene) return false;
 
   mCursorPos = e.scenePos;
-  const bool snap = !e.modifiers.testFlag(Qt::ShiftModifier);
+  const bool snap =
+      !e.modifiers.testFlag(EditorToolbox::snapOverrideModifier());
 
   if (mSubState == SubState::POSITIONING_JUNCTION) {
     // fix the current point and add a new point + line

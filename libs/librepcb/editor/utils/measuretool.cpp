@@ -199,7 +199,7 @@ void MeasureTool::leave() noexcept {
 
 bool MeasureTool::processKeyPressed(int key,
                                     Qt::KeyboardModifiers modifiers) noexcept {
-  if (key == Qt::Key_Shift) {
+  if (key == EditorToolbox::snapOverrideKey()) {
     updateCursorPosition(modifiers);
     return true;
   }
@@ -209,7 +209,7 @@ bool MeasureTool::processKeyPressed(int key,
 
 bool MeasureTool::processKeyReleased(int key,
                                      Qt::KeyboardModifiers modifiers) noexcept {
-  if (key == Qt::Key_Shift) {
+  if (key == EditorToolbox::snapOverrideKey()) {
     updateCursorPosition(modifiers);
     return true;
   }
@@ -352,7 +352,7 @@ void MeasureTool::updateCursorPosition(
 
   mCursorPos = mLastScenePos;
   mCursorSnapped = false;
-  if (!modifiers.testFlag(Qt::ShiftModifier)) {
+  if (!modifiers.testFlag(EditorToolbox::snapOverrideModifier())) {
     mCursorPos =
         EditorToolbox::snapPosition(mCursorPos, mScene->getGridInterval(),
                                     mSnapCandidates, &mCursorSnapped);
@@ -417,7 +417,8 @@ void MeasureTool::updateStatusBarMessage() noexcept {
       EditorCommandSet::instance().remove.getKeySequences();
   const QString disableSnapNote = " " %
       tr("(press %1 to disable snap)")
-          .arg(EditorToolbox::modifierKeyText(Qt::ShiftModifier));
+          .arg(EditorToolbox::modifierKeyText(
+              EditorToolbox::snapOverrideModifier()));
 
   if (mEndPos && (!copyKeys.isEmpty()) && (!deleteKeys.isEmpty())) {
     emit statusBarMessageChanged(

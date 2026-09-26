@@ -101,7 +101,8 @@ bool PackageEditorState_DrawPolygonBase::exit() noexcept {
 
 bool PackageEditorState_DrawPolygonBase::processKeyPressed(
     const GraphicsSceneKeyEvent& e) noexcept {
-  if ((e.key == Qt::Key_Shift) || (e.key == Qt::Key_Control)) {
+  if ((e.key == EditorToolbox::snapOverrideKey()) ||
+      (e.key == Qt::Key_Control)) {
     updateCursorPosition(e.modifiers);
     return true;
   }
@@ -111,7 +112,8 @@ bool PackageEditorState_DrawPolygonBase::processKeyPressed(
 
 bool PackageEditorState_DrawPolygonBase::processKeyReleased(
     const GraphicsSceneKeyEvent& e) noexcept {
-  if ((e.key == Qt::Key_Shift) || (e.key == Qt::Key_Control)) {
+  if ((e.key == EditorToolbox::snapOverrideKey()) ||
+      (e.key == Qt::Key_Control)) {
     updateCursorPosition(e.modifiers);
     return true;
   }
@@ -374,7 +376,7 @@ void PackageEditorState_DrawPolygonBase::updateCursorPosition(
     Qt::KeyboardModifiers modifiers) noexcept {
   mCursorPos = mLastScenePos;
   bool snapped = false;
-  if ((!modifiers.testFlag(Qt::ShiftModifier)) &&
+  if ((!modifiers.testFlag(EditorToolbox::snapOverrideModifier())) &&
       (!modifiers.testFlag(Qt::ControlModifier))) {
     mCursorPos = EditorToolbox::snapPosition(mCursorPos, getGridInterval(),
                                              mSnapCandidates, &snapped);
@@ -535,9 +537,11 @@ void PackageEditorState_DrawPolygonBase::updateOverlayText() noexcept {
 }
 
 void PackageEditorState_DrawPolygonBase::updateStatusBarMessage() noexcept {
+  const QString snapKey =
+      EditorToolbox::modifierKeyText(EditorToolbox::snapOverrideModifier());
   QString note = " " %
       tr("(press %1 to disable snap, %2 to abort)")
-          .arg(EditorToolbox::modifierKeyText(Qt::ShiftModifier) % "/" %
+          .arg(snapKey % "/" %
                EditorToolbox::modifierKeyText(Qt::ControlModifier))
           .arg(tr("right click"));
 
