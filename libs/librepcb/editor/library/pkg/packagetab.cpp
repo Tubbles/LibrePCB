@@ -628,6 +628,13 @@ void PackageTab::activate() noexcept {
           [this]() { onDerivedUiDataChanged.notify(); });
   connect(mOpenGlView.get(), &SlintOpenGlView::contentChanged, this,
           &PackageTab::requestRepaint);
+  mOpenGlView->setNavigationStyle(
+      mApp.getWorkspace().getSettings().navigationStyle.get());
+  connect(&mApp.getWorkspace().getSettings().navigationStyle,
+          &WorkspaceSettingsItem::edited, mOpenGlView.get(), [this]() {
+            mOpenGlView->setNavigationStyle(
+                mApp.getWorkspace().getSettings().navigationStyle.get());
+          });
 
   mOpenGlSceneBuilder = std::make_unique<OpenGlSceneBuilder>();
   connect(mOpenGlSceneBuilder.get(), &OpenGlSceneBuilder::objectAdded,

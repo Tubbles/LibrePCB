@@ -112,6 +112,7 @@ add_executable(
   eagleimport/eaglelibraryimporttest.cpp
   eagleimport/eagleprojectimporttest.cpp
   eagleimport/eagletypeconvertertest.cpp
+  editor/3d/slintopenglviewtest.cpp
   editor/dialogs/dxfimportdialogtest.cpp
   editor/dialogs/graphicsexportdialogtest.cpp
   editor/graphics/slintgraphicsviewtest.cpp

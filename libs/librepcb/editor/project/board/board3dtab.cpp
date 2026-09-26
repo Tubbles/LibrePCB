@@ -185,6 +185,13 @@ void Board3dTab::activate() noexcept {
             [this]() { onDerivedUiDataChanged.notify(); });
     connect(mView.get(), &SlintOpenGlView::contentChanged, this,
             &Board3dTab::requestRepaint);
+    mView->setNavigationStyle(
+        mApp.getWorkspace().getSettings().navigationStyle.get());
+    connect(&mApp.getWorkspace().getSettings().navigationStyle,
+            &WorkspaceSettingsItem::edited, mView.get(), [this]() {
+              mView->setNavigationStyle(
+                  mApp.getWorkspace().getSettings().navigationStyle.get());
+            });
   }
 
   if (!mSceneBuilder) {
