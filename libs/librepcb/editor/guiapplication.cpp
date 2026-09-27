@@ -31,6 +31,8 @@
 #include "mainwindow.h"
 #include "notification.h"
 #include "notificationsmodel.h"
+#include "project/board/pnsrecordingwindow.h"
+#include "project/board/pnssessionrecorder.h"
 #include "project/newprojectwizard/newprojectwizard.h"
 #include "project/projecteditor.h"
 #include "utils/editortoolbox.h"
@@ -105,6 +107,7 @@ GuiApplication::GuiApplication(Workspace& ws, bool fileFormatIsOutdated,
     mTheme(theme),
     mLibrariesContainStandardComponents(false),
     mPreviewLayers(GraphicsLayerList::previewLayers(&ws.getSettings())),
+    mPnsSessionRecorder(new PnsSessionRecorder()),
     mLibraryElementCache(new LibraryElementCache(ws.getLibraryDb())),
     mNotifications(new NotificationsModel(ws)),
     mQuickAccessModel(new QuickAccessModel(ws)),
@@ -722,6 +725,47 @@ void GuiApplication::openProjectLibraryUpdater(
             });
   }
   mProjectLibraryUpdater->show();
+}
+
+/*******************************************************************************
+ *  Push & Shove Router
+ ******************************************************************************/
+
+void GuiApplication::startPnsSessionRecording(QWidget* parent) noexcept {
+  if (mPnsRecordingWindow) {
+    mPnsRecordingWindow->show();
+    mPnsRecordingWindow->raise();
+    mPnsRecordingWindow->activateWindow();
+    return;
+  }
+
+  QSettings cs;
+  const QString csKey = "pns_session_recording/directory";
+  const QString dir = FileDialog::getExistingDirectory(
+      parent, tr("Choose Where To Write Routing Session Recordings"),
+      cs.value(csKey).toString());
+  if (dir.isEmpty()) {
+    return;  // Aborted by the user.
+  }
+  const FilePath fp(dir);
+  if (!fp.isExistingDir()) {
+    QMessageBox::critical(
+        parent, tr("Error"),
+        tr("The directory '%1' does not exist.").arg(fp.toNative()));
+    return;
+  }
+  cs.setValue(csKey, dir);
+
+  mPnsSessionRecorder->start(fp);
+
+  PnsRecordingWindow* win =
+      new PnsRecordingWindow(*mPnsSessionRecorder, parent);
+  // Destruction rather than close, so that the recording is stopped even
+  // when the window goes away with its parent.
+  connect(win, &QObject::destroyed, this,
+          [this]() { mPnsSessionRecorder->stop(); });
+  mPnsRecordingWindow = win;
+  win->show();
 }
 
 /*******************************************************************************

@@ -1,0 +1,3519 @@
+//! FFI for the [`pnsrouter`](https://docs.rs/pnsrouter) interactive push
+//! and shove router.
+//!
+//! Two owned Rust objects cross the boundary as opaque pointers, in the
+//! style of [`super::ibom_ffi`]:
+//!
+//! - [`PnsSnapshot`] is built up call by call from C++, where
+//!   `librepcb::BoardPnsSnapshot` walks the board, and holds a
+//!   [`WorldSnapshot`] plus the rule table the resolver reads. It also
+//!   answers the debug queries the unit tests use.
+//! - [`PnsRouter`] is the routing session. It is created from a snapshot,
+//!   which it consumes, so a snapshot handle is dead after
+//!   [`ffi_pnsrouter_new`] and must not be deleted again.
+//!
+//! Coordinates cross as `i64` nanometres, which is what LibrePCB's
+//! `Length` holds, and are narrowed to the engine's `i32` nanometres by
+//! [`to_coord`]. A coordinate outside the safe range is reported as
+//! [`PnsResult::CoordinateOutOfRange`] rather than wrapped silently; the
+//! C++ builder turns that into a `RuntimeError` naming the board item.
+
+use super::cpp_ffi::{qstring_set, QString};
+use pnsrouter::geometry::direction45::CornerMode;
+use pnsrouter::geometry::line_chain::LineChain;
+use pnsrouter::geometry::seg::Seg;
+use pnsrouter::geometry::shape::Shape;
+use pnsrouter::geometry::vec2::Vec2;
+use pnsrouter::item::{HostId, Kind, LayerRange, NetId, ViaType};
+use pnsrouter::meander::{
+  LengthTarget, MeanderSettings, MeanderSettingsRequest, MeanderSide,
+  MeanderStyle, TuningStatus,
+};
+use pnsrouter::node::World;
+use pnsrouter::placer::TuningMode;
+use pnsrouter::router::{
+  CommitDiff, FixOutcome, NewGeometry, NewItem, PreviewFrame, PreviewStyle,
+  PreviewVia, RoutedNets, Router, RouterState, StartError, TuningInfo,
+};
+use pnsrouter::rules::{
+  Constraint, ConstraintType, ItemRef, Keepout, RuleResolver,
+};
+use pnsrouter::settings::{RouterMode, RoutingSettings, Sizes};
+use pnsrouter::snapshot::{
+  HostIndex, WorldGeometry, WorldItem, WorldItemFlags, WorldSnapshot,
+};
+
+/// The largest coordinate magnitude the engine accepts, in nanometres.
+///
+/// The engine works in `i32` nanometres, about plus or minus 2.147 m. The
+/// limit is set a little inside that so that inflating a shape by the
+/// broad phase clearance near the edge of the board cannot wrap. See the
+/// integration design note, section 1.4.
+const MAX_COORDINATE: i64 = 2_000_000_000;
+
+/// What went wrong, if anything.
+///
+/// Every snapshot builder entry point answers with one of these instead of
+/// panicking, so that the C++ side can raise a `RuntimeError` naming the
+/// board item that could not be converted.
+#[repr(C)]
+#[allow(dead_code)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum PnsResult {
+  /// The call succeeded.
+  Ok = 0,
+  /// A coordinate was outside plus or minus 2 metres.
+  CoordinateOutOfRange = 1,
+  /// A polygon shape carried fewer than three vertices.
+  DegeneratePolygon = 2,
+  /// The layer range was empty or outside the board's copper stack.
+  InvalidLayerRange = 3,
+  /// A debug query named a host id the snapshot does not know.
+  UnknownItem = 4,
+  /// A clearance query answered "these two can never collide".
+  NoClearance = 5,
+}
+
+/// Which shape of the small geometry vocabulary a [`PnsShape`] carries.
+///
+/// The four the engine has native support for. Keeping circles and
+/// rectangles native rather than polygonising everything is what keeps the
+/// collision inner loop cheap; see the integration design note, section
+/// 1.2.
+///
+/// There is deliberately no arc, although the engine has one
+/// (`pnsrouter::geometry::shape::ShapeKind::Arc`). Every shape that
+/// crosses here is written by a LibrePCB board object, and the curved
+/// copper LibrePCB does store, a polygon or a zone, arrives flattened as
+/// [`PnsShapeKind::Polygon`]
+/// (`libs/librepcb/core/project/board/boardpnssnapshot.cpp:106`). A trace
+/// carries no angle at all
+/// (`libs/librepcb/core/geometry/trace.cpp:236`), so the snapshot side has
+/// no arc adder either and a snapshot never holds an arc item.
+#[repr(C)]
+#[allow(dead_code)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum PnsShapeKind {
+  /// A circle of [`PnsShape::center`] and [`PnsShape::radius`].
+  Circle = 0,
+  /// A rectangle centred on [`PnsShape::center`], of
+  /// [`PnsShape::half_size`], with corner radius [`PnsShape::radius`].
+  Rect = 1,
+  /// A capsule from [`PnsShape::p1`] to [`PnsShape::p2`] of full width
+  /// [`PnsShape::radius`].
+  Segment = 2,
+  /// A closed polygon of [`PnsShape::vertices`].
+  Polygon = 3,
+}
+
+/// One point in host coordinates, nanometres.
+///
+/// Mirrors LibrePCB's `Point`, whose two `Length` members are `int64_t`
+/// nanometres.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct PnsPoint {
+  /// The x coordinate in nanometres.
+  pub x: i64,
+  /// The y coordinate in nanometres.
+  pub y: i64,
+}
+
+/// One obstacle shape.
+///
+/// A flat struct rather than a tagged union so that cbindgen can describe
+/// it to C++ without a variant type. Only the fields
+/// [`PnsShape::kind`] names are read; the rest may hold anything.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct PnsShape {
+  /// Which fields below are meaningful.
+  pub kind: PnsShapeKind,
+  /// The centre of a circle or of a rectangle.
+  pub center: PnsPoint,
+  /// A circle radius, a rectangle corner radius, or a capsule's full
+  /// width.
+  pub radius: i64,
+  /// Half the width and half the height of a rectangle.
+  pub half_size: PnsPoint,
+  /// The first end of a capsule.
+  pub p1: PnsPoint,
+  /// The second end of a capsule.
+  pub p2: PnsPoint,
+  /// The vertices of a polygon, never null even when the count is zero.
+  pub vertices: *const PnsPoint,
+  /// How many vertices [`PnsShape::vertices`] points at.
+  pub vertex_count: usize,
+}
+
+/// The part of a snapshot item that does not depend on its geometry.
+///
+/// Port of the common fields of `pnsrouter::snapshot::WorldItem`.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct PnsItemHeader {
+  /// The host's own handle for the board object this came from, counted
+  /// from one so that zero can serve as a null.
+  pub host_id: u64,
+  /// The net, counted from one, or zero for an object with no net at all.
+  pub net: u32,
+  /// The first dense copper layer index the item occupies.
+  pub layer_start: i32,
+  /// The last dense copper layer index the item occupies, inclusive.
+  pub layer_end: i32,
+  /// Whether the user pinned the object in place.
+  pub locked: bool,
+  /// Whether a trace may start or end on the object.
+  pub routable: bool,
+  /// Whether the object is a pad on a pin with no internal connection.
+  pub free_pad: bool,
+  /// Whether the object became several engine items.
+  pub compound_primitive: bool,
+  /// Whether the object is a board edge, which picks up the copper to
+  /// board clearance rule.
+  pub board_edge: bool,
+  /// Whether the object is a keepout area, which excludes the copper the
+  /// router places instead of keeping a distance from it.
+  pub keepout: bool,
+  /// The pad's own copper clearance override in nanometres, or a negative
+  /// value when the object has none.
+  pub copper_clearance: i64,
+}
+
+/// A straight track.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct PnsSegmentGeometry {
+  /// One end of the centre line.
+  pub p1: PnsPoint,
+  /// The other end of the centre line.
+  pub p2: PnsPoint,
+  /// The full track width in nanometres.
+  pub width: i64,
+}
+
+/// How far through the copper stack a via reaches.
+///
+/// Wrapper for the three of `pnsrouter::item::ViaType` LibrePCB can tell
+/// apart through `Via::isBlind` and `Via::isBuried`.
+#[repr(C)]
+#[allow(dead_code)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum PnsViaType {
+  /// All the way through the board.
+  Through = 0,
+  /// From an outer layer to an inner one.
+  Blind = 1,
+  /// Between two inner layers.
+  Buried = 2,
+}
+
+/// A plated through, blind or buried via.
+///
+/// The engine drills the hole itself from the drill diameter, so the host
+/// never fills a hole for a via.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct PnsViaGeometry {
+  /// The centre.
+  pub pos: PnsPoint,
+  /// The copper diameter in nanometres.
+  pub diameter: i64,
+  /// The drill diameter in nanometres.
+  pub drill: i64,
+  /// How far through the copper stack the via reaches.
+  pub via_type: PnsViaType,
+  /// Whether the via has no net yet.
+  pub is_free: bool,
+}
+
+/// A pad, a board outline, or a copper graphic.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct PnsSolidGeometry {
+  /// The copper, in board coordinates.
+  pub shape: PnsShape,
+  /// The point a trace snaps to.
+  pub pos: PnsPoint,
+  /// Whether [`PnsSolidGeometry::hole`] is meaningful.
+  pub has_hole: bool,
+  /// The shape drilled through the copper.
+  pub hole: PnsShape,
+}
+
+/// A hole with no copper of its own, such as a board mounting hole.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct PnsHoleGeometry {
+  /// The drilled shape.
+  pub shape: PnsShape,
+}
+
+/// The board wide design rule values the resolver reads.
+///
+/// Wrapper for `BoardDesignRuleCheckSettings` and `BoardDesignRules`; see
+/// the integration design note, section 2.1. Every value is in
+/// nanometres.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct PnsBoardRules {
+  /// `BoardDesignRuleCheckSettings::getMinCopperCopperClearance`.
+  pub min_copper_copper_clearance: i64,
+  /// `BoardDesignRuleCheckSettings::getMinCopperBoardClearance`.
+  pub min_copper_board_clearance: i64,
+  /// `BoardDesignRuleCheckSettings::getMinCopperNpthClearance`.
+  pub min_copper_npth_clearance: i64,
+  /// `BoardDesignRuleCheckSettings::getMinDrillDrillClearance`.
+  pub min_drill_drill_clearance: i64,
+  /// `BoardDesignRuleCheckSettings::getMinDrillBoardClearance`.
+  pub min_drill_board_clearance: i64,
+  /// `BoardDesignRuleCheckSettings::getMinCopperWidth`.
+  pub min_copper_width: i64,
+  /// `BoardDesignRuleCheckSettings::getMinPthDrillDiameter`.
+  pub min_pth_drill_diameter: i64,
+  /// `BoardDesignRules::getDefaultTraceWidth`.
+  pub default_trace_width: i64,
+  /// `BoardDesignRules::getDefaultViaDrillDiameter`.
+  pub default_via_drill_diameter: i64,
+}
+
+/// The per net class design rule values the resolver reads.
+///
+/// Wrapper for `NetClass`; see the integration design note, section 2.1.
+/// The two defaults are zero when the net class does not set them, which
+/// is how `std::optional` crosses here.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct PnsNetClassRules {
+  /// `NetClass::getMinCopperCopperClearance`.
+  pub min_copper_copper_clearance: i64,
+  /// `NetClass::getMinCopperWidth`.
+  pub min_copper_width: i64,
+  /// `NetClass::getMinViaDrillDiameter`.
+  pub min_via_drill_diameter: i64,
+  /// `NetClass::getDefaultTraceWidth`, or zero when it is not set.
+  pub default_trace_width: i64,
+  /// `NetClass::getDefaultViaDrill`, or zero when it is not set.
+  pub default_via_drill: i64,
+}
+
+/// How many items of each kind a snapshot holds.
+///
+/// A debug accessor for the unit tests, which have no other way to see
+/// what the builder produced.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default)]
+pub struct PnsSnapshotStats {
+  /// How many copper layers the board has.
+  pub copper_layer_count: u8,
+  /// The broad phase inflation radius in nanometres.
+  pub max_clearance: i32,
+  /// How many items the snapshot holds in total.
+  pub item_count: usize,
+  /// How many of them are tracks.
+  pub segment_count: usize,
+  /// How many of them are vias.
+  pub via_count: usize,
+  /// How many of them are solids.
+  pub solid_count: usize,
+  /// How many of them are bare holes.
+  pub hole_count: usize,
+  /// How many solids carry a drilled hole.
+  pub drilled_solid_count: usize,
+  /// How many nets the snapshot knows.
+  pub net_count: usize,
+  /// How many net classes the snapshot knows.
+  pub net_class_count: usize,
+  /// How many items are keepout obstacles, which is one per triangle of
+  /// every keepout zone on every copper layer the zone covers.
+  pub keepout_count: usize,
+}
+
+/// Which of a host object's two engine items a debug query means.
+///
+/// A drilled pad becomes a solid plus a hole that the engine creates
+/// itself, and the hole is the interesting side of a hole clearance
+/// query.
+#[repr(C)]
+#[allow(dead_code)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum PnsItemRole {
+  /// The copper item the host object became.
+  Copper = 0,
+  /// The hole the engine drilled through it.
+  Hole = 1,
+}
+
+/// Which design rule a debug constraint query means.
+///
+/// A subset of `pnsrouter::rules::ConstraintType`, holding the ones
+/// LibrePCB can answer; see the integration design note, section 2.2.
+#[repr(C)]
+#[allow(dead_code)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum PnsConstraintKind {
+  /// Copper to copper clearance.
+  Clearance = 0,
+  /// Track width.
+  Width = 1,
+  /// Via drill diameter.
+  ViaHole = 2,
+  /// Copper to board edge clearance.
+  EdgeClearance = 3,
+  /// Hole to copper clearance.
+  HoleClearance = 4,
+  /// Hole to hole clearance.
+  HoleToHole = 5,
+}
+
+/// The settings a routing session starts with.
+///
+/// Only the values the host has a control for. Everything else stays at
+/// `RoutingSettings::default`, which reproduces KiCad's own constructor.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct PnsRouterSettings {
+  /// Zero for mark obstacles, one for shove, two for walkaround, which is
+  /// `pnsrouter::settings::RouterMode`'s own numbering.
+  pub mode: u8,
+  /// The track width to place, in nanometres.
+  pub track_width: i64,
+  /// The via copper diameter to place, in nanometres.
+  pub via_diameter: i64,
+  /// The via drill diameter to place, in nanometres.
+  pub via_drill: i64,
+  /// How many times the shove may push before it gives up and the router
+  /// falls back to walking around.
+  ///
+  /// `RoutingSettings::shove_iteration_limit`, whose default is KiCad's
+  /// 250. The host is expected to keep it in a sane range. Zero would make
+  /// every shove fail immediately.
+  pub shove_iteration_limit: u32,
+  /// Whether a route which breaks a rule may be committed anyway.
+  ///
+  /// `RoutingSettings::allow_drc_violations`, KiCad's "Allow DRC
+  /// violations". The engine only honours it in mark obstacles mode, which
+  /// is the mode whose job is to show what a route breaks, so it changes
+  /// nothing in the other two.
+  pub allow_drc_violations: bool,
+  /// Whether corners are built at 90 degrees instead of 45.
+  ///
+  /// `RoutingSettings::corner_mode`, of which this boundary offers the two
+  /// mitered ones: false is `CornerMode::Mitered45` and true is
+  /// `CornerMode::Mitered90`.
+  ///
+  /// A boolean rather than the engine's four valued enum, and that is the
+  /// refusal of `CornerMode::Rounded45` and `CornerMode::Rounded90`
+  /// itself: a rounded corner is an arc, a LibrePCB `Trace` serialises no
+  /// angle (`libs/librepcb/core/geometry/trace.cpp:236`), and a value that
+  /// cannot be expressed needs no code to reject it and cannot be reached
+  /// by a host that forgets to. If the file format ever carries an arc
+  /// trace, this field becomes the enum and the applier grows the arm
+  /// [`PnsNewGeometryKind::Arc`] documents.
+  pub corner_mode_90: bool,
+  /// Whether the session records everything it is driven with.
+  ///
+  /// Read by [`ffi_pnsrouter_new`] only, because a recording has to start
+  /// from the snapshot the session was built on and that snapshot is gone
+  /// by the time [`ffi_pnsrouter_set_settings`] runs. It is ignored there
+  /// rather than refused, so that a host can hand the same struct to both
+  /// entry points.
+  pub record_session: bool,
+  /// The width of one track of a differential pair, in nanometres.
+  ///
+  /// `Sizes::diff_pair_width`. Zero keeps the crate's own default, which
+  /// is KiCad's 0.125 mm.
+  pub diff_pair_width: i64,
+  /// The copper gap between the two tracks of a differential pair, in
+  /// nanometres.
+  ///
+  /// `Sizes::diff_pair_gap`. Zero keeps the crate's own default, which is
+  /// KiCad's 0.18 mm. It has to reach the board's minimum copper to copper
+  /// clearance or every pair start is refused with
+  /// [`PnsStartResult::PairGapBelowMinClearance`].
+  pub diff_pair_gap: i64,
+  /// The gap between the two vias of a differential pair, in nanometres.
+  ///
+  /// `Sizes::diff_pair_via_gap`. Zero means "the same as the track gap",
+  /// which is what `Sizes::diff_pair_via_gap_same_as_trace_gap` selects.
+  pub diff_pair_via_gap: i64,
+}
+
+// ---------------------------------------------------------------------
+// Rule resolver
+// ---------------------------------------------------------------------
+
+/// What the resolver knows about one host object.
+#[derive(Copy, Clone, Debug, Default)]
+struct HostRules {
+  /// The pad's own copper clearance override, or `None`.
+  copper_clearance: Option<i32>,
+  /// Whether the object is a board edge.
+  board_edge: bool,
+  /// Whether the object is a keepout area.
+  keepout: bool,
+}
+
+/// LibrePCB's design rules as a table the resolver reads without ever
+/// calling back into C++.
+///
+/// Reproduces `BoardDesignRuleCheckData`'s `std::max` combination of a net
+/// class value with the board setting
+/// (`libs/librepcb/core/project/board/drc/boarddesignrulecheckdata.h:212`
+/// onwards), so that the router cannot produce a board that fails
+/// LibrePCB's own design rule check.
+#[derive(Clone, Debug)]
+pub struct LibrePcbRules {
+  /// The board wide values, narrowed to nanometre `i32`.
+  board: BoardRuleValues,
+  /// The net class values, in the order the host added them.
+  net_classes: Vec<NetClassRuleValues>,
+  /// The net class index of each net, in `NetId` order.
+  nets: Vec<usize>,
+  /// The differential pair partner of each net, in `NetId` order, and
+  /// `None` for a net which is not half of a pair.
+  ///
+  /// LibrePCB derives its pairs from the net signal names
+  /// (`librepcb::DifferentialPairs`), so this is a plain table the host
+  /// fills in once per snapshot with
+  /// [`ffi_pnsrouter_snapshot_set_net_partner`].
+  net_partners: Vec<Option<NetId>>,
+  /// The pair polarity of each net, in `NetId` order: `1` for the positive
+  /// half, `-1` for the negative one and `0` for a net which is not half
+  /// of a pair.
+  net_polarities: Vec<i32>,
+  /// What each host object contributes, indexed by host id. Entry zero is
+  /// the unused null id.
+  hosts: Vec<HostRules>,
+  /// The largest clearance any query below can answer.
+  max_clearance: i32,
+  /// The copper gap between the two tracks of a differential pair, in
+  /// nanometres, or zero while no session has set one.
+  ///
+  /// LibrePCB has no design rule for it: the gap is the number the router
+  /// toolbar shows, so the [`ConstraintType::DiffPairGap`] answer below is
+  /// that number mirrored back rather than a rule the geometry is checked
+  /// against. Written by [`ffi_pnsrouter_new`] from
+  /// [`PnsRouterSettings::diff_pair_gap`] before the table is handed to
+  /// the session, because the crate takes the resolver by value and has no
+  /// setter for it; a toolbar change therefore reaches the constraint on
+  /// the next session, which the tool builds after every commit.
+  diff_pair_gap: i32,
+}
+
+/// [`PnsBoardRules`] after the range check.
+#[derive(Copy, Clone, Debug, Default)]
+struct BoardRuleValues {
+  /// Copper to copper.
+  min_copper_copper_clearance: i32,
+  /// Copper to board edge.
+  min_copper_board_clearance: i32,
+  /// Copper to non plated hole.
+  min_copper_npth_clearance: i32,
+  /// Hole to hole.
+  min_drill_drill_clearance: i32,
+  /// Hole to board edge.
+  min_drill_board_clearance: i32,
+  /// The smallest permitted copper width.
+  min_copper_width: i32,
+  /// The smallest permitted plated hole diameter.
+  min_pth_drill_diameter: i32,
+  /// The width a new trace starts at.
+  default_trace_width: i32,
+  /// The drill a new via starts at.
+  default_via_drill_diameter: i32,
+}
+
+/// [`PnsNetClassRules`] after the range check.
+#[derive(Copy, Clone, Debug, Default)]
+struct NetClassRuleValues {
+  /// Copper to copper.
+  min_copper_copper_clearance: i32,
+  /// The smallest permitted copper width.
+  min_copper_width: i32,
+  /// The smallest permitted via drill diameter.
+  min_via_drill_diameter: i32,
+  /// The width a new trace on this net class starts at, or zero.
+  default_trace_width: i32,
+  /// The drill a new via on this net class starts at, or zero.
+  default_via_drill: i32,
+}
+
+impl LibrePcbRules {
+  /// An empty table with every rule at zero.
+  fn new() -> Self {
+    Self {
+      board: BoardRuleValues::default(),
+      net_classes: Vec::new(),
+      nets: Vec::new(),
+      net_partners: Vec::new(),
+      net_polarities: Vec::new(),
+      hosts: vec![HostRules::default()],
+      max_clearance: 0,
+      diff_pair_gap: 0,
+    }
+  }
+
+  /// The other half of the differential pair a net belongs to.
+  fn partner_of(&self, net: NetId) -> Option<NetId> {
+    *self.net_partners.get(net.0 as usize)?
+  }
+
+  /// Which half of a differential pair a net is, zero for neither.
+  fn polarity_of(&self, net: NetId) -> i32 {
+    self
+      .net_polarities
+      .get(net.0 as usize)
+      .copied()
+      .unwrap_or(0)
+  }
+
+  /// The net class values of a net, or the all zero defaults.
+  fn net_class_of(&self, net: Option<NetId>) -> NetClassRuleValues {
+    let Some(net) = net else {
+      return NetClassRuleValues::default();
+    };
+
+    self
+      .nets
+      .get(net.0 as usize)
+      .and_then(|index| self.net_classes.get(*index))
+      .copied()
+      .unwrap_or_default()
+  }
+
+  /// What the resolver knows about the host object an item came from.
+  fn host_rules_of(&self, item: ItemRef<'_>) -> HostRules {
+    item
+      .item()
+      .host_id()
+      .and_then(|host| self.hosts.get(host.0 as usize))
+      .copied()
+      .unwrap_or_default()
+  }
+
+  /// The copper to copper clearance one side of a pair asks for.
+  ///
+  /// The `std::max` of the board setting, the net class setting and the
+  /// pad's own override, which is
+  /// `BoardDesignRuleCheckData::getMinCopperCopperClearance` plus the pad
+  /// override the design rule check applies separately.
+  fn copper_clearance_of(&self, item: ItemRef<'_>) -> i32 {
+    let net_class = self.net_class_of(item.item().net());
+    let host = self.host_rules_of(item);
+
+    self
+      .board
+      .min_copper_copper_clearance
+      .max(net_class.min_copper_copper_clearance)
+      .max(host.copper_clearance.unwrap_or(0))
+  }
+
+  /// The largest clearance [`LibrePcbRules::clearance`] can answer.
+  ///
+  /// Exact by construction: every branch of the ladder takes a maximum
+  /// over the same inputs this maximum runs over. See the integration
+  /// design note, section 2.3.
+  fn recompute_max_clearance(&mut self) {
+    let mut max = self
+      .board
+      .min_copper_copper_clearance
+      .max(self.board.min_copper_board_clearance)
+      .max(self.board.min_copper_npth_clearance)
+      .max(self.board.min_drill_drill_clearance)
+      .max(self.board.min_drill_board_clearance);
+
+    for net_class in &self.net_classes {
+      max = max.max(net_class.min_copper_copper_clearance);
+    }
+
+    for host in &self.hosts {
+      max = max.max(host.copper_clearance.unwrap_or(0));
+    }
+
+    self.max_clearance = max;
+  }
+
+  /// The minimum copper width of a net, the `std::max` of the board
+  /// setting and the net class setting.
+  ///
+  /// Port of `BoardDesignRuleCheckData::getMinCopperWidth`.
+  fn min_copper_width(&self, net: Option<NetId>) -> i32 {
+    self
+      .board
+      .min_copper_width
+      .max(self.net_class_of(net).min_copper_width)
+  }
+
+  /// The minimum via drill diameter of a net, the `std::max` of the board
+  /// setting and the net class setting.
+  ///
+  /// Port of `BoardDesignRuleCheckData::getMinViaDrillDiameter`.
+  fn min_via_drill_diameter(&self, net: Option<NetId>) -> i32 {
+    self
+      .board
+      .min_pth_drill_diameter
+      .max(self.net_class_of(net).min_via_drill_diameter)
+  }
+}
+
+impl RuleResolver for LibrePcbRules {
+  /// The clearance ladder of the integration design note, section 2.2.
+  ///
+  /// The same shape as `pnsrouter::rules::FixedClearance`, with the board
+  /// edge rung added and with the copper rung reading the per net class
+  /// and per pad values instead of one constant. There is no `else`
+  /// between the hole rungs and the copper rung, deliberately: KiCad's
+  /// own resolver lets a plated hole pick up both.
+  fn clearance(
+    &self,
+    a: ItemRef<'_>,
+    b: Option<ItemRef<'_>>,
+    use_epsilon: bool,
+  ) -> Option<i32> {
+    let a_is_hole = self.is_drilled_hole(a);
+    let b_is_hole = b.is_some_and(|b| self.is_drilled_hole(b));
+
+    // A null net is never the same as anything, not even as another null
+    // net.
+    let same_net = b.is_some_and(|b| {
+      a.item().net().is_some() && a.item().net() == b.item().net()
+    });
+    let free_pad =
+      b.is_some_and(|b| a.item().is_free_pad() || b.item().is_free_pad());
+    let board_edge = self.host_rules_of(a).board_edge
+      || b.is_some_and(|b| self.host_rules_of(b).board_edge);
+
+    let mut result = 0;
+
+    if a_is_hole && b_is_hole {
+      result = result.max(self.board.min_drill_drill_clearance);
+    } else if (a_is_hole || b_is_hole) && !same_net {
+      result = result.max(self.board.min_copper_npth_clearance);
+    }
+
+    if !a_is_hole && !b_is_hole && !same_net && !free_pad {
+      let mut copper = self.copper_clearance_of(a);
+
+      if let Some(b) = b {
+        copper = copper.max(self.copper_clearance_of(b));
+      }
+
+      result = result.max(copper);
+    }
+
+    if board_edge {
+      result = result.max(self.board.min_copper_board_clearance);
+
+      if a_is_hole || b_is_hole {
+        result = result.max(self.board.min_drill_board_clearance);
+      }
+    }
+
+    debug_assert!(
+      result <= self.max_clearance,
+      "a clearance of {result} exceeds max_clearance {}",
+      self.max_clearance
+    );
+
+    if (same_net || free_pad) && result == 0 {
+      return None;
+    }
+
+    if use_epsilon && result > 0 {
+      result = (result - self.clearance_epsilon()).max(0);
+    }
+
+    Some(result)
+  }
+
+  /// Zero. LibrePCB has no design rule check epsilon, which makes the
+  /// router marginally stricter than KiCad, the safe direction.
+  fn clearance_epsilon(&self) -> i32 {
+    0
+  }
+
+  /// The four rules of the integration design note, section 2.2, that
+  /// LibrePCB can answer as a plain number.
+  ///
+  /// `ViaDiameter` is not among them: LibrePCB expresses it as an annular
+  /// ring ratio of the drill rather than as an absolute length, so it
+  /// cannot be answered without the drill diameter the caller does not
+  /// pass.
+  fn constraint(
+    &self,
+    constraint_type: ConstraintType,
+    a: ItemRef<'_>,
+    b: Option<ItemRef<'_>>,
+    _layer: i32,
+  ) -> Option<Constraint> {
+    let net = a.item().net();
+    let net_class = self.net_class_of(net);
+
+    let (min, opt) = match constraint_type {
+      ConstraintType::Clearance => (self.clearance(a, b, false)?, 0),
+      ConstraintType::Width => (
+        self.min_copper_width(net),
+        if net_class.default_trace_width > 0 {
+          net_class.default_trace_width
+        } else {
+          self.board.default_trace_width
+        },
+      ),
+      ConstraintType::ViaHole => (
+        self.min_via_drill_diameter(net),
+        if net_class.default_via_drill > 0 {
+          net_class.default_via_drill
+        } else {
+          self.board.default_via_drill_diameter
+        },
+      ),
+      ConstraintType::EdgeClearance => {
+        (self.board.min_copper_board_clearance, 0)
+      }
+      ConstraintType::HoleClearance => {
+        (self.board.min_copper_npth_clearance, 0)
+      }
+      ConstraintType::HoleToHole => (self.board.min_drill_drill_clearance, 0),
+      // Not a rule LibrePCB has: it is the session's own pair gap handed
+      // back, see `LibrePcbRules::diff_pair_gap`.
+      ConstraintType::DiffPairGap => {
+        if self.diff_pair_gap <= 0 {
+          return None;
+        }
+        (self.diff_pair_gap, self.diff_pair_gap)
+      }
+      _ => return None,
+    };
+
+    Some(Constraint {
+      constraint_type,
+      min: Some(min),
+      opt: if opt > 0 { Some(opt) } else { None },
+      max: None,
+      allowed: true,
+    })
+  }
+
+  /// Whether an obstacle is a keepout area, and whether it excludes this
+  /// item.
+  ///
+  /// A `BI_Zone` carrying `Zone::Rule::NoCopper` is LibrePCB's only
+  /// keepout, and what it excludes here is the copper the router places:
+  /// tracks, the line being placed, vias and the holes they drill.
+  /// [`Keepout::Enforced`] gives that pair a clearance of zero, so the
+  /// zone excludes at its exact boundary rather than keeping a distance,
+  /// which is how the design rule check reads it too: it intersects the
+  /// areas and applies no clearance
+  /// (`BoardDesignRuleCheck::checkZones`).
+  ///
+  /// Anything else answers [`Keepout::Present`], which the ladder reads as
+  /// "these two never collide". A keepout is not copper, so it must not
+  /// impose a copper clearance on the pads, polygons and board edges that
+  /// stand in it; whether their copper belongs there is the design rule
+  /// check's business, not the router's. KiCad answers the same way: its
+  /// resolver returns true for every item whose obstacle is a rule area
+  /// and only varies the enforce flag
+  /// (`pcbnew/router/pns_kicad_iface.cpp:415`).
+  fn is_keepout(&self, obstacle: ItemRef<'_>, item: ItemRef<'_>) -> Keepout {
+    if !self.host_rules_of(obstacle).keepout {
+      return Keepout::None;
+    }
+
+    // `Kind::ARC` is in the mask because KiCad's own keepout test spells
+    // the track case `{ PCB_ARC_T, PCB_TRACE_T }`; the engine has no arc
+    // body yet, so nothing carries the bit today.
+    let placed =
+      Kind::SEGMENT | Kind::ARC | Kind::LINE | Kind::VIA | Kind::HOLE;
+
+    if item.item().kind().of_kind(placed) {
+      Keepout::Enforced
+    } else {
+      Keepout::Present
+    }
+  }
+
+  /// Every hole, because LibrePCB has no plating attribute the snapshot
+  /// could carry yet; see the integration design note, question Q4.
+  fn is_drilled_hole(&self, item: ItemRef<'_>) -> bool {
+    item.item().kind() == pnsrouter::item::Kind::HOLE
+  }
+
+  /// Never, which keeps the collision ladder off its castellation path.
+  fn is_non_plated_slot(&self, _item: ItemRef<'_>) -> bool {
+    false
+  }
+
+  /// The net's own number offset by one, because the engine's topology
+  /// code reads zero and below as "no net". The orphan below is the one
+  /// net that is not a host net and answers `-1`.
+  fn net_code(&self, net: NetId) -> i32 {
+    if net == self.orphaned_net() {
+      return -1;
+    }
+
+    i32::try_from(net.0).map_or(i32::MAX, |code| code.saturating_add(1))
+  }
+
+  /// A net number the host cannot send, for a route started in free
+  /// space.
+  ///
+  /// The engine places such a route on this net rather than on no net at
+  /// all, so that its head and the tail it has already fixed count as the
+  /// same net and a shove can push an obstacle instead of the placer
+  /// walking around it. The contract on the trait method asks for three
+  /// things: a stable value, a net code of zero or below, and a net no
+  /// snapshot item carries.
+  ///
+  /// `u32::MAX` gives the third one for free. [`PnsItemHeader::net`]
+  /// counts from one and `to_item` subtracts that one again, so a host
+  /// net would have to arrive as `u32::MAX + 1` to land here. The net
+  /// code needs its own case: the `try_from` above fails on `u32::MAX`
+  /// and its fallback would report the orphan as `i32::MAX`, a real net.
+  ///
+  /// Nothing else needs a case. [`LibrePcbRules::net_class_of`] finds no
+  /// entry for this net and falls back to the all zero defaults, so a
+  /// route in free space is sized by the board settings alone, which is
+  /// what a net with no net class should get.
+  fn orphaned_net(&self) -> NetId {
+    NetId(u32::MAX)
+  }
+
+  /// The other half of the pair, out of the table the host filled in.
+  fn dp_coupled_net(&self, net: NetId) -> Option<NetId> {
+    self.partner_of(net)
+  }
+
+  /// Which half of the pair the net is, out of the same table.
+  fn dp_net_polarity(&self, net: NetId) -> i32 {
+    self.polarity_of(net)
+  }
+
+  /// Both halves, positive first, whichever half the item belongs to.
+  ///
+  /// The normalisation is what the pair placer relies on; see the trait's
+  /// own note on why it then needs no [`RuleResolver::dp_net_polarity`].
+  /// A net whose partner is known but whose polarity is zero cannot
+  /// happen, the host writes the two together, and it answers "no pair"
+  /// rather than guessing a half.
+  fn dp_net_pair(&self, item: ItemRef<'_>) -> Option<(NetId, NetId)> {
+    let net = item.item().net()?;
+    let partner = self.partner_of(net)?;
+
+    match self.polarity_of(net) {
+      polarity if polarity > 0 => Some((net, partner)),
+      polarity if polarity < 0 => Some((partner, net)),
+      _ => None,
+    }
+  }
+}
+
+// ---------------------------------------------------------------------
+// Conversion helpers
+// ---------------------------------------------------------------------
+
+/// Narrow one host coordinate to the engine's `i32` nanometres.
+fn to_coord(value: i64) -> Result<i32, PnsResult> {
+  if value.abs() > MAX_COORDINATE {
+    return Err(PnsResult::CoordinateOutOfRange);
+  }
+
+  i32::try_from(value).map_err(|_| PnsResult::CoordinateOutOfRange)
+}
+
+/// Narrow one host point to the engine's `i32` nanometres.
+fn to_vec2(point: PnsPoint) -> Result<Vec2, PnsResult> {
+  Ok(Vec2::new(to_coord(point.x)?, to_coord(point.y)?))
+}
+
+/// Narrow one host length, which is never negative, to the engine's `i32`
+/// nanometres.
+fn to_length(value: i64) -> Result<i32, PnsResult> {
+  to_coord(value)
+}
+
+/// Convert one host shape into an engine shape.
+///
+/// # Safety
+///
+/// [`PnsShape::vertices`] must point at [`PnsShape::vertex_count`]
+/// readable points when the kind is [`PnsShapeKind::Polygon`].
+unsafe fn to_shape(shape: &PnsShape) -> Result<Shape, PnsResult> {
+  match shape.kind {
+    PnsShapeKind::Circle => Ok(Shape::circle(
+      to_vec2(shape.center)?,
+      to_length(shape.radius)?,
+    )),
+    PnsShapeKind::Rect => {
+      let center = to_vec2(shape.center)?;
+      let half = to_vec2(shape.half_size)?;
+      let origin = Vec2::new(center.x - half.x, center.y - half.y);
+      let size = Vec2::new(half.x.saturating_mul(2), half.y.saturating_mul(2));
+
+      Ok(Shape::rounded_rect(origin, size, to_length(shape.radius)?))
+    }
+    PnsShapeKind::Segment => Ok(Shape::segment(
+      Seg::new(to_vec2(shape.p1)?, to_vec2(shape.p2)?),
+      to_length(shape.radius)?,
+    )),
+    PnsShapeKind::Polygon => {
+      if shape.vertex_count < 3 {
+        return Err(PnsResult::DegeneratePolygon);
+      }
+
+      let mut points = Vec::with_capacity(shape.vertex_count);
+
+      // SAFETY: the caller promises the pointer and the count agree.
+      let raw = unsafe {
+        std::slice::from_raw_parts(shape.vertices, shape.vertex_count)
+      };
+
+      for point in raw {
+        points.push(to_vec2(*point)?);
+      }
+
+      Ok(Shape::simple(LineChain::from_points(points, true)))
+    }
+  }
+}
+
+/// Convert one item header into the common fields of a snapshot item.
+fn to_item(
+  header: &PnsItemHeader,
+  copper_layer_count: u8,
+  geometry: WorldGeometry,
+) -> Result<WorldItem, PnsResult> {
+  let last = i32::from(copper_layer_count) - 1;
+
+  if header.layer_start < 0
+    || header.layer_end < header.layer_start
+    || header.layer_end > last
+  {
+    return Err(PnsResult::InvalidLayerRange);
+  }
+
+  let mut item = WorldItem::new(
+    HostId(header.host_id),
+    if header.net > 0 {
+      Some(NetId(header.net - 1))
+    } else {
+      None
+    },
+    LayerRange::new(header.layer_start, header.layer_end),
+    geometry,
+  );
+
+  item.flags = WorldItemFlags {
+    locked: header.locked,
+    routable: header.routable,
+    free_pad: header.free_pad,
+    compound_primitive: header.compound_primitive,
+  };
+
+  Ok(item)
+}
+
+// ---------------------------------------------------------------------
+// The snapshot handle
+// ---------------------------------------------------------------------
+
+/// A board snapshot under construction, plus the rules the resolver reads.
+///
+/// Owned by C++ through a `RustHandle`. Deleted either by
+/// [`ffi_pnsrouter_snapshot_delete`] or by [`ffi_pnsrouter_new`], which
+/// consumes it.
+pub struct PnsSnapshot {
+  /// The snapshot itself.
+  snapshot: WorldSnapshot,
+  /// The rule table that becomes the session's resolver.
+  rules: LibrePcbRules,
+  /// A world built from the snapshot on demand, for the debug queries.
+  world: Option<(World, HostIndex)>,
+}
+
+impl PnsSnapshot {
+  /// Record what one item contributes to the rule table.
+  fn note_host(&mut self, header: &PnsItemHeader) {
+    let index = header.host_id as usize;
+
+    if self.rules.hosts.len() <= index {
+      self.rules.hosts.resize(index + 1, HostRules::default());
+    }
+
+    let entry = &mut self.rules.hosts[index];
+
+    entry.board_edge |= header.board_edge;
+    entry.keepout |= header.keepout;
+
+    if header.copper_clearance >= 0 {
+      let clearance = to_coord(header.copper_clearance).unwrap_or(i32::MAX);
+
+      entry.copper_clearance =
+        Some(entry.copper_clearance.unwrap_or(0).max(clearance));
+    }
+  }
+
+  /// Store one finished item and forget any cached world.
+  fn push(&mut self, item: WorldItem) -> PnsResult {
+    self.snapshot.items.push(item);
+    self.world = None;
+
+    PnsResult::Ok
+  }
+
+  /// The world the debug queries run against, built on first use.
+  fn ensure_world(&mut self) -> &(World, HostIndex) {
+    if self.world.is_none() {
+      self.rules.recompute_max_clearance();
+      self.snapshot.max_clearance = self.rules.max_clearance;
+      self.world = Some(World::from_snapshot(&self.snapshot));
+    }
+
+    self.world.as_ref().expect("the world was just built")
+  }
+}
+
+/// Create an empty snapshot of a board with `copper_layer_count` copper
+/// layers.
+///
+/// The layer indices every later call takes are dense and zero based,
+/// `0 ..= copper_layer_count - 1`; see the integration design note,
+/// section 1.3.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_snapshot_new(
+  copper_layer_count: u8,
+) -> *mut PnsSnapshot {
+  Box::into_raw(Box::new(PnsSnapshot {
+    snapshot: WorldSnapshot::new(copper_layer_count, 0),
+    rules: LibrePcbRules::new(),
+    world: None,
+  }))
+}
+
+/// Delete a [`PnsSnapshot`] that was never handed to
+/// [`ffi_pnsrouter_new`].
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_snapshot_delete(obj: *mut PnsSnapshot) {
+  assert!(!obj.is_null());
+  unsafe { drop(Box::from_raw(obj)) };
+}
+
+/// Set the board wide design rule values.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_snapshot_set_board_rules(
+  obj: &mut PnsSnapshot,
+  rules: &PnsBoardRules,
+) -> PnsResult {
+  let values = BoardRuleValues {
+    min_copper_copper_clearance: match to_length(
+      rules.min_copper_copper_clearance,
+    ) {
+      Ok(value) => value,
+      Err(error) => return error,
+    },
+    min_copper_board_clearance: match to_length(
+      rules.min_copper_board_clearance,
+    ) {
+      Ok(value) => value,
+      Err(error) => return error,
+    },
+    min_copper_npth_clearance: match to_length(rules.min_copper_npth_clearance)
+    {
+      Ok(value) => value,
+      Err(error) => return error,
+    },
+    min_drill_drill_clearance: match to_length(rules.min_drill_drill_clearance)
+    {
+      Ok(value) => value,
+      Err(error) => return error,
+    },
+    min_drill_board_clearance: match to_length(rules.min_drill_board_clearance)
+    {
+      Ok(value) => value,
+      Err(error) => return error,
+    },
+    min_copper_width: match to_length(rules.min_copper_width) {
+      Ok(value) => value,
+      Err(error) => return error,
+    },
+    min_pth_drill_diameter: match to_length(rules.min_pth_drill_diameter) {
+      Ok(value) => value,
+      Err(error) => return error,
+    },
+    default_trace_width: match to_length(rules.default_trace_width) {
+      Ok(value) => value,
+      Err(error) => return error,
+    },
+    default_via_drill_diameter: match to_length(
+      rules.default_via_drill_diameter,
+    ) {
+      Ok(value) => value,
+      Err(error) => return error,
+    },
+  };
+
+  obj.rules.board = values;
+  obj.world = None;
+
+  PnsResult::Ok
+}
+
+/// Add one net class and return its index.
+///
+/// The index is what [`ffi_pnsrouter_snapshot_add_net`] takes.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_snapshot_add_net_class(
+  obj: &mut PnsSnapshot,
+  rules: &PnsNetClassRules,
+) -> usize {
+  obj.rules.net_classes.push(NetClassRuleValues {
+    min_copper_copper_clearance: to_length(rules.min_copper_copper_clearance)
+      .unwrap_or(i32::MAX),
+    min_copper_width: to_length(rules.min_copper_width).unwrap_or(i32::MAX),
+    min_via_drill_diameter: to_length(rules.min_via_drill_diameter)
+      .unwrap_or(i32::MAX),
+    default_trace_width: to_length(rules.default_trace_width).unwrap_or(0),
+    default_via_drill: to_length(rules.default_via_drill).unwrap_or(0),
+  });
+  obj.world = None;
+
+  obj.rules.net_classes.len() - 1
+}
+
+/// Add one net belonging to a net class and return the net number the item
+/// headers take, which is the dense net index plus one.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_snapshot_add_net(
+  obj: &mut PnsSnapshot,
+  net_class_index: usize,
+) -> u32 {
+  obj.rules.nets.push(net_class_index);
+  obj.rules.net_partners.push(None);
+  obj.rules.net_polarities.push(0);
+  obj.world = None;
+
+  obj.rules.nets.len() as u32
+}
+
+/// Record that two nets are the two halves of a differential pair.
+///
+/// `net` and `partner` are net numbers as
+/// [`ffi_pnsrouter_snapshot_add_net`] handed them out, and `polarity` is
+/// `1` for the positive half and `-1` for the negative one. It is called
+/// once per half, so the host does not have to decide which half it is
+/// looking at, and it must be called after both nets were added.
+///
+/// A net number the snapshot never handed out, a partner equal to the net
+/// itself, or a polarity of zero is ignored rather than stored: the three
+/// resolver hooks then answer "not a pair" and the engine refuses a pair
+/// start cleanly instead of routing two nets that are not coupled.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_snapshot_set_net_partner(
+  obj: &mut PnsSnapshot,
+  net: u32,
+  partner: u32,
+  polarity: i32,
+) {
+  let count = obj.rules.nets.len() as u32;
+
+  if (net == 0) || (net > count) || (partner == 0) || (partner > count) {
+    debug_assert!(false, "net {net} or partner {partner} is not in the table");
+
+    return;
+  }
+  if (net == partner) || (polarity == 0) {
+    debug_assert!(false, "net {net} cannot be its own pair partner");
+
+    return;
+  }
+
+  let index = (net - 1) as usize;
+
+  obj.rules.net_partners[index] = Some(NetId(partner - 1));
+  obj.rules.net_polarities[index] = polarity.signum();
+  obj.world = None;
+}
+
+/// The net number of a net's differential pair partner, or zero.
+///
+/// A read back of what [`ffi_pnsrouter_snapshot_set_net_partner`] stored,
+/// so that the unit tests can prove the table the resolver reads.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_snapshot_net_partner(
+  obj: &PnsSnapshot,
+  net: u32,
+) -> u32 {
+  if net == 0 {
+    return 0;
+  }
+
+  obj
+    .rules
+    .partner_of(NetId(net - 1))
+    .map_or(0, |partner| partner.0 + 1)
+}
+
+/// The differential pair polarity of a net, zero for a net without one.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_snapshot_net_polarity(
+  obj: &PnsSnapshot,
+  net: u32,
+) -> i32 {
+  if net == 0 {
+    return 0;
+  }
+
+  obj.rules.polarity_of(NetId(net - 1))
+}
+
+/// Add one track.
+///
+/// Wraps `pnsrouter::snapshot::WorldGeometry::Segment`.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_snapshot_add_segment(
+  obj: &mut PnsSnapshot,
+  header: &PnsItemHeader,
+  geometry: &PnsSegmentGeometry,
+) -> PnsResult {
+  let body = match (|| -> Result<WorldGeometry, PnsResult> {
+    Ok(WorldGeometry::Segment {
+      seg: Seg::new(to_vec2(geometry.p1)?, to_vec2(geometry.p2)?),
+      width: to_length(geometry.width)?,
+    })
+  })() {
+    Ok(body) => body,
+    Err(error) => return error,
+  };
+
+  match to_item(header, obj.snapshot.copper_layer_count, body) {
+    Ok(item) => {
+      obj.note_host(header);
+      obj.push(item)
+    }
+    Err(error) => error,
+  }
+}
+
+/// Add one via.
+///
+/// Wraps `pnsrouter::snapshot::WorldGeometry::Via`. The engine drills the
+/// hole itself, so no hole crosses here.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_snapshot_add_via(
+  obj: &mut PnsSnapshot,
+  header: &PnsItemHeader,
+  geometry: &PnsViaGeometry,
+) -> PnsResult {
+  let body = match (|| -> Result<WorldGeometry, PnsResult> {
+    Ok(WorldGeometry::Via {
+      pos: to_vec2(geometry.pos)?,
+      diameter: to_length(geometry.diameter)?,
+      drill: to_length(geometry.drill)?,
+      via_type: match geometry.via_type {
+        PnsViaType::Through => ViaType::Through,
+        PnsViaType::Blind => ViaType::Blind,
+        PnsViaType::Buried => ViaType::Buried,
+      },
+      is_free: geometry.is_free,
+    })
+  })() {
+    Ok(body) => body,
+    Err(error) => return error,
+  };
+
+  match to_item(header, obj.snapshot.copper_layer_count, body) {
+    Ok(item) => {
+      obj.note_host(header);
+      obj.push(item)
+    }
+    Err(error) => error,
+  }
+}
+
+/// Add one solid: a pad, a copper polygon or a board outline.
+///
+/// Wraps `pnsrouter::snapshot::WorldGeometry::Solid`. A pad becomes one
+/// solid per copper layer and the hole rides on exactly one of them; see
+/// the integration design note, section 1.7.
+///
+/// # Safety
+///
+/// The shapes' vertex pointers must stay valid for the duration of the
+/// call.
+#[no_mangle]
+unsafe extern "C" fn ffi_pnsrouter_snapshot_add_solid(
+  obj: &mut PnsSnapshot,
+  header: &PnsItemHeader,
+  geometry: &PnsSolidGeometry,
+) -> PnsResult {
+  let body = match (|| -> Result<WorldGeometry, PnsResult> {
+    Ok(WorldGeometry::Solid {
+      // SAFETY: forwarded from this function's own contract.
+      shape: unsafe { to_shape(&geometry.shape)? },
+      pos: to_vec2(geometry.pos)?,
+      offset: Vec2::new(0, 0),
+      orientation_degrees: 0.0,
+      anchors: Vec::new(),
+    })
+  })() {
+    Ok(body) => body,
+    Err(error) => return error,
+  };
+
+  let hole = if geometry.has_hole {
+    // SAFETY: forwarded from this function's own contract.
+    match unsafe { to_shape(&geometry.hole) } {
+      Ok(shape) => Some(shape),
+      Err(error) => return error,
+    }
+  } else {
+    None
+  };
+
+  match to_item(header, obj.snapshot.copper_layer_count, body) {
+    Ok(mut item) => {
+      item.hole = hole;
+      obj.note_host(header);
+      obj.push(item)
+    }
+    Err(error) => error,
+  }
+}
+
+/// Add one hole with no copper of its own, such as a board mounting hole.
+///
+/// Wraps `pnsrouter::snapshot::WorldGeometry::Hole`.
+///
+/// # Safety
+///
+/// The shape's vertex pointer must stay valid for the duration of the
+/// call.
+#[no_mangle]
+unsafe extern "C" fn ffi_pnsrouter_snapshot_add_hole(
+  obj: &mut PnsSnapshot,
+  header: &PnsItemHeader,
+  geometry: &PnsHoleGeometry,
+) -> PnsResult {
+  // SAFETY: forwarded from this function's own contract.
+  let shape = match unsafe { to_shape(&geometry.shape) } {
+    Ok(shape) => shape,
+    Err(error) => return error,
+  };
+
+  match to_item(
+    header,
+    obj.snapshot.copper_layer_count,
+    WorldGeometry::Hole { shape },
+  ) {
+    Ok(item) => {
+      obj.note_host(header);
+      obj.push(item)
+    }
+    Err(error) => error,
+  }
+}
+
+/// Read back what the snapshot holds, for the unit tests.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_snapshot_stats(
+  obj: &mut PnsSnapshot,
+  out: &mut PnsSnapshotStats,
+) {
+  obj.rules.recompute_max_clearance();
+  obj.snapshot.max_clearance = obj.rules.max_clearance;
+
+  let mut stats = PnsSnapshotStats {
+    copper_layer_count: obj.snapshot.copper_layer_count,
+    max_clearance: obj.rules.max_clearance,
+    item_count: obj.snapshot.items.len(),
+    net_count: obj.rules.nets.len(),
+    net_class_count: obj.rules.net_classes.len(),
+    ..PnsSnapshotStats::default()
+  };
+
+  for item in &obj.snapshot.items {
+    match item.geometry {
+      WorldGeometry::Segment { .. } => stats.segment_count += 1,
+      WorldGeometry::Via { .. } => stats.via_count += 1,
+      WorldGeometry::Solid { .. } => stats.solid_count += 1,
+      WorldGeometry::Hole { .. } => stats.hole_count += 1,
+      // No entry point above adds one, because LibrePCB has no arc
+      // traces; see [`PnsShapeKind`]. The counters would stop adding up
+      // to `item_count` if one ever appeared, which is what the debug
+      // assertion says out loud.
+      WorldGeometry::Arc { .. } => {
+        debug_assert!(false, "the snapshot has no arc adder");
+      }
+    }
+
+    if item.hole.is_some() {
+      stats.drilled_solid_count += 1;
+    }
+
+    // The keepout flag lives on the host object rather than on the item,
+    // because every triangle of a zone shares the zone's host id.
+    if obj
+      .rules
+      .hosts
+      .get(item.id.0 as usize)
+      .is_some_and(|host| host.keepout)
+    {
+      stats.keepout_count += 1;
+    }
+  }
+
+  *out = stats;
+}
+
+/// The clearance the resolver requires between two host objects.
+///
+/// A debug entry point for the unit tests, which have no other way to
+/// reach `pnsrouter::rules::RuleResolver`. Answers
+/// [`PnsResult::NoClearance`] where the resolver says the two can never
+/// collide, and [`PnsResult::UnknownItem`] where a host id or a role is
+/// not in the snapshot.
+///
+/// The keepout rung is asked first, exactly as the engine's own ladder
+/// asks it (`pnsrouter::collide`, the port of
+/// `pcbnew/router/pns_item.cpp:198`), so that the answer a test reads is
+/// the answer a collision would get.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_snapshot_clearance(
+  obj: &mut PnsSnapshot,
+  a_host: u64,
+  a_role: PnsItemRole,
+  b_host: u64,
+  b_role: PnsItemRole,
+  out: &mut i32,
+) -> PnsResult {
+  // The debug assertion inside the ladder compares against
+  // max_clearance, so the table has to be up to date before it is cloned.
+  obj.rules.recompute_max_clearance();
+
+  let rules = obj.rules.clone();
+  let (world, index) = obj.ensure_world();
+
+  let Some(a) = resolve_item(world, index, a_host, a_role) else {
+    return PnsResult::UnknownItem;
+  };
+  let Some(b) = resolve_item(world, index, b_host, b_role) else {
+    return PnsResult::UnknownItem;
+  };
+
+  let mut keepout = rules.is_keepout(a, b);
+
+  if keepout == Keepout::None {
+    keepout = rules.is_keepout(b, a);
+  }
+
+  match keepout {
+    // A keepout excludes at its exact boundary; it keeps no distance.
+    Keepout::Enforced => {
+      *out = 0;
+      return PnsResult::Ok;
+    }
+    Keepout::Present => return PnsResult::NoClearance,
+    Keepout::None => {}
+  }
+
+  match rules.clearance(a, Some(b), false) {
+    Some(clearance) => {
+      *out = clearance;
+      PnsResult::Ok
+    }
+    None => PnsResult::NoClearance,
+  }
+}
+
+/// One design rule value the resolver answers for a host object.
+///
+/// A debug entry point for the unit tests, mirroring
+/// `BoardDesignRuleCheckData`'s helper methods.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_snapshot_constraint(
+  obj: &mut PnsSnapshot,
+  kind: PnsConstraintKind,
+  host: u64,
+  out_min: &mut i32,
+  out_opt: &mut i32,
+) -> PnsResult {
+  obj.rules.recompute_max_clearance();
+
+  let rules = obj.rules.clone();
+  let (world, index) = obj.ensure_world();
+
+  let Some(item) = resolve_item(world, index, host, PnsItemRole::Copper) else {
+    return PnsResult::UnknownItem;
+  };
+
+  let constraint_type = match kind {
+    PnsConstraintKind::Clearance => ConstraintType::Clearance,
+    PnsConstraintKind::Width => ConstraintType::Width,
+    PnsConstraintKind::ViaHole => ConstraintType::ViaHole,
+    PnsConstraintKind::EdgeClearance => ConstraintType::EdgeClearance,
+    PnsConstraintKind::HoleClearance => ConstraintType::HoleClearance,
+    PnsConstraintKind::HoleToHole => ConstraintType::HoleToHole,
+  };
+
+  match rules.constraint(constraint_type, item, None, item.item().layer()) {
+    Some(constraint) => {
+      *out_min = constraint.min.unwrap_or(0);
+      *out_opt = constraint.opt.unwrap_or(0);
+      PnsResult::Ok
+    }
+    None => PnsResult::NoClearance,
+  }
+}
+
+/// The broad phase inflation radius the snapshot will carry.
+///
+/// Every answer of [`ffi_pnsrouter_snapshot_clearance`] is bounded by it,
+/// which the unit tests assert.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_snapshot_max_clearance(
+  obj: &mut PnsSnapshot,
+) -> i32 {
+  obj.rules.recompute_max_clearance();
+  obj.snapshot.max_clearance = obj.rules.max_clearance;
+
+  obj.rules.max_clearance
+}
+
+/// The engine item one host object and role name, if the world has it.
+fn resolve_item<'a>(
+  world: &'a World,
+  index: &HostIndex,
+  host: u64,
+  role: PnsItemRole,
+) -> Option<ItemRef<'a>> {
+  let id = *index.items_of(HostId(host)).first()?;
+  let id = match role {
+    PnsItemRole::Copper => id,
+    PnsItemRole::Hole => world.item(id)?.hole()?,
+  };
+
+  Some(ItemRef::stored(id, world.item(id)?))
+}
+
+// ---------------------------------------------------------------------
+// The session
+// ---------------------------------------------------------------------
+
+/// How a host should draw one element of a preview frame.
+///
+/// Mirrors `pnsrouter::router::PreviewStyle` value for value.
+#[repr(C)]
+#[allow(dead_code)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum PnsPreviewStyle {
+  /// `PreviewStyle::Head`, the track being placed right now.
+  Head = 0,
+  /// `PreviewStyle::Tail`, geometry this session has already fixed.
+  Tail = 1,
+  /// `PreviewStyle::Hover`, the item under the cursor. Set by a host and
+  /// never by the engine.
+  Hover = 2,
+  /// `PreviewStyle::SemiSolid`, one primitive of a rule area. Nothing
+  /// emits it yet, because zones are not synced.
+  SemiSolid = 3,
+  /// `PreviewStyle::Collision`, something a violation was found on.
+  Collision = 4,
+}
+
+/// Which fields of a [`PnsNewItem`] are meaningful.
+///
+/// Mirrors the three variants of `pnsrouter::router::NewGeometry`, which
+/// is all a single track placer emits.
+///
+/// # Why LibrePCB never sees [`PnsNewGeometryKind::Arc`]
+///
+/// The kind exists so that the boundary can describe what the engine
+/// sends rather than quietly turn a curve into its chord, and so that the
+/// applier can refuse it by name. Nothing LibrePCB can do reaches it
+/// today, and it takes all four of these to be true:
+///
+/// - The corner mode is mitered. [`PnsRouterSettings::corner_mode_90`] is
+///   a boolean and `derive_settings` maps it onto `CornerMode::Mitered45`
+///   or `CornerMode::Mitered90` only, so the engine's two rounded modes,
+///   the only ones whose `build_initial_trace` emits an arc, cannot be
+///   selected. `Router::toggle_corner_mode`, which cycles all four, has
+///   no entry point here on purpose.
+/// - Meanders are chamfered. [`PnsMeanderSettings`] carries no corner
+///   style field, so every tuning session started here asks for
+///   `MeanderStyle::Chamfer` by name rather than taking the engine's
+///   default, which is `Round` since the arcs milestone.
+/// - The snapshot holds no arc. There is no arc adder and none is
+///   possible, see [`PnsShapeKind`], so the dragger cannot be started on
+///   an arc and the walkaround's `restore_untouched_arcs` has nothing to
+///   splice back.
+/// - The optimizer only makes arcs in a rounded mode. `merge_step` builds
+///   its bypasses with `build_initial_trace` and the session's corner
+///   mode (`pcbnew/router/pns_optimizer.cpp:883`), so a mitered session's
+///   bypasses are mitered too.
+///
+/// If one arrives anyway, one of those four has been broken and the
+/// applier throws rather than storing something the file format cannot
+/// express; see `CmdBoardApplyPnsCommit::performExecute()`.
+#[repr(C)]
+#[allow(dead_code)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum PnsNewGeometryKind {
+  /// `NewGeometry::Segment`: [`PnsNewItem::p1`], [`PnsNewItem::p2`] and
+  /// [`PnsNewItem::width`].
+  Segment = 0,
+  /// `NewGeometry::Via`: [`PnsNewItem::pos`], [`PnsNewItem::diameter`],
+  /// [`PnsNewItem::drill`] and [`PnsNewItem::via_type`].
+  Via = 1,
+  /// `NewGeometry::Arc`: [`PnsNewItem::p1`], [`PnsNewItem::mid`],
+  /// [`PnsNewItem::p2`] and [`PnsNewItem::width`], KiCad's three point
+  /// form with the two endpoints in the segment's own fields.
+  ///
+  /// Two is a value of its own rather than a renumbering, because
+  /// [`PnsNewGeometryKind::Via`] is already one on the C++ side.
+  Arc = 2,
+}
+
+/// Why a routing session refused to start.
+///
+/// Mirrors `Result<(), pnsrouter::router::StartError>`, flattened into one
+/// enum with success as its first value. The host id and the item id the
+/// two naming variants carry are dropped: the host already knows which
+/// object it asked about, and the engine's item id means nothing to it.
+#[repr(C)]
+#[allow(dead_code)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum PnsStartResult {
+  /// The point may be routed from.
+  Ok = 0,
+  /// `StartError::AlreadyRouting`.
+  AlreadyRouting = 1,
+  /// `StartError::UnknownStartItem`.
+  UnknownStartItem = 2,
+  /// `StartError::NotRoutable`.
+  NotRoutable = 3,
+  /// `StartError::StartPointViolatesRules`.
+  StartPointViolatesRules = 4,
+  /// `StartError::PlacerRefused`.
+  PlacerRefused = 5,
+  /// `StartError::NothingToDrag`.
+  NothingToDrag = 6,
+  /// Answered by the host, not by the engine: a set of pads the host
+  /// cannot turn into a device move, which is a pad mixed with tracks or
+  /// only some of the pads of a device. The engine would drag those pads
+  /// happily and leave the traces of the pads left out behind.
+  IncompleteDeviceDrag = 7,
+  /// `StartError::NotDraggable`.
+  NotDraggable = 8,
+  /// `StartError::PairNeedsStartItem`: a pair placement was asked for in
+  /// free space, where it needs an object to learn the two nets from.
+  PairNeedsStartItem = 9,
+  /// `StartError::NotADiffPair`: the net of the start object has no
+  /// partner in the snapshot's pair table.
+  NotADiffPair = 10,
+  /// `StartError::NoDanglingAnchor`: the start object has no free end.
+  NoDanglingAnchor = 11,
+  /// `StartError::NoCoupledStartItem`: nothing on the coupled net can be
+  /// paired with the start object. The net it names is dropped, like the
+  /// ids of the two naming variants above.
+  NoCoupledStartItem = 12,
+  /// `StartError::PairGapBelowMinClearance`: the configured pair gap does
+  /// not reach the board's minimum copper to copper clearance.
+  PairGapBelowMinClearance = 13,
+  /// `StartError::PairGapMismatch`: the two tracks under the cursor are
+  /// not spaced like the configured pair.
+  PairGapMismatch = 14,
+  /// `StartError::TuningNeedsStartItem`: a tuning session was asked for
+  /// in free space, where there is nothing to lengthen.
+  TuningNeedsStartItem = 15,
+  /// `StartError::NotATrack`: the object to tune is a pad, a via or a
+  /// hole rather than a track. The item id it names is dropped, like the
+  /// ids of the other naming variants.
+  NotATrack = 16,
+  /// `StartError::NoTuningPath`: the topology walk found no copper for
+  /// the session to measure.
+  NoTuningPath = 17,
+  /// `StartError::NotADiffPairForTuning`: the track a pair length tuning
+  /// session was asked to tune is not half of a pair.
+  NotADiffPairForTuning = 18,
+  /// `StartError::NotADiffPairForSkew`: the same, from a skew tuning
+  /// session, which the engine words differently.
+  NotADiffPairForSkew = 19,
+  /// `StartError::PairLaneHasNoSegments`: one lane of the recovered pair
+  /// holds no segment.
+  PairLaneHasNoSegments = 20,
+  /// Answered by the boundary, not by the engine:
+  /// `pnsrouter::meander::MeanderSettings::new` refused the meander
+  /// settings of a tuning start. It refuses a step which is not positive
+  /// and the round corner style, and this boundary never asks for round
+  /// corners, so only a non positive step can reach it.
+  InvalidMeanderSettings = 21,
+}
+
+/// What happened to a fix.
+///
+/// Mirrors `pnsrouter::router::FixOutcome` plus the "nothing was being
+/// routed" case, which the crate spells as `Option::None` on
+/// `Router::finish`.
+#[repr(C)]
+#[allow(dead_code)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum PnsFixOutcome {
+  /// `FixOutcome::Continue`: the placement carries on, and the session
+  /// holds the frame after the fix.
+  Continue = 0,
+  /// `FixOutcome::Finished`: the route reached its target and was
+  /// committed, so the session holds the commit and no frame.
+  Finished = 1,
+  /// Nothing was being routed, so nothing was committed either.
+  NotRouting = 2,
+}
+
+/// One polyline of the session's latest preview frame.
+///
+/// Mirrors `pnsrouter::router::PreviewItem`. The centre line is read point
+/// by point with [`ffi_pnsrouter_preview_item_point`], because a variable
+/// length list cannot ride in a `#[repr(C)]` struct the host did not
+/// allocate.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct PnsPreviewItem {
+  /// How many points the centre line has.
+  pub point_count: usize,
+  /// The full width in nanometres.
+  pub width: i64,
+  /// The dense copper layer index to draw on.
+  pub layer: i32,
+  /// The net, counted from one, or zero for no net.
+  pub net: u32,
+  /// How to draw it.
+  pub style: PnsPreviewStyle,
+  /// The clearance outline to draw around it in nanometres, or a negative
+  /// value when no rule applies.
+  pub clearance: i64,
+}
+
+/// One via of the session's latest preview frame.
+///
+/// Mirrors `pnsrouter::router::PreviewVia`.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct PnsPreviewVia {
+  /// The centre.
+  pub pos: PnsPoint,
+  /// The copper diameter in nanometres.
+  pub diameter: i64,
+  /// The drill diameter in nanometres.
+  pub drill: i64,
+  /// The first dense copper layer index it spans.
+  pub layer_start: i32,
+  /// The last dense copper layer index it spans, inclusive.
+  pub layer_end: i32,
+  /// The net, counted from one, or zero for no net.
+  pub net: u32,
+  /// How to draw it.
+  pub style: PnsPreviewStyle,
+  /// The clearance outline to draw around it in nanometres, or a negative
+  /// value when no rule applies.
+  pub clearance: i64,
+}
+
+/// One obstacle the route being placed runs into.
+///
+/// Mirrors `pnsrouter::router::ViolationMarker`, minus the engine item id,
+/// which means nothing to the host.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct PnsViolationMarker {
+  /// The obstacle as the host knows it, or zero for something this
+  /// session created and the host has no id for yet.
+  pub host_id: u64,
+  /// The clearance that was asked for and not met, in nanometres.
+  pub clearance: i64,
+  /// The dense copper layer index to draw the obstacle on instead of its
+  /// own, or a negative value to draw it on its own layers.
+  pub forced_layer: i32,
+  /// Whether the host should hide the obstacle's normal rendering while
+  /// this marker is drawn.
+  pub hide_original: bool,
+}
+
+/// One item a host has to create or rewrite after a commit.
+///
+/// Mirrors `pnsrouter::router::NewItem` with its
+/// `pnsrouter::router::NewGeometry` flattened into the fields
+/// [`PnsNewItem::kind`] names, the same way [`PnsShape`] flattens a shape.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct PnsNewItem {
+  /// Which of the fields below are meaningful.
+  pub kind: PnsNewGeometryKind,
+  /// The net, counted from one, or zero for no net. The engine's orphan
+  /// net, which a route started in free space is placed on, also reads
+  /// back as zero because the host has no net for it.
+  pub net: u32,
+  /// The first dense copper layer index the item occupies.
+  pub layer_start: i32,
+  /// The last dense copper layer index the item occupies, inclusive.
+  pub layer_end: i32,
+  /// The host object the item descends from, or zero for a freshly routed
+  /// one.
+  pub source: u64,
+  /// One end of a segment's or an arc's centre line.
+  pub p1: PnsPoint,
+  /// The other end of a segment's or an arc's centre line.
+  pub p2: PnsPoint,
+  /// A point of an arc's centre line strictly between its two ends, which
+  /// is what says which way round the arc runs. Meaningless for the other
+  /// two kinds.
+  pub mid: PnsPoint,
+  /// The full width of a segment or an arc in nanometres.
+  pub width: i64,
+  /// The centre of a via.
+  pub pos: PnsPoint,
+  /// The copper diameter of a via in nanometres.
+  pub diameter: i64,
+  /// The drill diameter of a via in nanometres.
+  pub drill: i64,
+  /// How far through the copper stack a via reaches.
+  pub via_type: PnsViaType,
+}
+
+/// Which of the three length tuning algorithms a session runs.
+///
+/// Mirrors `pnsrouter::placer::TuningMode`. The engine has three separate
+/// entry points where this is one argument of
+/// [`ffi_pnsrouter_start_tuning`]: they take the same arguments and refuse
+/// for overlapping reasons, and the host's toolbar already holds the mode
+/// as one value, so folding them saves the C++ side three near identical
+/// wrappers.
+#[repr(C)]
+#[allow(dead_code)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum PnsTuningMode {
+  /// One track, lengthened to a target. `TuningMode::SingleLength`.
+  Single = 0,
+  /// Both lanes of a differential pair, lengthened together.
+  /// `TuningMode::PairLength`.
+  DiffPair = 1,
+  /// One lane of a differential pair, lengthened until the two match.
+  /// `TuningMode::PairSkew`.
+  Skew = 2,
+}
+
+/// How a tuned line stands against its target.
+///
+/// Mirrors `pnsrouter::meander::TuningStatus`.
+#[repr(C)]
+#[allow(dead_code)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum PnsTuningStatus {
+  /// The meanders ran out of baseline before the target.
+  TooShort = 0,
+  /// The line is longer than the window allows and no meander can
+  /// shorten it.
+  TooLong = 1,
+  /// Inside the window.
+  Tuned = 2,
+}
+
+/// Which side of the base line a tuned stretch meanders to first.
+///
+/// Mirrors `pnsrouter::meander::MeanderSide`, with the engine's own
+/// discriminants, which are KiCad's: the flip the shape generator makes is
+/// a negation, so the middle value is the one a negation leaves alone.
+#[repr(C)]
+#[allow(dead_code)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum PnsMeanderSide {
+  /// `MeanderSide::Left`, the engine's own default.
+  Left = -1,
+  /// `MeanderSide::Default`, which means "follow the cursor".
+  Default = 0,
+  /// `MeanderSide::Right`.
+  Right = 1,
+}
+
+/// The dimensions a tuning session meanders to.
+///
+/// Mirrors `pnsrouter::meander::MeanderSettingsRequest`, with its two
+/// `Option<LengthTarget>` spelled as a flag plus a min, opt and max triple
+/// so that the whole thing rides in a `#[repr(C)]` struct.
+///
+/// There is no corner style field. `MeanderStyle::Round` draws its corners
+/// as arcs, and LibrePCB has no way to store an arc trace, so a rounded
+/// meander would only reach the applier to be refused. `Round` is the
+/// engine's default since the arcs milestone, so this boundary names
+/// `MeanderStyle::Chamfer` itself and never offers the other one.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct PnsMeanderSettings {
+  /// The shortest meander amplitude in nanometres.
+  pub min_amplitude: i64,
+  /// The longest meander amplitude in nanometres, which is what
+  /// [`ffi_pnsrouter_amplitude_step`] moves.
+  pub max_amplitude: i64,
+  /// The distance between two meanders in nanometres, which is what
+  /// [`ffi_pnsrouter_spacing_step`] moves.
+  pub spacing: i64,
+  /// How far one amplitude or spacing step moves, in nanometres. Must be
+  /// positive or the start is
+  /// [`PnsStartResult::InvalidMeanderSettings`].
+  pub step: i64,
+  /// The corner radius as a percentage of the half period, so 100 is a
+  /// radius of exactly half the spacing.
+  pub corner_radius_percentage: i32,
+  /// Whether every meander goes to the same side of the base line.
+  pub single_sided: bool,
+  /// Which side the first meander goes to.
+  pub initial_side: PnsMeanderSide,
+  /// Whether the reassembly keeps the ends of the tuned run where they
+  /// are. KiCad's host forces this on.
+  pub keep_endpoints: bool,
+  /// Whether the four `target_length_*` fields below mean anything. False
+  /// is the engine's unconstrained target, against which nothing is ever
+  /// too long.
+  pub has_target_length: bool,
+  /// The shortest accepted length in nanometres.
+  pub target_length_min: i64,
+  /// The length the meanders aim for, in nanometres.
+  pub target_length_opt: i64,
+  /// The longest accepted length in nanometres.
+  pub target_length_max: i64,
+  /// Whether the three `target_skew_*` fields below mean anything. Only
+  /// [`PnsTuningMode::Skew`] reads them.
+  pub has_target_skew: bool,
+  /// The smallest accepted skew in nanometres.
+  pub target_skew_min: i64,
+  /// The skew the meanders aim for, in nanometres.
+  pub target_skew_opt: i64,
+  /// The largest accepted skew in nanometres.
+  pub target_skew_max: i64,
+}
+
+/// What a host shows during a length tuning session.
+///
+/// Mirrors `pnsrouter::router::TuningInfo`, with its options spelled as a
+/// flag plus a value and its whole `MeanderSettings` reduced to the two
+/// numbers [`ffi_pnsrouter_amplitude_step`] and
+/// [`ffi_pnsrouter_spacing_step`] move, which are the only ones that
+/// change while a session runs.
+///
+/// The engine also hands back the initial side, which it flips when a
+/// meander only fits on the other side of the base line. It is not here:
+/// KiCad carries that flip onto a persistent board item so that re editing
+/// the same pattern draws the same shape, and this host has no such
+/// object. Every tuning gesture is one session started from the toolbar's
+/// own settings.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct PnsTuningInfo {
+  /// How the tuned line stands against the window in `target_*`.
+  pub status: PnsTuningStatus,
+  /// Which of the three modes produced this readout.
+  pub mode: PnsTuningMode,
+  /// The length the last move produced, in nanometres. It is a **skew**
+  /// in [`PnsTuningMode::Skew`], where it is the same number as
+  /// [`PnsTuningInfo::skew`].
+  pub result: i64,
+  /// Whether [`PnsTuningInfo::delta`] means anything.
+  pub has_delta: bool,
+  /// How far [`PnsTuningInfo::result`] has moved from the length the
+  /// session started at, in nanometres.
+  pub delta: i64,
+  /// The shortest length the status was decided against, in nanometres.
+  pub target_min: i64,
+  /// The length the meanders aimed for, in nanometres.
+  pub target_opt: i64,
+  /// The longest length the status was decided against, in nanometres.
+  pub target_max: i64,
+  /// Whether [`PnsTuningInfo::skew`] means anything, which it does in
+  /// [`PnsTuningMode::Skew`] only.
+  pub has_skew: bool,
+  /// The difference in length between the two lanes, in nanometres.
+  pub skew: i64,
+  /// Whether the three `skew_target_*` fields mean anything.
+  pub has_skew_target: bool,
+  /// The smallest accepted skew in nanometres.
+  pub skew_target_min: i64,
+  /// The skew the meanders aimed for, in nanometres.
+  pub skew_target_opt: i64,
+  /// The largest accepted skew in nanometres.
+  pub skew_target_max: i64,
+  /// Whether [`PnsTuningInfo::coupled_length`] means anything.
+  pub has_coupled_length: bool,
+  /// The coupled lane's total length in nanometres, which is what the
+  /// skew is measured against.
+  pub coupled_length: i64,
+  /// The meander amplitude the session is running at, in nanometres.
+  pub amplitude: i64,
+  /// The meander spacing the session is running at, in nanometres.
+  pub spacing: i64,
+}
+
+/// A routing session over one board snapshot.
+///
+/// Owned by C++ through a `RustHandle` and deleted by
+/// [`ffi_pnsrouter_delete`].
+///
+/// The session keeps the latest preview frame and the latest commit inside
+/// itself, and C++ reads them back through the accessors below right after
+/// the call that produced them. That keeps the boundary to one opaque
+/// handle: a `PreviewFrame` and a `CommitDiff` both hold variable length
+/// lists, so handing either out by value would need a second handle type
+/// and a second deleter for a value that is read once and dropped.
+pub struct PnsRouter {
+  /// The session itself.
+  router: Router,
+  /// The rule table, kept so that [`ffi_pnsrouter_set_settings`] can
+  /// derive the sizes again the way [`ffi_pnsrouter_new`] did.
+  rules: LibrePcbRules,
+  /// How many copper layers the snapshot described.
+  copper_layer_count: u8,
+  /// The frame of the last event that produced one.
+  frame: PreviewFrame,
+  /// The commit of the last `stop_routing` or terminal fix.
+  diff: CommitDiff,
+  /// The answer of the last [`ffi_pnsrouter_hover`].
+  hover: Vec<HostId>,
+}
+
+impl PnsRouter {
+  /// Store one preview frame as the session's latest.
+  fn set_frame(&mut self, frame: PreviewFrame) {
+    self.frame = frame;
+  }
+
+  /// Store one commit as the session's latest, which also ends the frame
+  /// the commit grew out of.
+  fn set_diff(&mut self, diff: CommitDiff) {
+    self.diff = diff;
+    self.frame = PreviewFrame::default();
+  }
+}
+
+/// One host length, or a fallback when the host did not set it.
+///
+/// The differential pair sizes are the only ones with a crate default
+/// worth keeping: a host which leaves them at zero gets KiCad's numbers
+/// rather than a degenerate pair.
+fn positive_or(value: i64, fallback: i32) -> i32 {
+  match to_length(value) {
+    Ok(length) if length > 0 => length,
+    _ => fallback,
+  }
+}
+
+/// Derive the engine's settings and sizes from the host's values.
+///
+/// Shared by [`ffi_pnsrouter_new`] and [`ffi_pnsrouter_set_settings`], so
+/// that a session created with one set of values and a session updated to
+/// it are the same session.
+///
+/// `base` is the settings to change, which is
+/// `RoutingSettings::default()` for a fresh session and the session's own
+/// settings for an update, so that everything the host has no control for
+/// survives a change to the values it does control.
+fn derive_settings(
+  base: RoutingSettings,
+  rules: &LibrePcbRules,
+  copper_layer_count: u8,
+  settings: &PnsRouterSettings,
+) -> (RoutingSettings, Sizes) {
+  let routing_settings = RoutingSettings {
+    mode: match settings.mode {
+      0 => RouterMode::MarkObstacles,
+      1 => RouterMode::Shove,
+      _ => RouterMode::Walkaround,
+    },
+    shove_iteration_limit: settings.shove_iteration_limit,
+    allow_drc_violations: settings.allow_drc_violations,
+    corner_mode: if settings.corner_mode_90 {
+      CornerMode::Mitered90
+    } else {
+      CornerMode::Mitered45
+    },
+    ..base
+  };
+
+  let defaults = Sizes::default();
+  let mut sizes = Sizes {
+    clearance: rules.max_clearance,
+    min_clearance: rules.board.min_copper_copper_clearance,
+    board_min_track_width: rules.board.min_copper_width,
+    track_width: to_length(settings.track_width).unwrap_or(0),
+    via_diameter: to_length(settings.via_diameter).unwrap_or(0),
+    via_drill: to_length(settings.via_drill).unwrap_or(0),
+    diff_pair_width: positive_or(
+      settings.diff_pair_width,
+      defaults.diff_pair_width,
+    ),
+    diff_pair_gap: positive_or(settings.diff_pair_gap, defaults.diff_pair_gap),
+    diff_pair_via_gap: positive_or(
+      settings.diff_pair_via_gap,
+      defaults.diff_pair_via_gap,
+    ),
+    diff_pair_via_gap_same_as_trace_gap: settings.diff_pair_via_gap <= 0,
+    // The router only ever places through vias for now, so the via layer
+    // pair covers the whole copper stack; see the integration design
+    // note, section 1.8.
+    via_type: ViaType::Through,
+    hole_to_hole: rules.board.min_drill_drill_clearance,
+    ..Sizes::default()
+  };
+
+  sizes.clear_layer_pairs();
+  sizes.add_layer_pair(0, i32::from(copper_layer_count).max(1) - 1);
+
+  (routing_settings, sizes)
+}
+
+/// Create a routing session, consuming the snapshot.
+///
+/// Wraps `pnsrouter::router::Router::new`. The snapshot pointer is invalid
+/// afterwards and must not be deleted again.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_new(
+  snapshot: *mut PnsSnapshot,
+  settings: &PnsRouterSettings,
+) -> *mut PnsRouter {
+  assert!(!snapshot.is_null());
+
+  let mut snapshot = unsafe { Box::from_raw(snapshot) };
+
+  snapshot.rules.recompute_max_clearance();
+  snapshot.snapshot.max_clearance = snapshot.rules.max_clearance;
+
+  let copper_layer_count = snapshot.snapshot.copper_layer_count;
+  let (routing_settings, sizes) = derive_settings(
+    RoutingSettings::default(),
+    &snapshot.rules,
+    copper_layer_count,
+    settings,
+  );
+
+  // The resolver is taken by value, so this is the last moment at which
+  // the pair gap the `ConstraintType::DiffPairGap` answer mirrors can be
+  // put into the table.
+  snapshot.rules.diff_pair_gap = sizes.diff_pair_gap;
+
+  let mut router = Router::new(
+    &snapshot.snapshot,
+    Box::new(snapshot.rules.clone()),
+    routing_settings,
+    sizes,
+  );
+
+  if settings.record_session {
+    // The recording has to open with the board the session runs on, and
+    // this is the only place that still holds it.
+    router.start_recording(&snapshot.snapshot);
+  }
+
+  Box::into_raw(Box::new(PnsRouter {
+    router,
+    rules: snapshot.rules.clone(),
+    copper_layer_count,
+    frame: PreviewFrame::default(),
+    diff: CommitDiff::default(),
+    hover: Vec::new(),
+  }))
+}
+
+/// Delete a [`PnsRouter`] object.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_delete(obj: *mut PnsRouter) {
+  assert!(!obj.is_null());
+  unsafe { drop(Box::from_raw(obj)) };
+}
+
+/// How many copper layers the session's board has.
+///
+/// The smallest useful read back, so that a test can prove the session
+/// really was built from the snapshot it was handed.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_copper_layer_count(obj: &PnsRouter) -> u8 {
+  obj.copper_layer_count
+}
+
+/// Whether a route is currently being placed.
+///
+/// Wraps `pnsrouter::router::Router::routing_in_progress`.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_routing_in_progress(obj: &PnsRouter) -> bool {
+  obj.router.routing_in_progress()
+}
+
+/// Replace the routing mode and the sizes of a session.
+///
+/// Wraps `pnsrouter::router::Router::set_settings` and
+/// `pnsrouter::router::Router::set_sizes`. A running placement keeps the
+/// sizes it started with, because the crate's placer has no mid route
+/// entry point for them yet; see the port note on `Router::set_sizes`.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_set_settings(
+  obj: &mut PnsRouter,
+  settings: &PnsRouterSettings,
+) {
+  let (routing_settings, sizes) = derive_settings(
+    *obj.router.settings(),
+    &obj.rules,
+    obj.copper_layer_count,
+    settings,
+  );
+
+  // Only the host's own copy: the resolver inside the session keeps the
+  // gap the session was built with, see `LibrePcbRules::diff_pair_gap`.
+  obj.rules.diff_pair_gap = sizes.diff_pair_gap;
+
+  obj.router.set_settings(routing_settings);
+  obj.router.set_sizes(sizes);
+}
+
+/// The copper layer the route is being placed on, or a negative value when
+/// nothing is being routed.
+///
+/// Wraps `pnsrouter::router::Router::current_layer`.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_current_layer(obj: &PnsRouter) -> i32 {
+  obj.router.current_layer().unwrap_or(-1)
+}
+
+/// Whether the next fix would place a via.
+///
+/// Wraps `pnsrouter::router::Router::placing_via`.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_placing_via(obj: &PnsRouter) -> bool {
+  obj.router.placing_via()
+}
+
+/// Take the session recording out, in the crate's own text format.
+///
+/// Wraps `pnsrouter::router::Router::take_recording` followed by
+/// `pnsrouter::eventlog::SessionRecording::to_text`. Taking the recording
+/// ends it, which is the crate's semantics, so a host that wants to keep
+/// recording has to build a new session.
+///
+/// Answers false and leaves `out` alone when the session was not created
+/// with `record_session`, or when its recording has already been taken.
+/// The text parses back with
+/// `pnsrouter::eventlog::SessionRecording::from_text`, so it can be
+/// dropped into the crate's `tests/fixtures/sessions/` unchanged.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_take_recording(
+  obj: &mut PnsRouter,
+  out: &mut QString,
+) -> bool {
+  let Some(recording) = obj.router.take_recording() else {
+    return false;
+  };
+
+  qstring_set(out, &recording.to_text());
+  true
+}
+
+// ---------------------------------------------------------------------
+// Session events
+// ---------------------------------------------------------------------
+
+/// Find every host object under a point and return how many there are.
+///
+/// Wraps `pnsrouter::router::Router::hover`. `layer` is the dense copper
+/// layer index to filter by, or a negative value for "any layer". The
+/// answer is kept in the session and read back with
+/// [`ffi_pnsrouter_hover_at`], for the same reason the preview is; see
+/// [`PnsRouter`].
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_hover(
+  obj: &mut PnsRouter,
+  at: PnsPoint,
+  layer: i32,
+) -> usize {
+  let filter = if layer < 0 { None } else { Some(layer) };
+
+  obj.hover = obj.router.hover(to_cursor(at), filter);
+
+  obj.hover.len()
+}
+
+/// One host id of the last [`ffi_pnsrouter_hover`].
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_hover_at(obj: &PnsRouter, index: usize) -> u64 {
+  let Some(host) = obj.hover.get(index) else {
+    debug_assert!(false, "hover index {index} is out of range");
+
+    return 0;
+  };
+
+  host.0
+}
+
+/// Whether a route may be started at a point.
+///
+/// Wraps `pnsrouter::router::Router::is_starting_point_routable`. `start`
+/// is the host object under the cursor, or zero for free space.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_is_starting_point_routable(
+  obj: &PnsRouter,
+  at: PnsPoint,
+  start: u64,
+  layer: i32,
+) -> PnsStartResult {
+  to_start_result(obj.router.is_starting_point_routable(
+    to_cursor(at),
+    to_host_id(start),
+    layer,
+  ))
+}
+
+/// Begin routing a track.
+///
+/// Wraps `pnsrouter::router::Router::start_routing`. `start` is the host
+/// object under the cursor, or zero for free space. On success the
+/// session holds the frame of a placement that has not been moved yet,
+/// and on failure it holds an empty one.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_start_routing(
+  obj: &mut PnsRouter,
+  at: PnsPoint,
+  start: u64,
+  layer: i32,
+) -> PnsStartResult {
+  match obj
+    .router
+    .start_routing(to_cursor(at), to_host_id(start), layer)
+  {
+    Ok(frame) => {
+      obj.set_frame(frame);
+
+      PnsStartResult::Ok
+    }
+    Err(error) => {
+      obj.set_frame(PreviewFrame::default());
+
+      to_start_result(Err(error))
+    }
+  }
+}
+
+/// Whether a differential pair may be started at a point.
+///
+/// Wraps `pnsrouter::router::Router::is_starting_point_routable_diff_pair`.
+/// Unlike the single track gate, `start` may not be zero: the engine has
+/// no other way to learn which two nets are being routed, and a zero is
+/// [`PnsStartResult::PairNeedsStartItem`].
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_is_starting_point_routable_diff_pair(
+  obj: &PnsRouter,
+  at: PnsPoint,
+  start: u64,
+  layer: i32,
+) -> PnsStartResult {
+  to_start_result(obj.router.is_starting_point_routable_diff_pair(
+    to_cursor(at),
+    to_host_id(start),
+    layer,
+  ))
+}
+
+/// Begin routing a differential pair.
+///
+/// Wraps `pnsrouter::router::Router::start_routing_diff_pair`. Which two
+/// nets are routed comes from the snapshot's pair table, through the
+/// resolver hooks [`ffi_pnsrouter_snapshot_set_net_partner`] fills in. On
+/// success the session holds the frame of a placement that has not been
+/// moved yet, and on failure it holds an empty one.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_start_routing_diff_pair(
+  obj: &mut PnsRouter,
+  at: PnsPoint,
+  start: u64,
+  layer: i32,
+) -> PnsStartResult {
+  match obj.router.start_routing_diff_pair(
+    to_cursor(at),
+    to_host_id(start),
+    layer,
+  ) {
+    Ok(frame) => {
+      obj.set_frame(frame);
+
+      PnsStartResult::Ok
+    }
+    Err(error) => {
+      obj.set_frame(PreviewFrame::default());
+
+      to_start_result(Err(error))
+    }
+  }
+}
+
+/// Begin length tuning the track under a point.
+///
+/// Wraps `pnsrouter::router::Router::start_tuning`,
+/// `start_tuning_diff_pair` and `start_tuning_skew`, told apart by `mode`.
+/// Unlike a track placement there is no start gate to ask first and no
+/// layer argument: the engine reads the layer off the clicked track, and
+/// the only refusals are the placer's own.
+///
+/// `host_id` is required; a zero is
+/// [`PnsStartResult::TuningNeedsStartItem`]. On success the session holds
+/// the frame of a tuning which has not been moved yet, so the cursor has
+/// consumed none of the track, and on failure it holds an empty one.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_start_tuning(
+  obj: &mut PnsRouter,
+  at: PnsPoint,
+  host_id: u64,
+  mode: PnsTuningMode,
+  settings: &PnsMeanderSettings,
+) -> PnsStartResult {
+  let Some(host) = to_host_id(host_id) else {
+    return PnsStartResult::TuningNeedsStartItem;
+  };
+  let Ok(meander) = MeanderSettings::new(to_meander_request(settings)) else {
+    return PnsStartResult::InvalidMeanderSettings;
+  };
+
+  let cursor = to_cursor(at);
+  let result = match mode {
+    PnsTuningMode::Single => obj.router.start_tuning(cursor, host, meander),
+    PnsTuningMode::DiffPair => {
+      obj.router.start_tuning_diff_pair(cursor, host, meander)
+    }
+    PnsTuningMode::Skew => obj.router.start_tuning_skew(cursor, host, meander),
+  };
+
+  match result {
+    Ok(frame) => {
+      obj.set_frame(frame);
+
+      PnsStartResult::Ok
+    }
+    Err(error) => {
+      obj.set_frame(PreviewFrame::default());
+
+      to_start_result(Err(error))
+    }
+  }
+}
+
+/// Whether one of the three length tuning modes is running.
+///
+/// Wraps `pnsrouter::router::RouterState::is_tuning`. A tuning session is
+/// also a routing session for [`ffi_pnsrouter_routing_in_progress`],
+/// because the same move, fix, stop and abort entry points drive it.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_is_tuning(obj: &PnsRouter) -> bool {
+  obj.router.state().is_tuning()
+}
+
+/// Nudge the meander amplitude by one step.
+///
+/// Wraps `pnsrouter::router::Router::amplitude_step`. `sign` is a
+/// direction and not a distance; the distance is
+/// [`PnsMeanderSettings::step`]. This produces no frame, so a host follows
+/// it with a [`ffi_pnsrouter_move_to`] at the same point, which is what
+/// makes the preview follow.
+///
+/// False when no tuning session is running.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_amplitude_step(
+  obj: &mut PnsRouter,
+  sign: i32,
+) -> bool {
+  obj.router.amplitude_step(sign)
+}
+
+/// Nudge the meander spacing by one step.
+///
+/// Wraps `pnsrouter::router::Router::spacing_step`. The new spacing is
+/// floored by the tuned track's width plus its clearance, so a decrease
+/// can be refused by the floor and still answer true: the answer is "a
+/// tuning session took this", not "the value changed". See
+/// [`ffi_pnsrouter_amplitude_step`] for the rest.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_spacing_step(
+  obj: &mut PnsRouter,
+  sign: i32,
+) -> bool {
+  obj.router.spacing_step(sign)
+}
+
+/// The nets the session is routing or dragging.
+///
+/// Wraps `pnsrouter::router::Router::current_nets`. Answers how many nets
+/// there are, which is zero while idle, one for a track or a drag and two
+/// for a differential pair, and writes the net numbers into `out_p` and
+/// `out_n`, the positive half first. A net number of zero is a route with
+/// no net of the host's, which is what a track started in free space gets.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_current_nets(
+  obj: &PnsRouter,
+  out_p: &mut u32,
+  out_n: &mut u32,
+) -> u32 {
+  *out_p = 0;
+  *out_n = 0;
+
+  match obj.router.current_nets() {
+    RoutedNets::None => 0,
+    RoutedNets::Single(net) => {
+      *out_p = to_net_number(net);
+
+      1
+    }
+    RoutedNets::Pair(net_p, net_n) => {
+      *out_p = to_net_number(net_p);
+      *out_n = to_net_number(net_n);
+
+      2
+    }
+  }
+}
+
+/// Begin dragging existing board objects.
+///
+/// Wraps `pnsrouter::router::Router::start_dragging`. `host_ids` points at
+/// `host_id_count` board objects to drag; a zero in the list is dropped,
+/// and an empty set is [`PnsStartResult::NothingToDrag`]. The crate picks
+/// the algorithm from the shape of the set: nothing but pads is KiCad's
+/// component drag, which moves the whole footprint and reports the offset
+/// through [`ffi_pnsrouter_commit_moved_solid_at`], more than one track is
+/// a multi drag, and anything else is a single drag.
+///
+/// `free_angle` reaches the single dragger only and drags the clicked
+/// corner without the 45 degree constraint; every other drag mode is
+/// decided by the crate from the clicked object and the click position.
+///
+/// On success the session holds the frame of a drag that has not moved
+/// yet, which is empty, so a host follows this with a move exactly as
+/// KiCad's does.
+///
+/// # Safety
+///
+/// `host_ids` must point at `host_id_count` readable `u64` for the
+/// duration of the call, or be null when the count is zero.
+#[no_mangle]
+unsafe extern "C" fn ffi_pnsrouter_start_dragging(
+  obj: &mut PnsRouter,
+  at: PnsPoint,
+  host_ids: *const u64,
+  host_id_count: usize,
+  free_angle: bool,
+) -> PnsStartResult {
+  let raw: &[u64] = if host_ids.is_null() || host_id_count == 0 {
+    &[]
+  } else {
+    // SAFETY: the caller promises the pointer and the count agree.
+    unsafe { std::slice::from_raw_parts(host_ids, host_id_count) }
+  };
+  let items: Vec<HostId> =
+    raw.iter().filter_map(|id| to_host_id(*id)).collect();
+
+  match obj.router.start_dragging(to_cursor(at), &items, free_angle) {
+    Ok(frame) => {
+      obj.set_frame(frame);
+
+      PnsStartResult::Ok
+    }
+    Err(error) => {
+      obj.set_frame(PreviewFrame::default());
+
+      to_start_result(Err(error))
+    }
+  }
+}
+
+/// Whether an existing object is being dragged.
+///
+/// `pnsrouter::router::RouterState::DragSegment`, which is the one thing
+/// [`ffi_pnsrouter_routing_in_progress`] cannot tell apart from a
+/// placement. The state enum itself does not cross: it has three values
+/// and this pair of predicates already answers all of them.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_is_dragging(obj: &PnsRouter) -> bool {
+  matches!(
+    obj.router.state(),
+    RouterState::DragSegment | RouterState::DragComponent
+  )
+}
+
+/// Move the end of the route, and store the frame it produced.
+///
+/// Wraps `pnsrouter::router::Router::move_to`. `at` is already snapped:
+/// snapping is host work. `end` is the host object under the cursor, or
+/// zero for free space.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_move_to(
+  obj: &mut PnsRouter,
+  at: PnsPoint,
+  end: u64,
+) {
+  let frame = obj.router.move_to(to_cursor(at), to_host_id(end));
+
+  obj.set_frame(frame);
+}
+
+/// Pin the route down to where the cursor is.
+///
+/// Wraps `pnsrouter::router::Router::fix_route`. A
+/// [`PnsFixOutcome::Continue`] leaves the frame after the fix in the
+/// session; a [`PnsFixOutcome::Finished`] leaves the commit there instead
+/// and clears the frame.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_fix_route(
+  obj: &mut PnsRouter,
+  at: PnsPoint,
+  end: u64,
+  force_finish: bool,
+) -> PnsFixOutcome {
+  match obj
+    .router
+    .fix_route(to_cursor(at), to_host_id(end), force_finish)
+  {
+    FixOutcome::Continue(frame) => {
+      obj.set_frame(frame);
+
+      PnsFixOutcome::Continue
+    }
+    FixOutcome::Finished(diff) => {
+      obj.set_diff(diff);
+
+      PnsFixOutcome::Finished
+    }
+  }
+}
+
+/// Route the rest of the way to the nearest unconnected anchor and finish.
+///
+/// Wraps `pnsrouter::router::Router::finish`, whose `None` becomes
+/// [`PnsFixOutcome::NotRouting`]: nothing was being routed, nothing
+/// unconnected was left to reach, or the route did not settle on the
+/// anchor. Nothing was committed in that case and the session is left
+/// exactly as it was.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_finish(obj: &mut PnsRouter) -> PnsFixOutcome {
+  match obj.router.finish() {
+    Some(FixOutcome::Continue(frame)) => {
+      obj.set_frame(frame);
+
+      PnsFixOutcome::Continue
+    }
+    Some(FixOutcome::Finished(diff)) => {
+      obj.set_diff(diff);
+
+      PnsFixOutcome::Finished
+    }
+    None => PnsFixOutcome::NotRouting,
+  }
+}
+
+/// Undo the last fix and answer where the undone leg began.
+///
+/// Wraps `pnsrouter::router::Router::undo_last_segment`, whose answer a
+/// host uses to warp the cursor back there. False when nothing was being
+/// routed or when there was nothing to undo, in which case `out` is not
+/// written.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_undo_last_segment(
+  obj: &mut PnsRouter,
+  out: &mut PnsPoint,
+) -> bool {
+  match obj.router.undo_last_segment() {
+    Some(at) => {
+      *out = to_ffi_point(at);
+
+      true
+    }
+    None => false,
+  }
+}
+
+/// Move the route to another copper layer.
+///
+/// Wraps `pnsrouter::router::Router::switch_layer`, which refuses once a
+/// fix has ended a leg without leaving a via behind.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_switch_layer(
+  obj: &mut PnsRouter,
+  layer: i32,
+) -> bool {
+  obj.router.switch_layer(layer)
+}
+
+/// Arm or disarm the via the next fix would place.
+///
+/// Wraps `pnsrouter::router::Router::toggle_via_placement`. The answer is
+/// whether the request was honoured, not the new state; read that back
+/// with [`ffi_pnsrouter_placing_via`]. The via is only materialised on the
+/// next move, so a host has to move before the preview shows it.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_toggle_via_placement(obj: &mut PnsRouter) -> bool {
+  obj.router.toggle_via_placement()
+}
+
+/// Turn the route's first corner the other way.
+///
+/// Wraps `pnsrouter::router::Router::flip_posture`.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_flip_posture(obj: &mut PnsRouter) {
+  obj.router.flip_posture();
+}
+
+// The corner mode has no entry point of its own: it is
+// `PnsRouterSettings::corner_mode_90`, which the host sets absolutely
+// rather than cycling, so that a rebuilt session starts on the mode the
+// user left. `pnsrouter::router::Router::toggle_corner_mode` is the
+// engine's own cycle and is not wrapped.
+
+/// Commit what was routed and end the session.
+///
+/// Wraps `pnsrouter::router::Router::stop_routing`. The commit is left in
+/// the session and read back with the accessors below. An idle session
+/// answers with an empty commit.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_stop_routing(obj: &mut PnsRouter) {
+  let diff = obj.router.stop_routing();
+
+  obj.set_diff(diff);
+}
+
+/// Throw the session away without committing anything.
+///
+/// Wraps `pnsrouter::router::Router::abort_routing`. Both the frame and
+/// the commit are cleared, so a host that reads them afterwards sees
+/// nothing rather than the state the aborted route left behind.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_abort_routing(obj: &mut PnsRouter) {
+  obj.router.abort_routing();
+  obj.set_diff(CommitDiff::default());
+}
+
+// ---------------------------------------------------------------------
+// Reading the latest preview frame
+// ---------------------------------------------------------------------
+
+/// How many polylines the latest frame holds.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_item_count(obj: &PnsRouter) -> usize {
+  obj.frame.items.len()
+}
+
+/// One polyline of the latest frame, minus its points.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_item(
+  obj: &PnsRouter,
+  index: usize,
+  out: &mut PnsPreviewItem,
+) {
+  let Some(item) = obj.frame.items.get(index) else {
+    debug_assert!(false, "preview item index {index} is out of range");
+
+    return;
+  };
+
+  *out = PnsPreviewItem {
+    point_count: item.chain.point_count(),
+    width: i64::from(item.width),
+    layer: item.layer,
+    net: to_net_number(item.net),
+    style: to_ffi_style(item.style),
+    clearance: to_ffi_clearance(item.clearance),
+  };
+}
+
+/// One point of one polyline of the latest frame.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_item_point(
+  obj: &PnsRouter,
+  item_index: usize,
+  point_index: usize,
+) -> PnsPoint {
+  let Some(item) = obj.frame.items.get(item_index) else {
+    debug_assert!(false, "preview item index {item_index} is out of range");
+
+    return PnsPoint { x: 0, y: 0 };
+  };
+
+  if point_index >= item.chain.point_count() {
+    debug_assert!(false, "preview point index {point_index} is out of range");
+
+    return PnsPoint { x: 0, y: 0 };
+  }
+
+  to_ffi_point(item.chain.point(point_index))
+}
+
+/// Whether the latest frame holds the via the next fix would place.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_has_via(obj: &PnsRouter) -> bool {
+  obj.frame.via.is_some()
+}
+
+/// The via the next fix would place, when
+/// [`ffi_pnsrouter_preview_has_via`] answers true.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_via(
+  obj: &PnsRouter,
+  out: &mut PnsPreviewVia,
+) {
+  let Some(via) = obj.frame.via.as_ref() else {
+    debug_assert!(false, "the frame holds no head via");
+
+    return;
+  };
+
+  *out = to_ffi_via(via);
+}
+
+/// Whether the latest frame holds the N lane's half of a pending
+/// differential pair via.
+///
+/// `PreviewFrame::via_n`, which is always absent while a single track is
+/// being routed; the P lane's half is [`ffi_pnsrouter_preview_via`].
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_has_via_n(obj: &PnsRouter) -> bool {
+  obj.frame.via_n.is_some()
+}
+
+/// The N lane's half of a pending differential pair via, when
+/// [`ffi_pnsrouter_preview_has_via_n`] answers true.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_via_n(
+  obj: &PnsRouter,
+  out: &mut PnsPreviewVia,
+) {
+  let Some(via) = obj.frame.via_n.as_ref() else {
+    debug_assert!(false, "the frame holds no N lane head via");
+
+    return;
+  };
+
+  *out = to_ffi_via(via);
+}
+
+/// How many vias this session has already fixed.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_fixed_via_count(obj: &PnsRouter) -> usize {
+  obj.frame.fixed_vias.len()
+}
+
+/// One via this session has already fixed.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_fixed_via(
+  obj: &PnsRouter,
+  index: usize,
+  out: &mut PnsPreviewVia,
+) {
+  let Some(via) = obj.frame.fixed_vias.get(index) else {
+    debug_assert!(false, "fixed via index {index} is out of range");
+
+    return;
+  };
+
+  *out = to_ffi_via(via);
+}
+
+/// How many points the rat line from the end of the route holds, zero
+/// when there is none.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_ratline_point_count(
+  obj: &PnsRouter,
+) -> usize {
+  obj.frame.ratline.as_ref().map_or(0, LineChain::point_count)
+}
+
+/// One point of the rat line from the end of the route.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_ratline_point(
+  obj: &PnsRouter,
+  index: usize,
+) -> PnsPoint {
+  let Some(ratline) = obj.frame.ratline.as_ref() else {
+    debug_assert!(false, "the frame holds no rat line");
+
+    return PnsPoint { x: 0, y: 0 };
+  };
+
+  if index >= ratline.point_count() {
+    debug_assert!(false, "rat line point index {index} is out of range");
+
+    return PnsPoint { x: 0, y: 0 };
+  }
+
+  to_ffi_point(ratline.point(index))
+}
+
+/// How many points the N lane's rat line holds, zero when there is none.
+///
+/// `PreviewFrame::ratline_n`, the second rat line a differential pair
+/// draws; always empty while a single track is being routed.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_ratline_n_point_count(
+  obj: &PnsRouter,
+) -> usize {
+  obj
+    .frame
+    .ratline_n
+    .as_ref()
+    .map_or(0, LineChain::point_count)
+}
+
+/// One point of the N lane's rat line.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_ratline_n_point(
+  obj: &PnsRouter,
+  index: usize,
+) -> PnsPoint {
+  let Some(ratline) = obj.frame.ratline_n.as_ref() else {
+    debug_assert!(false, "the frame holds no N lane rat line");
+
+    return PnsPoint { x: 0, y: 0 };
+  };
+
+  if index >= ratline.point_count() {
+    debug_assert!(false, "N lane rat line point index {index} is out of range");
+
+    return PnsPoint { x: 0, y: 0 };
+  }
+
+  to_ffi_point(ratline.point(index))
+}
+
+/// How many obstacles the route being placed runs into.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_violation_count(obj: &PnsRouter) -> usize {
+  obj.frame.violations.len()
+}
+
+/// One obstacle the route being placed runs into.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_violation(
+  obj: &PnsRouter,
+  index: usize,
+  out: &mut PnsViolationMarker,
+) {
+  let Some(marker) = obj.frame.violations.get(index) else {
+    debug_assert!(false, "violation index {index} is out of range");
+
+    return;
+  };
+
+  *out = PnsViolationMarker {
+    host_id: marker.host.map_or(0, |host| host.0),
+    clearance: i64::from(marker.clearance),
+    forced_layer: marker.forced_layer.unwrap_or(-1),
+    hide_original: marker.hide_original,
+  };
+}
+
+/// How many board objects the host must stop drawing.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_hidden_count(obj: &PnsRouter) -> usize {
+  obj.frame.hidden.len()
+}
+
+/// One board object the host must stop drawing.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_hidden_at(
+  obj: &PnsRouter,
+  index: usize,
+) -> u64 {
+  let Some(host) = obj.frame.hidden.get(index) else {
+    debug_assert!(false, "hidden index {index} is out of range");
+
+    return 0;
+  };
+
+  host.0
+}
+
+/// The tuning readout of the latest frame.
+///
+/// `PreviewFrame::tuning`, which every move of a tuning session refreshes
+/// and which is absent from every routing and dragging frame. False when
+/// there is none, in which case `out` is not written.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_tuning(
+  obj: &PnsRouter,
+  out: &mut PnsTuningInfo,
+) -> bool {
+  let Some(tuning) = obj.frame.tuning.as_ref() else {
+    return false;
+  };
+
+  *out = to_ffi_tuning(tuning);
+
+  true
+}
+
+/// How many board objects the host must draw at an offset.
+///
+/// One entry per pad a component drag is moving, and empty for every
+/// other session.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_moved_solid_count(
+  obj: &PnsRouter,
+) -> usize {
+  obj.frame.moved_solids.len()
+}
+
+/// One board object the host must draw at an offset, and the offset.
+///
+/// The pad is also in [`ffi_pnsrouter_preview_hidden_at`], because a host
+/// that cannot draw it moved must at least stop drawing it where it is.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_preview_moved_solid_at(
+  obj: &PnsRouter,
+  index: usize,
+  out_host: &mut u64,
+  out_offset: &mut PnsPoint,
+) {
+  let Some((host, offset)) = obj.frame.moved_solids.get(index) else {
+    debug_assert!(false, "moved solid index {index} is out of range");
+
+    return;
+  };
+
+  *out_host = host.0;
+  *out_offset = to_ffi_point(*offset);
+}
+
+// ---------------------------------------------------------------------
+// Reading the latest commit
+// ---------------------------------------------------------------------
+
+/// How many board objects the latest commit deletes.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_commit_removed_count(obj: &PnsRouter) -> usize {
+  obj.diff.removed.len()
+}
+
+/// One board object the latest commit deletes.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_commit_removed_at(
+  obj: &PnsRouter,
+  index: usize,
+) -> u64 {
+  let Some(host) = obj.diff.removed.get(index) else {
+    debug_assert!(false, "removed index {index} is out of range");
+
+    return 0;
+  };
+
+  host.0
+}
+
+/// How many board objects the latest commit creates.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_commit_added_count(obj: &PnsRouter) -> usize {
+  obj.diff.added.len()
+}
+
+/// One board object the latest commit creates.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_commit_added_at(
+  obj: &PnsRouter,
+  index: usize,
+  out: &mut PnsNewItem,
+) {
+  let Some(item) = obj.diff.added.get(index) else {
+    debug_assert!(false, "added index {index} is out of range");
+
+    return;
+  };
+
+  *out = to_ffi_new_item(item);
+}
+
+/// How many board objects the latest commit rewrites in place.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_commit_updated_count(obj: &PnsRouter) -> usize {
+  obj.diff.updated.len()
+}
+
+/// One board object the latest commit rewrites in place, and the host id
+/// whose identity it keeps.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_commit_updated_at(
+  obj: &PnsRouter,
+  index: usize,
+  out_host: &mut u64,
+  out_item: &mut PnsNewItem,
+) {
+  let Some((host, item)) = obj.diff.updated.get(index) else {
+    debug_assert!(false, "updated index {index} is out of range");
+
+    return;
+  };
+
+  *out_host = host.0;
+  *out_item = to_ffi_new_item(item);
+}
+
+/// How many pads the latest commit moved.
+///
+/// One entry per pad of the device a component drag moved, and empty for
+/// every other session.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_commit_moved_solid_count(obj: &PnsRouter) -> usize {
+  obj.diff.moved_solids.len()
+}
+
+/// One pad the latest commit moved, and how far it moved.
+///
+/// The pad itself is not in any of the other three lists: the host moves
+/// whatever owns the pad by the offset instead, once per owner, and the
+/// traces the drag re-shaped arrive as ordinary removals and additions
+/// whose endpoints are already the pad's new anchor positions.
+#[no_mangle]
+extern "C" fn ffi_pnsrouter_commit_moved_solid_at(
+  obj: &PnsRouter,
+  index: usize,
+  out_host: &mut u64,
+  out_offset: &mut PnsPoint,
+) {
+  let Some((host, offset)) = obj.diff.moved_solids.get(index) else {
+    debug_assert!(false, "moved solid index {index} is out of range");
+
+    return;
+  };
+
+  *out_host = host.0;
+  *out_offset = to_ffi_point(*offset);
+}
+
+// ---------------------------------------------------------------------
+// Session conversion helpers
+// ---------------------------------------------------------------------
+
+/// Narrow one cursor point to the engine's `i32` nanometres.
+///
+/// Unlike the snapshot builder, which rejects an out of range coordinate
+/// so that the host can name the board item, a cursor is clamped: it is
+/// not a board object, there is nothing to name, and clamping to the range
+/// the engine works in cannot wrap.
+fn to_cursor(point: PnsPoint) -> Vec2 {
+  let clamp = |value: i64| {
+    value.clamp(-MAX_COORDINATE, MAX_COORDINATE) as i32 // Never truncates.
+  };
+
+  Vec2::new(clamp(point.x), clamp(point.y))
+}
+
+/// Widen one engine point back to host nanometres.
+fn to_ffi_point(at: Vec2) -> PnsPoint {
+  PnsPoint {
+    x: i64::from(at.x),
+    y: i64::from(at.y),
+  }
+}
+
+/// Turn a host id of zero into "no object".
+fn to_host_id(host: u64) -> Option<HostId> {
+  (host > 0).then_some(HostId(host))
+}
+
+/// Turn an engine net back into the host's net number.
+///
+/// The inverse of `to_item`'s net handling: no net is zero and net `n` is
+/// `n + 1`. The engine's orphan net, `NetId(u32::MAX)`, is the one net a
+/// host never sent and has no signal for, so it reads back as "no net"
+/// too; the C++ side turns both into a null `NetSignal`.
+fn to_net_number(net: Option<NetId>) -> u32 {
+  match net {
+    Some(net) if net.0 < u32::MAX => net.0 + 1,
+    _ => 0,
+  }
+}
+
+/// Turn an optional clearance into the negative-for-none convention.
+fn to_ffi_clearance(clearance: Option<i32>) -> i64 {
+  clearance.map_or(-1, i64::from)
+}
+
+/// Turn one engine preview style into its FFI value.
+fn to_ffi_style(style: PreviewStyle) -> PnsPreviewStyle {
+  match style {
+    PreviewStyle::Head => PnsPreviewStyle::Head,
+    PreviewStyle::Tail => PnsPreviewStyle::Tail,
+    PreviewStyle::Hover => PnsPreviewStyle::Hover,
+    PreviewStyle::SemiSolid => PnsPreviewStyle::SemiSolid,
+    PreviewStyle::Collision => PnsPreviewStyle::Collision,
+  }
+}
+
+/// Turn one engine via type into its FFI value.
+///
+/// The engine has five values where LibrePCB has three. A micro via is a
+/// blind via between an outer layer and its neighbour, so it reports as
+/// blind, and the unset value reports as a through via, which is the only
+/// kind this router places.
+fn to_ffi_via_type(via_type: ViaType) -> PnsViaType {
+  match via_type {
+    ViaType::Blind | ViaType::MicroVia => PnsViaType::Blind,
+    ViaType::Buried => PnsViaType::Buried,
+    ViaType::Through | ViaType::NotDefined => PnsViaType::Through,
+  }
+}
+
+/// Turn one engine preview via into its FFI struct.
+fn to_ffi_via(via: &PreviewVia) -> PnsPreviewVia {
+  PnsPreviewVia {
+    pos: to_ffi_point(via.pos),
+    diameter: i64::from(via.diameter),
+    drill: i64::from(via.drill),
+    layer_start: via.layers.start(),
+    layer_end: via.layers.end(),
+    net: to_net_number(via.net),
+    style: to_ffi_style(via.style),
+    clearance: to_ffi_clearance(via.clearance),
+  }
+}
+
+/// Turn one engine commit item into its FFI struct.
+fn to_ffi_new_item(item: &NewItem) -> PnsNewItem {
+  let mut out = PnsNewItem {
+    kind: PnsNewGeometryKind::Segment,
+    net: to_net_number(item.net),
+    layer_start: item.layers.start(),
+    layer_end: item.layers.end(),
+    source: item.source.map_or(0, |host| host.0),
+    p1: PnsPoint { x: 0, y: 0 },
+    p2: PnsPoint { x: 0, y: 0 },
+    mid: PnsPoint { x: 0, y: 0 },
+    width: 0,
+    pos: PnsPoint { x: 0, y: 0 },
+    diameter: 0,
+    drill: 0,
+    via_type: PnsViaType::Through,
+  };
+
+  match item.geometry {
+    NewGeometry::Segment { seg, width } => {
+      out.kind = PnsNewGeometryKind::Segment;
+      out.p1 = to_ffi_point(seg.a);
+      out.p2 = to_ffi_point(seg.b);
+      out.width = i64::from(width);
+    }
+    // The three points cross unchanged. Turning them into an angle here
+    // would be the wrong place for it and lossy besides
+    // (`Toolbox::arcAngleFrom3Points` says so of itself,
+    // `libs/librepcb/core/utils/toolbox.h:237`), and the applier refuses
+    // the item anyway; see [`PnsNewGeometryKind::Arc`].
+    NewGeometry::Arc {
+      start,
+      mid,
+      end,
+      width,
+    } => {
+      out.kind = PnsNewGeometryKind::Arc;
+      out.p1 = to_ffi_point(start);
+      out.p2 = to_ffi_point(end);
+      out.mid = to_ffi_point(mid);
+      out.width = i64::from(width);
+    }
+    NewGeometry::Via {
+      pos,
+      diameter,
+      drill,
+      via_type,
+    } => {
+      out.kind = PnsNewGeometryKind::Via;
+      out.pos = to_ffi_point(pos);
+      out.diameter = i64::from(diameter);
+      out.drill = i64::from(drill);
+      out.via_type = to_ffi_via_type(via_type);
+    }
+  }
+
+  out
+}
+
+/// Flatten a start result into its FFI enum.
+fn to_start_result(result: Result<(), StartError>) -> PnsStartResult {
+  match result {
+    Ok(()) => PnsStartResult::Ok,
+    Err(StartError::AlreadyRouting) => PnsStartResult::AlreadyRouting,
+    Err(StartError::UnknownStartItem(_)) => PnsStartResult::UnknownStartItem,
+    Err(StartError::NotRoutable(_)) => PnsStartResult::NotRoutable,
+    Err(StartError::StartPointViolatesRules) => {
+      PnsStartResult::StartPointViolatesRules
+    }
+    Err(StartError::PlacerRefused) => PnsStartResult::PlacerRefused,
+    Err(StartError::NothingToDrag) => PnsStartResult::NothingToDrag,
+    Err(StartError::NotDraggable(_)) => PnsStartResult::NotDraggable,
+    Err(StartError::PairNeedsStartItem) => PnsStartResult::PairNeedsStartItem,
+    Err(StartError::NotADiffPair) => PnsStartResult::NotADiffPair,
+    Err(StartError::NoDanglingAnchor) => PnsStartResult::NoDanglingAnchor,
+    Err(StartError::NoCoupledStartItem(_)) => {
+      PnsStartResult::NoCoupledStartItem
+    }
+    Err(StartError::PairGapBelowMinClearance) => {
+      PnsStartResult::PairGapBelowMinClearance
+    }
+    Err(StartError::PairGapMismatch) => PnsStartResult::PairGapMismatch,
+    Err(StartError::TuningNeedsStartItem) => {
+      PnsStartResult::TuningNeedsStartItem
+    }
+    Err(StartError::NotATrack(_)) => PnsStartResult::NotATrack,
+    Err(StartError::NoTuningPath) => PnsStartResult::NoTuningPath,
+    Err(StartError::NotADiffPairForTuning) => {
+      PnsStartResult::NotADiffPairForTuning
+    }
+    Err(StartError::NotADiffPairForSkew) => PnsStartResult::NotADiffPairForSkew,
+    Err(StartError::PairLaneHasNoSegments) => {
+      PnsStartResult::PairLaneHasNoSegments
+    }
+  }
+}
+
+/// Narrow one host length into the engine's `i32` nanometres, clamped.
+///
+/// The meander dimensions are cursor-like rather than board-like: they are
+/// toolbar numbers and there is no board item to name in an error, so an
+/// absurd one is clamped the way [`to_cursor`] clamps a cursor instead of
+/// refusing the whole start.
+fn to_meander_length(value: i64) -> i32 {
+  value.clamp(-MAX_COORDINATE, MAX_COORDINATE) as i32 // Never truncates.
+}
+
+/// Turn a flag plus a min, opt and max triple into a length target.
+fn to_length_target(
+  present: bool,
+  min: i64,
+  opt: i64,
+  max: i64,
+) -> Option<LengthTarget> {
+  present.then(|| LengthTarget::explicit(min, opt, max))
+}
+
+/// Turn the host's meander settings into the engine's request.
+fn to_meander_request(settings: &PnsMeanderSettings) -> MeanderSettingsRequest {
+  MeanderSettingsRequest {
+    min_amplitude: to_meander_length(settings.min_amplitude),
+    max_amplitude: to_meander_length(settings.max_amplitude),
+    spacing: to_meander_length(settings.spacing),
+    step: to_meander_length(settings.step),
+    // Named rather than left to the engine's default, which is `Round`
+    // and draws its corners as arcs. See [`PnsMeanderSettings`].
+    corner_style: MeanderStyle::Chamfer,
+    corner_radius_percentage: settings.corner_radius_percentage,
+    single_sided: settings.single_sided,
+    initial_side: match settings.initial_side {
+      PnsMeanderSide::Left => MeanderSide::Left,
+      PnsMeanderSide::Default => MeanderSide::Default,
+      PnsMeanderSide::Right => MeanderSide::Right,
+    },
+    keep_endpoints: settings.keep_endpoints,
+    target_length: to_length_target(
+      settings.has_target_length,
+      settings.target_length_min,
+      settings.target_length_opt,
+      settings.target_length_max,
+    ),
+    target_skew: to_length_target(
+      settings.has_target_skew,
+      settings.target_skew_min,
+      settings.target_skew_opt,
+      settings.target_skew_max,
+    ),
+  }
+}
+
+/// Turn one engine tuning readout into its FFI value.
+fn to_ffi_tuning(tuning: &TuningInfo) -> PnsTuningInfo {
+  let skew_target = tuning
+    .skew_target
+    .unwrap_or(LengthTarget::explicit(0, 0, 0));
+
+  PnsTuningInfo {
+    status: match tuning.status {
+      TuningStatus::TooShort => PnsTuningStatus::TooShort,
+      TuningStatus::TooLong => PnsTuningStatus::TooLong,
+      TuningStatus::Tuned => PnsTuningStatus::Tuned,
+    },
+    mode: match tuning.mode {
+      TuningMode::SingleLength => PnsTuningMode::Single,
+      TuningMode::PairLength => PnsTuningMode::DiffPair,
+      TuningMode::PairSkew => PnsTuningMode::Skew,
+    },
+    result: tuning.result,
+    has_delta: tuning.delta.is_some(),
+    delta: tuning.delta.unwrap_or(0),
+    target_min: tuning.target.min,
+    target_opt: tuning.target.opt,
+    target_max: tuning.target.max,
+    has_skew: tuning.skew.is_some(),
+    skew: tuning.skew.unwrap_or(0),
+    has_skew_target: tuning.skew_target.is_some(),
+    skew_target_min: skew_target.min,
+    skew_target_opt: skew_target.opt,
+    skew_target_max: skew_target.max,
+    has_coupled_length: tuning.coupled_length.is_some(),
+    coupled_length: tuning.coupled_length.unwrap_or(0),
+    amplitude: i64::from(tuning.settings.max_amplitude()),
+    spacing: i64::from(tuning.settings.spacing()),
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// An arc the engine committed crosses as its three points.
+  ///
+  /// The case is unreachable from LibrePCB, for the four reasons
+  /// [`PnsNewGeometryKind`] lists, but the conversion is what makes the
+  /// refusal in `CmdBoardApplyPnsCommit` possible: without the arc kind
+  /// and the mid point, an arc would arrive as the segment between its
+  /// endpoints and be stored as a straight trace across the chord.
+  #[test]
+  fn an_arc_commit_item_crosses_as_the_arc_kind_with_its_mid_point() {
+    let item = NewItem {
+      geometry: NewGeometry::Arc {
+        start: Vec2::new(1_000_000, 2_000_000),
+        mid: Vec2::new(1_500_000, 2_500_000),
+        end: Vec2::new(2_000_000, 2_000_000),
+        width: 250_000,
+      },
+      net: None,
+      layers: LayerRange::new(0, 0),
+      source: None,
+    };
+
+    let out = to_ffi_new_item(&item);
+
+    assert_eq!(out.kind, PnsNewGeometryKind::Arc);
+    assert_eq!((out.p1.x, out.p1.y), (1_000_000, 2_000_000));
+    assert_eq!((out.mid.x, out.mid.y), (1_500_000, 2_500_000));
+    assert_eq!((out.p2.x, out.p2.y), (2_000_000, 2_000_000));
+    assert_eq!(out.width, 250_000);
+  }
+
+  /// A straight track still crosses as a segment with no mid point.
+  ///
+  /// The companion of the case above: the mid point is a new field on a
+  /// struct every commit item goes through, so the kind a LibrePCB
+  /// session does produce has to be shown to be unmoved by it.
+  #[test]
+  fn a_segment_commit_item_still_crosses_as_the_segment_kind() {
+    let item = NewItem {
+      geometry: NewGeometry::Segment {
+        seg: Seg::new(Vec2::new(0, 0), Vec2::new(1_000_000, 0)),
+        width: 250_000,
+      },
+      net: None,
+      layers: LayerRange::new(0, 0),
+      source: None,
+    };
+
+    let out = to_ffi_new_item(&item);
+
+    assert_eq!(out.kind, PnsNewGeometryKind::Segment);
+    assert_eq!((out.p1.x, out.p1.y), (0, 0));
+    assert_eq!((out.p2.x, out.p2.y), (1_000_000, 0));
+    assert_eq!((out.mid.x, out.mid.y), (0, 0));
+    assert_eq!(out.width, 250_000);
+  }
+}
