@@ -23,12 +23,14 @@
 #include "boardpnssnapshot.h"
 
 #include "../../exceptions.h"
+#include "../../geometry/hole.h"
 #include "../../geometry/pad.h"
 #include "../../geometry/padgeometry.h"
 #include "../../geometry/padhole.h"
 #include "../../geometry/path.h"
 #include "../../geometry/via.h"
 #include "../../geometry/zone.h"
+#include "../../library/pkg/footprint.h"
 #include "../../types/layer.h"
 #include "../../utils/transform.h"
 #include "../circuit/circuit.h"
@@ -128,20 +130,30 @@ static rs::PnsShape polygonShape(const Path& path,
 }
 
 /**
- * Build the shape of one pad or board drill.
+ * Build the shapes of one pad or board drill, one per straight piece.
  *
- * A round hole is a circle, a straight two point slot is a capsule. A
- * curved or multi segment slot is approximated by the capsule between its
- * first and last vertex, which is wider than the slot but never narrower.
+ * A round hole is a circle and a slot is a capsule per segment of its path,
+ * so a bent slot is covered where it bends and not only between its ends. A
+ * curved slot is flattened first, and because every chord lies inside its
+ * arc, its capsules are widened by twice the flattening tolerance so that
+ * they are never narrower than the slot.
  */
-static rs::PnsShape drillShape(const Path& path,
-                               const Length& diameter) noexcept {
-  const QVector<Vertex>& vertices = path.getVertices();
-  if (vertices.count() < 2) {
-    return circleShape(vertices.first().getPos(), diameter);
+static QVector<rs::PnsShape> drillShapes(const Path& path,
+                                         const Length& diameter) noexcept {
+  if (path.getVertices().count() < 2) {
+    return {circleShape(path.getVertices().first().getPos(), diameter)};
   }
-  return segmentShape(vertices.first().getPos(), vertices.last().getPos(),
-                      diameter);
+  const Path flat = path.flattenedArcs(maxArcTolerance());
+  const QVector<Vertex>& vertices = flat.getVertices();
+  const Length width = path.isCurved()
+      ? (diameter + (*maxArcTolerance()) + (*maxArcTolerance()))
+      : diameter;
+  QVector<rs::PnsShape> shapes;
+  for (int i = 1; i < vertices.count(); ++i) {
+    shapes.append(segmentShape(vertices.at(i - 1).getPos(),
+                               vertices.at(i).getPos(), width));
+  }
+  return shapes;
 }
 
 /**
@@ -606,7 +618,11 @@ void BoardPnsSnapshot::addPad(BI_Pad& pad, int innerLayerCount) {
   ref.pad = &pad;
   const quint64 hostId = addHostRef(ref);
   const quint32 net = getNetNumber(pad.getNetSignal());
-  const PadHoleList& holes = pad.getProperties().getHoles();
+  QVector<rs::PnsShape> drills;
+  for (const PadHole& hole : pad.getProperties().getHoles()) {
+    drills +=
+        drillShapes(transform.map(*hole.getPath()), *hole.getDiameter());
+  }
 
   // The drill rides on the solid of the pad's component side layer, or on
   // the lowest copper layer that carries any copper at all. Putting it on
@@ -656,7 +672,7 @@ void BoardPnsSnapshot::addPad(BI_Pad& pad, int innerLayerCount) {
     const int pieceCount = natives.count() + outlines.count();
     for (int i = 0; i < pieceCount; ++i) {
       const bool emitHole =
-          (!holes.isEmpty()) && (layer == holeLayer) && (i == 0);
+          (!drills.isEmpty()) && (layer == holeLayer) && (i == 0);
       rs::PnsItemHeader header = makeHeader(hostId, net, layer, layer);
       header.compound_primitive = (pieceCount > 1);
       header.copper_clearance =
@@ -684,9 +700,7 @@ void BoardPnsSnapshot::addPad(BI_Pad& pad, int innerLayerCount) {
       geometry.pos = toFfi(pad.getPosition());
       geometry.has_hole = emitHole;
       if (emitHole) {
-        const PadHole& hole = *holes.first();
-        geometry.hole =
-            drillShape(transform.map(*hole.getPath()), *hole.getDiameter());
+        geometry.hole = drills.first();
       }
       check(static_cast<int>(rs::ffi_pnsrouter_snapshot_add_solid(
                 *mHandle, &header, &geometry)),
@@ -694,36 +708,52 @@ void BoardPnsSnapshot::addPad(BI_Pad& pad, int innerLayerCount) {
     }
   }
 
-  // A pad with more than one drill gets the remaining ones as bare holes,
+  // The remaining pieces of a slot and any further drill become bare holes,
   // because one solid can carry only one.
-  for (int i = 1; i < holes.count(); ++i) {
-    const PadHole& hole = *holes.value(i);
-    rs::PnsItemHeader header =
-        makeHeader(hostId, net, 0, mCopperLayerCount - 1);
-    header.routable = false;
-    const rs::PnsHoleGeometry geometry{
-        drillShape(transform.map(*hole.getPath()), *hole.getDiameter()),
-    };
-    check(static_cast<int>(rs::ffi_pnsrouter_snapshot_add_hole(
-              *mHandle, &header, &geometry)),
-          QString("pad %1").arg(pad.getUuid().toStr()));
-  }
+  addBareHoles(hostId, net, drills.mid(1),
+               QString("pad %1").arg(pad.getUuid().toStr()));
 }
 
 void BoardPnsSnapshot::addHoles(const Board& board) {
   foreach (BI_Hole* hole, board.getHoles()) {
     BoardPnsHostRef ref;
     ref.hole = hole;
-    rs::PnsItemHeader header =
-        makeHeader(addHostRef(ref), 0, 0, mCopperLayerCount - 1);
-    header.routable = false;
+    addBareHoles(addHostRef(ref), 0,
+                 drillShapes(*hole->getData().getPath(),
+                             *hole->getData().getDiameter()),
+                 QString("hole %1").arg(hole->getData().getUuid().toStr()));
+  }
 
-    const rs::PnsHoleGeometry geometry{
-        drillShape(*hole->getData().getPath(), *hole->getData().getDiameter()),
-    };
+  // The non plated holes of a footprint are library holes rather than pads,
+  // and the design rule check holds copper off them with the same clearance
+  // as off a board hole (BoardDesignRuleCheck::checkCopperHoleClearances()).
+  foreach (BI_Device* device, board.getDeviceInstances()) {
+    const Transform transform(device->getPosition(), device->getRotation(),
+                              device->getMirrored());
+    for (const Hole& hole : device->getLibFootprint().getHoles()) {
+      BoardPnsHostRef ref;
+      ref.device = device;
+      addBareHoles(
+          addHostRef(ref), 0,
+          drillShapes(transform.map(*hole.getPath()), *hole.getDiameter()),
+          QString("hole %1 of device %2")
+              .arg(hole.getUuid().toStr(),
+                   device->getComponentInstanceUuid().toStr()));
+    }
+  }
+}
+
+void BoardPnsSnapshot::addBareHoles(quint64 hostId, quint32 net,
+                                    const QVector<rs::PnsShape>& shapes,
+                                    const QString& item) {
+  rs::PnsItemHeader header =
+      makeHeader(hostId, net, 0, mCopperLayerCount - 1);
+  header.routable = false;
+  foreach (const rs::PnsShape& shape, shapes) {
+    const rs::PnsHoleGeometry geometry{shape};
     check(static_cast<int>(rs::ffi_pnsrouter_snapshot_add_hole(
               *mHandle, &header, &geometry)),
-          QString("hole %1").arg(hole->getData().getUuid().toStr()));
+          item);
   }
 }
 

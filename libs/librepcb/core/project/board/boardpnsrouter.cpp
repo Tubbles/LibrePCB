@@ -731,7 +731,7 @@ BoardPnsRouter::StartResult BoardPnsRouter::checkDraggableItems(
       continue;  // Dropped on the router side too.
     }
     const BoardPnsHostRef ref = getHostRef(hostId);
-    if (ref.hole || ref.polygon || ref.zone) {
+    if (ref.hole || ref.device || ref.polygon || ref.zone) {
       return StartResult::NotDraggable;
     } else if (ref.pad) {
       BI_Device* device = ref.pad->getDevice();
