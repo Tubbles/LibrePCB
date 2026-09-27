@@ -136,6 +136,11 @@ TEST_F(SlintHelpersTest, testTranslationWithUnicode) {
             static_cast<std::string_view>(out));
 }
 
+TEST_F(SlintHelpersTest, testKeySpace) {
+  // Must match the text of Slint key events, not the Qt key name "space".
+  EXPECT_EQ(" ", static_cast<std::string_view>(q2s(Qt::Key_Space)));
+}
+
 /*******************************************************************************
  *  End of File
  ******************************************************************************/
