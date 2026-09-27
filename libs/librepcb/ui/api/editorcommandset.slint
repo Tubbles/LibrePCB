@@ -219,9 +219,9 @@ export global EditorCommandSet {
         icon: @image-url("../../../font-awesome/svgs/solid/eye.svg"),
         text: "Approve and Go to Next DRC Message",
         status-tip: "Approve the message and go to the next unapproved one",
-        shortcut: "Ctrl+F8",
-        modifiers: { alt: false, control: true, shift: false, meta: false },
-        key: Key.F8,
+        shortcut: "Shift+Space",
+        modifiers: { alt: false, control: false, shift: true, meta: false },
+        key: Key.Space,
     };
 
     in property <EditorCommand> sheet-new: {

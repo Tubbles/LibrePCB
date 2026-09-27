@@ -304,7 +304,7 @@ public:
       QT_TR_NOOP("Approve the message and go to the next unapproved one"),
       ":/fa/solid/eye.svg",
       EditorCommand::Flags(),
-      {QKeySequence(Qt::CTRL | Qt::Key_F8)},
+      {QKeySequence(Qt::SHIFT | Qt::Key_Space)},
       &categoryEditor,
   };
   // EditorCommand projectLibraryUpdate{

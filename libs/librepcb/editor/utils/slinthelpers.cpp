@@ -287,6 +287,8 @@ slint::SharedString q2s(Qt::Key k) noexcept {
       return slint::platform::key_codes::CapsLock;
     case Qt::Key::Key_Meta:
       return slint::platform::key_codes::Meta;
+    case Qt::Key::Key_Space:
+      return slint::platform::key_codes::Space;
     case Qt::Key::Key_Up:
       return slint::platform::key_codes::UpArrow;
     case Qt::Key::Key_Down:
