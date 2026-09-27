@@ -131,6 +131,7 @@ add_executable(
   editor/project/board/boardgraphicsscenetest.cpp
   editor/project/board/boardpnspreviewtest.cpp
   editor/project/board/cmdboardapplypnscommittest.cpp
+  editor/project/board/cmdboardsetdrcmessageapprovedtest.cpp
   editor/project/board/cmdboardspecctraimporttest.cpp
   editor/project/board/pnssessionrecordertest.cpp
   editor/project/board/tracelengthcomparisondialogtest.cpp

@@ -214,6 +214,16 @@ export global EditorCommandSet {
         key: Key.F8,
     };
 
+    in property <EditorCommand> approve-drc-message-and-go-to-next: {
+        id: "approve_drc_message_and_go_to_next",
+        icon: @image-url("../../../font-awesome/svgs/solid/eye.svg"),
+        text: "Approve and Go to Next DRC Message",
+        status-tip: "Approve the message and go to the next unapproved one",
+        shortcut: "Ctrl+F8",
+        modifiers: { alt: false, control: true, shift: false, meta: false },
+        key: Key.F8,
+    };
+
     in property <EditorCommand> sheet-new: {
         id: "sheet_new",
         icon: @image-url("../../../font-awesome/svgs/solid/file-circle-plus.svg"),

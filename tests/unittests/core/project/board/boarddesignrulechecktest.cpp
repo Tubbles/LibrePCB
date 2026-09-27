@@ -25,6 +25,7 @@
 #include <librepcb/core/fileio/transactionalfilesystem.h>
 #include <librepcb/core/project/board/board.h>
 #include <librepcb/core/project/board/drc/boarddesignrulecheck.h>
+#include <librepcb/core/project/board/drc/boarddesignrulecheckmessages.h>
 #include <librepcb/core/project/project.h>
 #include <librepcb/core/project/projectloader.h>
 #include <librepcb/core/serialization/sexpression.h>
@@ -136,6 +137,101 @@ TEST(BoardDesignRuleCheckTest, testMessages) {
     for (const QString& s : summary) {
       std::cout << qPrintable(s) << "\n";
     }
+  }
+}
+
+TEST(BoardDesignRuleCheckTest, testCopperHoleClearanceMessageTexts) {
+  typedef DrcMsgCopperHoleClearanceViolation Msg;
+  typedef Msg::CopperType Type;
+  const BoardDesignRuleCheckData::Hole hole{
+      Uuid::createRandom(),
+      PositiveLength(1000000),
+      makeNonEmptyPath(Point(0, 0)),
+      std::nullopt,
+  };
+  auto text = [&hole](const QList<Type>& types) {
+    return Msg(hole, nullptr, types, UnsignedLength(200000), {})
+        .getMessage()
+        .toStdString();
+  };
+  EXPECT_EQ("Clearance copper ↔ hole < 0.2 mm", text({}));
+  EXPECT_EQ("Clearance copper (pad) ↔ hole < 0.2 mm", text({Type::Pad}));
+  EXPECT_EQ("Clearance copper (trace) ↔ hole < 0.2 mm", text({Type::Trace}));
+  EXPECT_EQ("Clearance copper (via) ↔ hole < 0.2 mm", text({Type::Via}));
+  EXPECT_EQ("Clearance copper (plane) ↔ hole < 0.2 mm", text({Type::Plane}));
+  EXPECT_EQ("Clearance copper (polygon) ↔ hole < 0.2 mm",
+            text({Type::Polygon}));
+  EXPECT_EQ("Clearance copper (circle) ↔ hole < 0.2 mm",
+            text({Type::Circle}));
+  EXPECT_EQ("Clearance copper (text) ↔ hole < 0.2 mm", text({Type::Text}));
+  EXPECT_EQ("Clearance copper (pad, trace, via) ↔ hole < 0.2 mm",
+            text({Type::Pad, Type::Trace, Type::Via}));
+}
+
+TEST(BoardDesignRuleCheckTest, testCopperHoleClearanceApprovalIsStable) {
+  typedef DrcMsgCopperHoleClearanceViolation Msg;
+  typedef Msg::CopperType Type;
+  const BoardDesignRuleCheckData::Hole hole{
+      Uuid::fromString("2bfeb64d-bade-4ca6-98e4-ff0bc443aa41"),
+      PositiveLength(1000000),
+      makeNonEmptyPath(Point(0, 0)),
+      std::nullopt,
+  };
+  const Msg withoutType(hole, nullptr, {}, UnsignedLength(200000), {});
+  const Msg withTypes(hole, nullptr, {Type::Pad, Type::Plane},
+                      UnsignedLength(200000), {});
+  EXPECT_EQ(withoutType.getApproval(), withTypes.getApproval());
+  EXPECT_EQ(
+      "(approved copper_hole_clearance_violation\n"
+      " (hole 2bfeb64d-bade-4ca6-98e4-ff0bc443aa41)\n"
+      ")\n",
+      withTypes.getApproval().toByteArray().toStdString());
+}
+
+TEST(BoardDesignRuleCheckTest, testCopperHoleClearanceCopperTypes) {
+  // Open project from test data directory.
+  FilePath projectFp(TEST_DATA_DIR "/projects/DRC/project.lpp");
+  std::shared_ptr<TransactionalFileSystem> projectFs =
+      TransactionalFileSystem::openRO(projectFp.getParentDir());
+  ProjectLoader loader;
+  std::unique_ptr<Project> project =
+      loader.open(std::make_unique<TransactionalDirectory>(projectFs),
+                  projectFp.getFilename());  // can throw
+  Board* board = nullptr;
+  foreach (Board* b, project->getBoards()) {
+    if (*b->getName() == "checkCopperHoleClearances") {
+      board = b;
+    }
+  }
+  ASSERT_TRUE(board);
+
+  // Run DRC and collect the messages per hole.
+  BoardDesignRuleCheck drc;
+  drc.start(*board, board->getDrcSettings(), false);
+  const BoardDesignRuleCheck::Result result = drc.waitForFinished();
+  QMap<QString, QString> actual;
+  for (const auto& msg : result.messages) {
+    const SExpression& approval = msg->getApproval();
+    if (approval.getChild("@0").getValue() ==
+        "copper_hole_clearance_violation") {
+      actual.insert(approval.getChild("hole/@0").getValue(),
+                    msg->getMessage());
+    }
+  }
+  const QString suffix = " ↔ hole < 0.25 mm";
+  const QMap<QString, QString> expected = {
+      {"2bfeb64d-bade-4ca6-98e4-ff0bc443aa41", "Clearance copper (via)"},
+      {"3a1afd1b-2826-4b47-9645-9083ac0366b5", "Clearance copper (polygon)"},
+      {"8c745ec6-187f-4a59-83eb-d86c3646106d", "Clearance copper (pad)"},
+      {"cbe52bcf-b196-469f-9bcd-9fef6c84551d", "Clearance copper (pad)"},
+      {"cc2557b8-1535-4e06-92e0-303c34651ed9", "Clearance copper (trace)"},
+      {"d2f6c593-a1cb-483c-9d3c-cd618965e1e1", "Clearance copper (text)"},
+      {"fa425f13-29e4-4621-92bf-9928ad93bb5f", "Clearance copper (plane)"},
+  };
+  ASSERT_EQ(expected.count(), actual.count());
+  for (auto it = expected.begin(); it != expected.end(); ++it) {
+    EXPECT_EQ((it.value() + suffix).toStdString(),
+              actual.value(it.key()).toStdString());
   }
 }
 

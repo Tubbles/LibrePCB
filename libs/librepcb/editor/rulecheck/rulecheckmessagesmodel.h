@@ -62,6 +62,7 @@ public:
   void setAutofixHandler(AutofixHandler handler) noexcept;
   void setMessages(const RuleCheckMessageList& messages,
                    const QSet<SExpression>& approvals) noexcept;
+  void setApprovals(const QSet<SExpression>& approvals) noexcept;
   int getUnapprovedCount() const noexcept { return mUnapprovedCount; }
   int getErrorCount() const noexcept { return mErrorCount; }
 
@@ -81,6 +82,8 @@ signals:
   void approvalChanged(const SExpression& approval, bool approved);
   void highlightRequested(std::shared_ptr<const RuleCheckMessage> msg,
                           bool zoomTo, int windowId);
+  void highlightAndPanRequested(std::shared_ptr<const RuleCheckMessage> msg,
+                                int windowId);
 
 private:
   void sortMessages() noexcept;

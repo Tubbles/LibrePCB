@@ -74,6 +74,15 @@ void RuleCheckMessagesModel::setMessages(
   updateCounters();
 }
 
+void RuleCheckMessagesModel::setApprovals(
+    const QSet<SExpression>& approvals) noexcept {
+  if (approvals != mApprovals) {
+    mApprovals = approvals;
+    sortMessages();
+    updateCounters();
+  }
+}
+
 /*******************************************************************************
  *  Implementations
  ******************************************************************************/
@@ -116,6 +125,8 @@ void RuleCheckMessagesModel::set_row_data(
       updateCounters();
     } else if (data.action == ui::RuleCheckMessageAction::Highlight) {
       emit highlightRequested(msg, false, mActionWindowId);
+    } else if (data.action == ui::RuleCheckMessageAction::HighlightAndPanTo) {
+      emit highlightAndPanRequested(msg, mActionWindowId);
     } else if (data.action == ui::RuleCheckMessageAction::HighlightAndZoomTo) {
       emit highlightRequested(msg, true, mActionWindowId);
     } else if (data.action == ui::RuleCheckMessageAction::Autofix) {

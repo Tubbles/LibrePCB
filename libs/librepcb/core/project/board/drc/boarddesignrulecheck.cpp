@@ -886,39 +886,138 @@ RuleCheckMessageList BoardDesignRuleCheck::checkCopperHoleClearances(
                           ClipperLib::pftNonZero);
   }
 
+  // Copper areas per object type, to name the violating copper type in the
+  // messages. Only determined if there is any violation at all.
+  typedef DrcMsgCopperHoleClearanceViolation::CopperType CopperType;
+  QList<std::pair<CopperType, ClipperLib::Paths>> copperPathsPerType;
+  auto determineCopperPathsPerType = [&data, &copperPathsPerType]() {
+    BoardClipperPathGenerator gen(maxArcTolerance());
+    auto takePaths = [&gen, &copperPathsPerType](CopperType type) {
+      ClipperLib::Paths paths;
+      gen.takePathsTo(paths);
+      copperPathsPerType.append(std::make_pair(type, paths));
+    };
+    for (const Layer* layer : data.copperLayers) {
+      for (const Data::Segment& ns : data.segments) {
+        for (const Data::Pad& pad : ns.pads) {
+          gen.addPad(pad, *layer);
+        }
+      }
+      for (const Data::Device& dev : data.devices) {
+        for (const Data::Pad& pad : dev.pads) {
+          gen.addPad(pad, *layer);
+        }
+      }
+    }
+    takePaths(CopperType::Pad);
+    for (const Data::Segment& ns : data.segments) {
+      for (const Data::Trace& trace : ns.traces) {
+        if (data.copperLayers.contains(trace.layer)) {
+          gen.addTrace(trace);
+        }
+      }
+    }
+    takePaths(CopperType::Trace);
+    for (const Data::Segment& ns : data.segments) {
+      for (const Data::Via& via : ns.vias) {
+        gen.addVia(via);
+      }
+    }
+    takePaths(CopperType::Via);
+    if (!data.quick) {
+      for (const Data::Plane& plane : data.planes) {
+        if (data.copperLayers.contains(plane.layer)) {
+          gen.addPlane(plane.fragments);
+        }
+      }
+    }
+    takePaths(CopperType::Plane);
+    for (const Data::Polygon& polygon : data.polygons) {
+      if (data.copperLayers.contains(polygon.layer)) {
+        gen.addPolygon(polygon.path, polygon.lineWidth, polygon.filled);
+      }
+    }
+    for (const Data::Device& dev : data.devices) {
+      const Transform transform(dev.position, dev.rotation, dev.mirror);
+      for (const Data::Polygon& polygon : dev.polygons) {
+        if (data.copperLayers.contains(&transform.map(*polygon.layer))) {
+          gen.addPolygon(transform.map(polygon.path), polygon.lineWidth,
+                         polygon.filled);
+        }
+      }
+    }
+    takePaths(CopperType::Polygon);
+    for (const Data::Device& dev : data.devices) {
+      const Transform transform(dev.position, dev.rotation, dev.mirror);
+      for (const Data::Circle& circle : dev.circles) {
+        if (data.copperLayers.contains(&transform.map(*circle.layer))) {
+          gen.addCircle(circle, transform);
+        }
+      }
+    }
+    takePaths(CopperType::Circle);
+    for (const Data::StrokeText& st : data.strokeTexts) {
+      if (data.copperLayers.contains(st.layer)) {
+        gen.addStrokeText(st);
+      }
+    }
+    for (const Data::Device& dev : data.devices) {
+      for (const Data::StrokeText& st : dev.strokeTexts) {
+        // Layer does not need to be transformed!
+        if (data.copperLayers.contains(st.layer)) {
+          gen.addStrokeText(st);
+        }
+      }
+    }
+    takePaths(CopperType::Text);
+  };
+
   // Helper for the actual check.
-  QVector<Path> locations;
-  auto intersects = [&copperPathsAnyLayer, &clearance, &locations](
-                        const PositiveLength& diameter,
-                        const NonEmptyPath& path, const Transform& transform) {
+  auto intersect = [&clearance](const ClipperLib::Paths& copperPaths,
+                                const PositiveLength& diameter,
+                                const NonEmptyPath& path,
+                                const Transform& transform) {
     BoardClipperPathGenerator gen(maxArcTolerance());
     gen.addHole(diameter, path, transform,
                 clearance - *maxArcTolerance() - Length(1));
     std::unique_ptr<ClipperLib::PolyTree> intersections =
-        ClipperHelpers::intersectToTree(copperPathsAnyLayer, gen.getPaths(),
+        ClipperHelpers::intersectToTree(copperPaths, gen.getPaths(),
                                         ClipperLib::pftEvenOdd,
                                         ClipperLib::pftEvenOdd);
-    locations =
-        ClipperHelpers::convert(ClipperHelpers::flattenTree(*intersections));
-    return (!locations.isEmpty());
+    return ClipperHelpers::convert(ClipperHelpers::flattenTree(*intersections));
+  };
+  auto check = [&](const Data::Hole& hole, const Data::Device* device,
+                   const Transform& transform) {
+    const QVector<Path> locations =
+        intersect(copperPathsAnyLayer, hole.diameter, hole.path, transform);
+    if (locations.isEmpty()) {
+      return;
+    }
+    if (copperPathsPerType.isEmpty()) {
+      determineCopperPathsPerType();
+    }
+    QList<CopperType> types;
+    for (const auto& pair : copperPathsPerType) {
+      const QVector<Path> typeLocations =
+          intersect(pair.second, hole.diameter, hole.path, transform);
+      if (!typeLocations.isEmpty()) {
+        types.append(pair.first);
+      }
+    }
+    messages.append(std::make_shared<DrcMsgCopperHoleClearanceViolation>(
+        hole, device, types, clearance, locations));
   };
 
   // Check board holes.
   for (const Data::Hole& hole : data.holes) {
-    if (intersects(hole.diameter, hole.path, Transform())) {
-      messages.append(std::make_shared<DrcMsgCopperHoleClearanceViolation>(
-          hole, nullptr, clearance, locations));
-    }
+    check(hole, nullptr, Transform());
   }
 
   // Check footprint holes.
   for (const Data::Device& dev : data.devices) {
     const Transform transform(dev.position, dev.rotation, dev.mirror);
     for (const Data::Hole& hole : dev.holes) {
-      if (intersects(hole.diameter, hole.path, transform)) {
-        messages.append(std::make_shared<DrcMsgCopperHoleClearanceViolation>(
-            hole, &dev, clearance, locations));
-      }
+      check(hole, &dev, transform);
     }
   }
 

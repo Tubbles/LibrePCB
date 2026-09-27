@@ -37,6 +37,7 @@ public:
     out.set_board_setup(l2s(cmd.boardSetup, out.get_board_setup()));
     out.set_run_quick_check(l2s(cmd.runQuickCheck, out.get_run_quick_check()));
     out.set_run_design_rule_check(l2s(cmd.runDesignRuleCheck, out.get_run_design_rule_check()));
+    out.set_approve_drc_message_and_go_to_next(l2s(cmd.approveDrcMessageAndGoToNext, out.get_approve_drc_message_and_go_to_next()));
     out.set_sheet_new(l2s(cmd.sheetNew, out.get_sheet_new()));
     out.set_sheet_rename(l2s(cmd.sheetRename, out.get_sheet_rename()));
     out.set_sheet_remove(l2s(cmd.sheetRemove, out.get_sheet_remove()));

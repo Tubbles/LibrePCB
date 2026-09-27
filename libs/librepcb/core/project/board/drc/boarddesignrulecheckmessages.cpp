@@ -1056,12 +1056,10 @@ QString DrcMsgCopperBoardClearanceViolation::determineDescription(
 DrcMsgCopperHoleClearanceViolation::DrcMsgCopperHoleClearanceViolation(
     const BoardDesignRuleCheckData::Hole& hole,
     const BoardDesignRuleCheckData::Device* device,
-    const UnsignedLength& minClearance, const QVector<Path>& locations) noexcept
+    const QList<CopperType>& copperTypes, const UnsignedLength& minClearance,
+    const QVector<Path>& locations) noexcept
   : RuleCheckMessage(
-        Severity::Error,
-        tr("Clearance copper ↔ hole < %1 %2",
-           "Placeholders: Clearance value, unit")
-            .arg(minClearance->toMmString(), "mm"),
+        Severity::Error, determineMessage(copperTypes, minClearance),
         tr("The clearance between a non-plated hole and copper objects is "
            "smaller than the hole clearance configured in the DRC settings.") %
             " " % seriousTroublesTr() % "\n\n" %
@@ -1075,6 +1073,45 @@ DrcMsgCopperHoleClearanceViolation::DrcMsgCopperHoleClearanceViolation(
   }
   mApproval->appendChild("hole", hole.uuid);
   mApproval->ensureLineBreak();
+}
+
+QString DrcMsgCopperHoleClearanceViolation::determineMessage(
+    const QList<CopperType>& copperTypes,
+    const UnsignedLength& minClearance) noexcept {
+  if (copperTypes.isEmpty()) {
+    return tr("Clearance copper ↔ hole < %1 %2",
+              "Placeholders: Clearance value, unit")
+        .arg(minClearance->toMmString(), "mm");
+  }
+  QStringList names;
+  for (CopperType type : copperTypes) {
+    names.append(getCopperTypeName(type));
+  }
+  return tr("Clearance copper (%1) ↔ hole < %2 %3",
+            "Placeholders: Copper object types, clearance value, unit")
+      .arg(names.join(", "), minClearance->toMmString(), "mm");
+}
+
+QString DrcMsgCopperHoleClearanceViolation::getCopperTypeName(
+    CopperType type) noexcept {
+  switch (type) {
+    case CopperType::Pad:
+      return tr("pad");
+    case CopperType::Trace:
+      return tr("trace");
+    case CopperType::Via:
+      return tr("via");
+    case CopperType::Plane:
+      return tr("plane");
+    case CopperType::Polygon:
+      return tr("polygon");
+    case CopperType::Circle:
+      return tr("circle");
+    case CopperType::Text:
+      return tr("text");
+    default:
+      return QString();
+  }
 }
 
 /*******************************************************************************

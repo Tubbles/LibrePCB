@@ -26,6 +26,7 @@
 #include <librepcb/editor/widgets/if_graphicsvieweventhandler.h>
 
 #include <QtCore>
+#include <QtTest>
 
 /*******************************************************************************
  *  Namespace
@@ -77,6 +78,25 @@ protected:
   // Screen pixels per scene pixel.
   qreal scale() const noexcept {
     return 100 / (sceneAt(QPointF(100, 0)).x() - sceneAt(QPointF(0, 0)).x());
+  }
+
+  static QPointF viewCenterInScene(const SlintGraphicsView& view) noexcept {
+    return view.mapToScenePosPx(QPointF(100, 100), 1);
+  }
+
+  static qreal scaleOf(const SlintGraphicsView& view) noexcept {
+    const QPointF p0 = view.mapToScenePosPx(QPointF(0, 0), 1);
+    const QPointF p1 = view.mapToScenePosPx(QPointF(100, 0), 1);
+    return 100 / (p1.x() - p0.x());
+  }
+
+  static void waitUntilCenteredOn(const SlintGraphicsView& view,
+                                  const QPointF& pos) noexcept {
+    QDeadlineTimer deadline(3000);
+    while ((QLineF(viewCenterInScene(view), pos).length() > 0.001) &&
+           (!deadline.hasExpired())) {
+      QTest::qWait(10);
+    }
   }
 
   GraphicsScene mScene;
@@ -189,6 +209,38 @@ TEST_F(SlintGraphicsViewTest, testDefaultStyleIgnoresModifiers) {
   EXPECT_EQ(before, sceneAt(QPointF(0, 0)));
   EXPECT_NEAR(1, scale(), 1e-9);
   EXPECT_EQ(4, mMovesForwarded);
+}
+
+TEST_F(SlintGraphicsViewTest, testPanToScenePointKeepsScale) {
+  // A point far outside of the current view.
+  const QPointF target(12345, -6789);
+  mView.panToScenePoint(target);
+  waitUntilCenteredOn(mView, target);
+
+  EXPECT_NEAR(target.x(), viewCenterInScene(mView).x(), 0.001);
+  EXPECT_NEAR(target.y(), viewCenterInScene(mView).y(), 0.001);
+  EXPECT_NEAR(1, scale(), 1e-9);
+}
+
+TEST_F(SlintGraphicsViewTest, testPanToScenePointDuringZoomKeepsTargetScale) {
+  const QRectF zoomRect(-50, -50, 20, 10);
+
+  // Reference: The scale reached by zooming only.
+  SlintGraphicsView reference(QRectF(-100, -100, 200, 200), QMarginsF());
+  reference.render(mScene, 200, 200);
+  reference.zoomToSceneRect(zoomRect, false);
+  waitUntilCenteredOn(reference, zoomRect.center());
+  const qreal zoomScale = scaleOf(reference);
+
+  // Panning while the zoom animation is running.
+  mView.zoomToSceneRect(zoomRect, false);
+  const QPointF target(100, 200);
+  mView.panToScenePoint(target);
+  waitUntilCenteredOn(mView, target);
+
+  EXPECT_NEAR(target.x(), viewCenterInScene(mView).x(), 0.001);
+  EXPECT_NEAR(target.y(), viewCenterInScene(mView).y(), 0.001);
+  EXPECT_NEAR(zoomScale, scale(), 1e-9);
 }
 
 /*******************************************************************************

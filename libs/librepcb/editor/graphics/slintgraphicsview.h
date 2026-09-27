@@ -117,6 +117,7 @@ public:
   void zoomIn() noexcept;
   void zoomOut() noexcept;
   void zoomToSceneRect(const QRectF& r, bool autoFitInView) noexcept;
+  void panToScenePoint(const QPointF& pos) noexcept;
 
   // Static Methods
   static QRectF defaultSymbolSceneRect() noexcept;

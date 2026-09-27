@@ -409,6 +409,18 @@ void SlintGraphicsView::zoomToSceneRect(const QRectF& r,
   smoothTo(projection);
 }
 
+void SlintGraphicsView::panToScenePoint(const QPointF& pos) noexcept {
+  // If an animation is running, keep the scale it is heading to.
+  Projection projection = mProjection;
+  if (mAnimation->state() == QAbstractAnimation::Running) {
+    projection = mAnimationDataStart.interpolated(mAnimationDataDelta, 1);
+  }
+  projection.autoFitInView = false;
+  projection.offset =
+      pos - (QRectF(QPointF(0, 0), mViewSize).center() / projection.scale);
+  smoothTo(projection);
+}
+
 /*******************************************************************************
  *  Static Methods
  ******************************************************************************/

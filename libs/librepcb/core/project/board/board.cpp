@@ -428,11 +428,15 @@ bool Board::updateDrcMessageApprovals(QSet<SExpression> approvals,
 
 void Board::setDrcMessageApproved(const SExpression& approval,
                                   bool approved) noexcept {
+  if (approved == mDrcMessageApprovals.contains(approval)) {
+    return;
+  }
   if (approved) {
     mDrcMessageApprovals.insert(approval);
   } else {
     mDrcMessageApprovals.remove(approval);
   }
+  emit drcMessageApprovalChanged(approval, approved);
 }
 
 /*******************************************************************************

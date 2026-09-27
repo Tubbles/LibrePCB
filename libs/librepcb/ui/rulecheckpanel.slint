@@ -146,10 +146,29 @@ export component RuleCheckPanel inherits FocusScope {
         }
         selected-index = index;
         model[index].action-window-id = Data.window-id;
-        if zoom-to-location || force-zoom {
+        if force-zoom {
+            model[index].action = RuleCheckMessageAction.highlight-and-zoom-to;
+        } else if zoom-to-location && (check.type == RuleCheckType.drc) {
+            // Keep the current zoom level to allow the user to control it
+            // manually while going through the messages.
+            model[index].action = RuleCheckMessageAction.highlight-and-pan-to;
+        } else if zoom-to-location {
             model[index].action = RuleCheckMessageAction.highlight-and-zoom-to;
         } else {
             model[index].action = RuleCheckMessageAction.highlight;
+        }
+    }
+
+    function approve-and-go-to-next() {
+        if item-selected && (!selected-item.approved) && (!selected-item.autofixed) {
+            model[selected-index].approved = true;
+        }
+        // Approved messages are sorted to the end, thus the next unapproved
+        // message (if any) is now at the selected index.
+        if item-selected && (!model[selected-index].approved) {
+            set-current-index(selected-index, false);
+        } else if (model.length > 0) && (!model[0].approved) {
+            set-current-index(0, false);
         }
     }
 
@@ -235,7 +254,7 @@ export component RuleCheckPanel inherits FocusScope {
                 width: self.height;
                 icon: @image-url("../../font-awesome/svgs/solid/location-crosshairs.svg");
                 icon-scale: 0.7;
-                tooltip: @tr("Zoom to Location");
+                tooltip: (check.type == RuleCheckType.drc) ? @tr("Pan to Location") : @tr("Zoom to Location");
                 checked: zoom-to-location;
                 enabled: check.state != RuleCheckState.running;
 
@@ -396,7 +415,10 @@ export component RuleCheckPanel inherits FocusScope {
     }
 
     key-pressed(event) => {
-        if (event.text == Key.DownArrow) && (selected-index < model.length - 1) {
+        if (check.type == RuleCheckType.drc) && (!check.read-only) && (check.state != RuleCheckState.running) && Backend.is-shortcut(event, Cmd.approve-drc-message-and-go-to-next) {
+            approve-and-go-to-next();
+            return accept;
+        } else if (event.text == Key.DownArrow) && (selected-index < model.length - 1) {
             set-current-index(selected-index + 1, false);
             return accept;
         } else if (event.text == Key.UpArrow) && (selected-index > 0) {

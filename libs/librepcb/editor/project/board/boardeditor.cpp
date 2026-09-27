@@ -33,6 +33,7 @@
 #include "../cmd/cmdboardedit.h"
 #include "../cmd/cmdboardnetsegmentremove.h"
 #include "../cmd/cmdboardplaneedit.h"
+#include "../cmd/cmdboardsetdrcmessageapproved.h"
 #include "../projecteditor.h"
 #include "board2dtab.h"
 #include "board3dtab.h"
@@ -88,6 +89,12 @@ BoardEditor::BoardEditor(ProjectEditor& prjEditor, Board& board, int uiIndex,
           [this]() { onUiDataChanged.notify(); });
   connect(&mBoard, &Board::preferredFootprintTagsChanged, this,
           &BoardEditor::updatePreferredFootprintTags);
+  connect(&mBoard, &Board::drcMessageApprovalChanged, this, [this]() {
+    // Required to update the UI when approvals are changed by undo/redo.
+    if (mDrcMessages) {
+      mDrcMessages->setApprovals(mBoard.getDrcMessageApprovals());
+    }
+  });
 
   // Connect project editor.
   connect(&mProjectEditor.getUndoStack(), &UndoStack::stateModified, this,
@@ -650,17 +657,38 @@ void BoardEditor::setDrcResult(
     connect(mDrcMessages.get(), &RuleCheckMessagesModel::errorCountChanged,
             this, [this]() { onUiDataChanged.notify(); });
     connect(mDrcMessages.get(), &RuleCheckMessagesModel::approvalChanged,
-            &mBoard, &Board::setDrcMessageApproved);
-    connect(mDrcMessages.get(), &RuleCheckMessagesModel::approvalChanged,
-            &mProjectEditor, &ProjectEditor::setManualModificationsMade);
+            this, &BoardEditor::setDrcMessageApproved);
     connect(mDrcMessages.get(), &RuleCheckMessagesModel::highlightRequested,
             this, &BoardEditor::drcMessageHighlightRequested);
+    connect(mDrcMessages.get(),
+            &RuleCheckMessagesModel::highlightAndPanRequested, this,
+            &BoardEditor::drcMessageHighlightAndPanRequested);
   }
   mDrcMessages->setMessages(result.messages, mBoard.getDrcMessageApprovals());
   mDrcExecutionError = result.errors.join("\n\n");
   mDrcNotification->dismiss();
   onUiDataChanged.notify();
   emit drcMessageHighlightRequested(nullptr, false);  // Clear markers.
+}
+
+void BoardEditor::setDrcMessageApproved(const SExpression& approval,
+                                        bool approved) noexcept {
+  UndoStack& stack = mProjectEditor.getUndoStack();
+  // Approving messages does not make the DRC results outdated.
+  const bool drcUpToDate = (mDrcUndoStackState == stack.getUniqueStateId());
+  try {
+    stack.execCmd(
+        new CmdBoardSetDrcMessageApproved(mBoard, approval, approved));
+  } catch (const Exception& e) {
+    qCritical() << "Failed to change DRC message approval:" << e.getMsg();
+    if (mDrcMessages) {
+      mDrcMessages->setApprovals(mBoard.getDrcMessageApprovals());
+    }
+  }
+  if (drcUpToDate) {
+    mDrcUndoStackState = stack.getUniqueStateId();
+    onUiDataChanged.notify();
+  }
 }
 
 void BoardEditor::registeredTabsModified() noexcept {

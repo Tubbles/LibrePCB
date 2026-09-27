@@ -277,6 +277,7 @@ signals:
   void preferredFootprintTagsChanged();
   void designRulesModified();
   void innerLayerCountChanged();
+  void drcMessageApprovalChanged(const SExpression& approval, bool approved);
 
   void deviceAdded(BI_Device& device);
   void deviceRemoved(BI_Device& device);
