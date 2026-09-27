@@ -570,6 +570,8 @@ add_library(
   project/cmd/cmdboardpolygonremove.h
   project/cmd/cmdboardremove.cpp
   project/cmd/cmdboardremove.h
+  project/cmd/cmdboardsetdrcmessageapproved.cpp
+  project/cmd/cmdboardsetdrcmessageapproved.h
   project/cmd/cmdboardspecctraimport.cpp
   project/cmd/cmdboardspecctraimport.h
   project/cmd/cmdboardsplitnetline.cpp

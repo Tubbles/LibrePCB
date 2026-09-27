@@ -159,6 +159,19 @@ export component RuleCheckPanel inherits FocusScope {
         }
     }
 
+    function approve-and-go-to-next() {
+        if item-selected && (!selected-item.approved) && (!selected-item.autofixed) {
+            model[selected-index].approved = true;
+        }
+        // Approved messages are sorted to the end, thus the next unapproved
+        // message (if any) is now at the selected index.
+        if item-selected && (!model[selected-index].approved) {
+            set-current-index(selected-index, false);
+        } else if (model.length > 0) && (!model[0].approved) {
+            set-current-index(0, false);
+        }
+    }
+
     // Set focus when panel is shown. Not sure if it's always desired(?).
     init => {
         root.focus();
@@ -402,7 +415,10 @@ export component RuleCheckPanel inherits FocusScope {
     }
 
     key-pressed(event) => {
-        if (event.text == Key.DownArrow) && (selected-index < model.length - 1) {
+        if (check.type == RuleCheckType.drc) && (!check.read-only) && (check.state != RuleCheckState.running) && Backend.is-shortcut(event, Cmd.approve-drc-message-and-go-to-next) {
+            approve-and-go-to-next();
+            return accept;
+        } else if (event.text == Key.DownArrow) && (selected-index < model.length - 1) {
             set-current-index(selected-index + 1, false);
             return accept;
         } else if (event.text == Key.UpArrow) && (selected-index > 0) {

@@ -62,6 +62,7 @@ public:
   void setAutofixHandler(AutofixHandler handler) noexcept;
   void setMessages(const RuleCheckMessageList& messages,
                    const QSet<SExpression>& approvals) noexcept;
+  void setApprovals(const QSet<SExpression>& approvals) noexcept;
   int getUnapprovedCount() const noexcept { return mUnapprovedCount; }
   int getErrorCount() const noexcept { return mErrorCount; }
 

@@ -117,6 +117,8 @@ signals:
 private:
   void updatePreferredFootprintTags() noexcept;
   void setDrcResult(const BoardDesignRuleCheck::Result& result) noexcept;
+  void setDrcMessageApproved(const SExpression& approval,
+                             bool approved) noexcept;
   void registeredTabsModified() noexcept;
   void planesRebuildTimerTimeout() noexcept;
 

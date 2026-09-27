@@ -298,6 +298,15 @@ public:
       {QKeySequence(Qt::Key_F8)},
       &categoryEditor,
   };
+  EditorCommand approveDrcMessageAndGoToNext{
+      "approve_drc_message_and_go_to_next",  // clang-format break
+      QT_TR_NOOP("Approve and Go to Next DRC Message"),
+      QT_TR_NOOP("Approve the message and go to the next unapproved one"),
+      ":/fa/solid/eye.svg",
+      EditorCommand::Flags(),
+      {QKeySequence(Qt::CTRL | Qt::Key_F8)},
+      &categoryEditor,
+  };
   // EditorCommand projectLibraryUpdate{
   //     "project_library_update",  // clang-format break
   //     QT_TR_NOOP("Update Project Library"),

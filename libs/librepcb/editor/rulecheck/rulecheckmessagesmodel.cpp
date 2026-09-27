@@ -74,6 +74,15 @@ void RuleCheckMessagesModel::setMessages(
   updateCounters();
 }
 
+void RuleCheckMessagesModel::setApprovals(
+    const QSet<SExpression>& approvals) noexcept {
+  if (approvals != mApprovals) {
+    mApprovals = approvals;
+    sortMessages();
+    updateCounters();
+  }
+}
+
 /*******************************************************************************
  *  Implementations
  ******************************************************************************/
