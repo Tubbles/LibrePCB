@@ -718,16 +718,25 @@ class DrcMsgCopperHoleClearanceViolation final : public RuleCheckMessage {
 public:
   using Data = BoardDesignRuleCheckData;
 
+  // Types
+  enum class CopperType { Pad, Trace, Via, Plane, Polygon, Circle, Text };
+
   // Constructors / Destructor
   DrcMsgCopperHoleClearanceViolation() = delete;
   DrcMsgCopperHoleClearanceViolation(const Data::Hole& hole,
                                      const Data::Device* device,
+                                     const QList<CopperType>& copperTypes,
                                      const UnsignedLength& minClearance,
                                      const QVector<Path>& locations) noexcept;
   DrcMsgCopperHoleClearanceViolation(
       const DrcMsgCopperHoleClearanceViolation& other) noexcept
     : RuleCheckMessage(other) {}
   ~DrcMsgCopperHoleClearanceViolation() noexcept override {}
+
+private:
+  static QString determineMessage(const QList<CopperType>& copperTypes,
+                                  const UnsignedLength& minClearance) noexcept;
+  static QString getCopperTypeName(CopperType type) noexcept;
 };
 
 /*******************************************************************************
