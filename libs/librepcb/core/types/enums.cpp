@@ -98,6 +98,31 @@ GridStyle deserialize(const SExpression& sexpr) {
   }
 }
 
+template <>
+std::unique_ptr<SExpression> serialize(const NavigationStyle& obj) {
+  switch (obj) {
+    case NavigationStyle::Default:
+      return SExpression::createToken("default");
+    case NavigationStyle::Touchpad:
+      return SExpression::createToken("touchpad");
+    default:
+      throw LogicError(__FILE__, __LINE__);
+  }
+}
+
+template <>
+NavigationStyle deserialize(const SExpression& sexpr) {
+  const QString str = sexpr.getValue();
+  if (str == "default") {
+    return NavigationStyle::Default;
+  } else if (str == "touchpad") {
+    return NavigationStyle::Touchpad;
+  } else {
+    throw RuntimeError(__FILE__, __LINE__,
+                       QString("Unknown navigation style: '%1'").arg(str));
+  }
+}
+
 /*******************************************************************************
  *  End of File
  ******************************************************************************/

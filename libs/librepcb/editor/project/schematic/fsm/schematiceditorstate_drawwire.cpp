@@ -127,17 +127,10 @@ bool SchematicEditorState_DrawWire::processAbortCommand() noexcept {
 
 bool SchematicEditorState_DrawWire::processKeyPressed(
     const GraphicsSceneKeyEvent& e) noexcept {
-  switch (e.key) {
-    case Qt::Key_Shift: {
-      if (mSubState == SubState::POSITIONING_NETPOINT) {
-        updateNetpointPositions(false);
-        return true;
-      }
-      break;
-    }
-
-    default: {
-      break;
+  if (e.key == EditorToolbox::snapOverrideKey()) {
+    if (mSubState == SubState::POSITIONING_NETPOINT) {
+      updateNetpointPositions(false);
+      return true;
     }
   }
 
@@ -146,17 +139,10 @@ bool SchematicEditorState_DrawWire::processKeyPressed(
 
 bool SchematicEditorState_DrawWire::processKeyReleased(
     const GraphicsSceneKeyEvent& e) noexcept {
-  switch (e.key) {
-    case Qt::Key_Shift: {
-      if (mSubState == SubState::POSITIONING_NETPOINT) {
-        updateNetpointPositions(true);
-        return true;
-      }
-      break;
-    }
-
-    default: {
-      break;
+  if (e.key == EditorToolbox::snapOverrideKey()) {
+    if (mSubState == SubState::POSITIONING_NETPOINT) {
+      updateNetpointPositions(true);
+      return true;
     }
   }
 
@@ -168,7 +154,8 @@ bool SchematicEditorState_DrawWire::processGraphicsSceneMouseMoved(
   mCursorPos = e.scenePos;
 
   if (mSubState == SubState::POSITIONING_NETPOINT) {
-    const bool snap = !e.modifiers.testFlag(Qt::ShiftModifier);
+    const bool snap =
+        !e.modifiers.testFlag(EditorToolbox::snapOverrideModifier());
     updateNetpointPositions(snap);
     return true;
   }
@@ -185,7 +172,8 @@ bool SchematicEditorState_DrawWire::processGraphicsSceneLeftMouseButtonPressed(
   if (!scene) return false;
 
   mCursorPos = e.scenePos;
-  const bool snap = !e.modifiers.testFlag(Qt::ShiftModifier);
+  const bool snap =
+      !e.modifiers.testFlag(EditorToolbox::snapOverrideModifier());
   const bool interactive = !e.modifiers.testFlag(Qt::ControlModifier);
 
   if (mSubState == SubState::IDLE) {
@@ -206,7 +194,8 @@ bool SchematicEditorState_DrawWire::
   if (!scene) return false;
 
   mCursorPos = e.scenePos;
-  const bool snap = !e.modifiers.testFlag(Qt::ShiftModifier);
+  const bool snap =
+      !e.modifiers.testFlag(EditorToolbox::snapOverrideModifier());
   const bool interactive = !e.modifiers.testFlag(Qt::ControlModifier);
 
   if (mSubState == SubState::POSITIONING_NETPOINT) {

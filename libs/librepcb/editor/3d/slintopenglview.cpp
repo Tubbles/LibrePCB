@@ -56,6 +56,23 @@ static qreal calcAspectRatio(qreal width, qreal height) noexcept {
   return (height > 1) ? (width / height) : 1;
 }
 
+// Touchpad style zoom: 100 px of vertical pointer motion double or halve the
+// zoom, moving up zooms in.
+static qreal touchpadZoomFactor(qreal screenDeltaY) noexcept {
+  return qPow(2, -screenDeltaY / qreal(100));
+}
+
+// Rotation about the screen X and Y axes for a pointer motion given in
+// normalized view coordinates.
+static QMatrix4x4 rotatedAboutScreenXy(QMatrix4x4 transform,
+                                       const QVector2D& delta) noexcept {
+  const QVector3D axis =
+      transform.inverted().map(QVector3D(-delta.y(), delta.x(), 0));
+  transform.rotate(
+      QQuaternion::fromAxisAndAngle(axis.normalized(), delta.length() * 270));
+  return transform;
+}
+
 static slint::Image createBackground(const QSize& size,
                                      const QColor& color) noexcept {
   QPixmap pix(size);
@@ -73,6 +90,8 @@ SlintOpenGlView::SlintOpenGlView(const OpenGlProjection& projection,
     QOpenGLFunctions(),
     mBackgroundColor(Qt::white),
     mProjection(projection),
+    mNavigationStyle(NavigationStyle::Default),
+    mTouchpadGesture(TouchpadGesture::None),
     mAnimation(new QVariantAnimation(this)) {
   mAnimation->setDuration(500);
   mAnimation->setEasingCurve(QEasingCurve::InOutCubic);
@@ -108,6 +127,11 @@ void SlintOpenGlView::setBackgroundColor(QColor color) noexcept {
     mBackgroundColor = color;
     emit contentChanged();
   }
+}
+
+void SlintOpenGlView::setNavigationStyle(NavigationStyle style) noexcept {
+  mNavigationStyle = style;
+  mTouchpadGesture = TouchpadGesture::None;
 }
 
 /*******************************************************************************
@@ -232,6 +256,9 @@ bool SlintOpenGlView::pointerEvent(
     emit stateChanged();
     return true;
   } else if (e.kind == PointerEventKind::Move) {
+    if (touchpadMove(pos, e.modifiers)) {
+      return true;
+    }
     const QPointF posNorm = toNormalizedPos(pos);
     const QPointF mMousePressPosNorm = toNormalizedPos(mMousePressPosition);
     OpenGlProjection projection = mProjection;
@@ -256,11 +283,8 @@ bool SlintOpenGlView::pointerEvent(
             axis.normalized(), angle.abs().toDeg()));
       } else {
         // Rotate around X/Y axis.
-        const QVector2D delta(posNorm - mMousePressPosNorm);
-        const QVector3D axis = mMousePressTransform.inverted().map(
-            QVector3D(-delta.y(), delta.x(), 0));
-        projection.transform.rotate(QQuaternion::fromAxisAndAngle(
-            axis.normalized(), delta.length() * 270));
+        projection.transform = rotatedAboutScreenXy(
+            mMousePressTransform, QVector2D(posNorm - mMousePressPosNorm));
       }
     }
     return applyOpenGlProjection(projection);
@@ -308,6 +332,50 @@ void SlintOpenGlView::zoomAll() noexcept {
 /*******************************************************************************
  *  Private Methods
  ******************************************************************************/
+
+SlintOpenGlView::TouchpadGesture SlintOpenGlView::touchpadGestureFor(
+    const slint::private_api::KeyboardModifiers& modifiers) const noexcept {
+  if ((mNavigationStyle != NavigationStyle::Touchpad) ||
+      (!mPressedMouseButtons.isEmpty())) {
+    return TouchpadGesture::None;
+  } else if (modifiers.shift) {
+    return modifiers.control ? TouchpadGesture::Zoom : TouchpadGesture::Pan;
+  } else if (modifiers.alt && (!modifiers.control)) {
+    return TouchpadGesture::Rotate;
+  } else {
+    return TouchpadGesture::None;
+  }
+}
+
+// Applies a touchpad gesture for a pointer move and returns whether one is
+// active. The first move of a gesture only records the position, so a
+// modifier pressed during motion does not cause a jump.
+bool SlintOpenGlView::touchpadMove(
+    const QPointF& pos,
+    const slint::private_api::KeyboardModifiers& modifiers) noexcept {
+  const TouchpadGesture gesture = touchpadGestureFor(modifiers);
+  const bool continued = (gesture == mTouchpadGesture);
+  const QPointF lastPos = mTouchpadLastPos;
+  mTouchpadGesture = gesture;
+  mTouchpadLastPos = pos;
+  if (!continued) {
+    return (gesture != TouchpadGesture::None);
+  }
+  const QPointF posNorm = toNormalizedPos(pos);
+  const QPointF lastPosNorm = toNormalizedPos(lastPos);
+  OpenGlProjection projection = mProjection;
+  if (gesture == TouchpadGesture::Pan) {
+    projection.center += toModelPos(posNorm) - toModelPos(lastPosNorm);
+    applyOpenGlProjection(projection);
+  } else if (gesture == TouchpadGesture::Rotate) {
+    projection.transform = rotatedAboutScreenXy(
+        projection.transform, QVector2D(posNorm - lastPosNorm));
+    applyOpenGlProjection(projection);
+  } else if (gesture == TouchpadGesture::Zoom) {
+    zoom(pos, touchpadZoomFactor(pos.y() - lastPos.y()));
+  }
+  return (gesture != TouchpadGesture::None);
+}
 
 void SlintOpenGlView::initializeGl() noexcept {
   // Create off-screen surface.

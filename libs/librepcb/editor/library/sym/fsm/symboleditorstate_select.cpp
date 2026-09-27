@@ -34,6 +34,7 @@
 #include "../../../graphics/polygongraphicsitem.h"
 #include "../../../graphics/textgraphicsitem.h"
 #include "../../../undostack.h"
+#include "../../../utils/editortoolbox.h"
 #include "../../../utils/imagehelpers.h"
 #include "../../../utils/menubuilder.h"
 #include "../../cmd/cmddragselectedsymbolitems.h"
@@ -172,7 +173,7 @@ bool SymbolEditorState_Select::processGraphicsSceneMouseMoved(
         mCmdImageEdit = std::make_unique<CmdImageEdit>(*mSelectedImage);
         scheduleUpdateAvailableFeatures();
       }
-      if (!e.modifiers.testFlag(Qt::ShiftModifier)) {
+      if (!e.modifiers.testFlag(EditorToolbox::snapOverrideModifier())) {
         currentPos.mapToGrid(getGridInterval());
       }
       const Point relPos = currentPos.rotated(-mSelectedImage->getRotation(),

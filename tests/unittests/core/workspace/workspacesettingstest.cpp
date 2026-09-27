@@ -56,6 +56,7 @@ TEST_F(WorkspaceSettingsTest, testLoadFromSExpression) {
       " (default_length_unit micrometers)\n"
       " (project_autosave_interval 120)\n"
       " (use_opengl true)\n"
+      " (navigation_style touchpad)\n"
       " (library_locale_order\n"
       "  (locale \"de_DE\")\n"
       " )\n"
@@ -94,6 +95,7 @@ TEST_F(WorkspaceSettingsTest, testLoadFromSExpression) {
   EXPECT_EQ(LengthUnit::micrometers(), obj.defaultLengthUnit.get());
   EXPECT_EQ(120U, obj.projectAutosaveIntervalSeconds.get());
   EXPECT_EQ(true, obj.useOpenGl.get());
+  EXPECT_EQ(NavigationStyle::Touchpad, obj.navigationStyle.get());
   EXPECT_EQ(QStringList{"de_DE"}, obj.libraryLocaleOrder.get());
   EXPECT_EQ(QStringList{"IEC 60617"}, obj.libraryNormOrder.get());
   EXPECT_EQ(
@@ -124,6 +126,7 @@ TEST_F(WorkspaceSettingsTest, testStoreAndLoad) {
   obj1.defaultLengthUnit.set(LengthUnit::nanometers());
   obj1.projectAutosaveIntervalSeconds.set(1234);
   obj1.useOpenGl.set(!obj1.useOpenGl.get());
+  obj1.navigationStyle.set(NavigationStyle::Touchpad);
   obj1.libraryLocaleOrder.set({"de_CH", "en_US"});
   obj1.libraryNormOrder.set({"foo", "bar"});
   obj1.apiEndpoints.set({
@@ -152,6 +155,7 @@ TEST_F(WorkspaceSettingsTest, testStoreAndLoad) {
   EXPECT_EQ(obj1.projectAutosaveIntervalSeconds.get(),
             obj2.projectAutosaveIntervalSeconds.get());
   EXPECT_EQ(obj1.useOpenGl.get(), obj2.useOpenGl.get());
+  EXPECT_EQ(obj1.navigationStyle.get(), obj2.navigationStyle.get());
   EXPECT_EQ(obj1.libraryLocaleOrder.get(), obj2.libraryLocaleOrder.get());
   EXPECT_EQ(obj1.libraryNormOrder.get(), obj2.libraryNormOrder.get());
   EXPECT_EQ(obj1.apiEndpoints.get(), obj2.apiEndpoints.get());
@@ -226,6 +230,22 @@ TEST_F(WorkspaceSettingsTest, testDefaultSerializeEmpty) {
   QString actualContent = root->toByteArray();
   QString expectedContent =
       "(librepcb_workspace_settings\n"
+      ")\n";
+  EXPECT_EQ(expectedContent.toStdString(), actualContent.toStdString());
+}
+
+// The navigation style defaults to the mouse only style, and the touchpad
+// style is stored as a token.
+TEST_F(WorkspaceSettingsTest, testNavigationStyle) {
+  WorkspaceSettings obj;
+  EXPECT_EQ(NavigationStyle::Default, obj.navigationStyle.get());
+  obj.navigationStyle.set(NavigationStyle::Touchpad);
+  const std::unique_ptr<const SExpression> root = obj.serialize();
+
+  QString actualContent = root->toByteArray();
+  QString expectedContent =
+      "(librepcb_workspace_settings\n"
+      " (navigation_style touchpad)\n"
       ")\n";
   EXPECT_EQ(expectedContent.toStdString(), actualContent.toStdString());
 }

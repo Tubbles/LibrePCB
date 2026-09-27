@@ -115,8 +115,10 @@ add_executable(
   eagleimport/eaglelibraryimporttest.cpp
   eagleimport/eagleprojectimporttest.cpp
   eagleimport/eagletypeconvertertest.cpp
+  editor/3d/slintopenglviewtest.cpp
   editor/dialogs/dxfimportdialogtest.cpp
   editor/dialogs/graphicsexportdialogtest.cpp
+  editor/graphics/slintgraphicsviewtest.cpp
   editor/library/cat/categorytreebuildertest.cpp
   editor/library/cmd/cmdpackagereloadtest.cpp
   editor/library/cmd/cmdsymbolreloadtest.cpp
@@ -135,6 +137,7 @@ add_executable(
   editor/project/board/tracelengthcomparisontest.cpp
   editor/project/schematic/cmddragselectedschematicitemstest.cpp
   editor/project/schematic/schematicclipboarddatatest.cpp
+  editor/utils/editortoolboxtest.cpp
   editor/utils/shortcutsreferencegeneratortest.cpp
   editor/utils/slinthelperstest.cpp
   editor/widgets/editabletablewidgetreceiver.h

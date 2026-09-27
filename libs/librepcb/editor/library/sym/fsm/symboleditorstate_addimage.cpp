@@ -26,6 +26,7 @@
 #include "../../../cmd/cmdimageedit.h"
 #include "../../../graphics/imagegraphicsitem.h"
 #include "../../../undostack.h"
+#include "../../../utils/editortoolbox.h"
 #include "../../../utils/imagehelpers.h"
 #include "../symbolgraphicsitem.h"
 
@@ -99,7 +100,7 @@ bool SymbolEditorState_AddImage::processGraphicsSceneMouseMoved(
     const GraphicsSceneMouseEvent& e) noexcept {
   if (mCurrentImage && mCurrentEditCmd) {
     Point currentPos = e.scenePos;
-    if (!e.modifiers.testFlag(Qt::ShiftModifier)) {
+    if (!e.modifiers.testFlag(EditorToolbox::snapOverrideModifier())) {
       currentPos.mapToGrid(getGridInterval());
     }
     if (mState == State::Positioning) {
@@ -117,7 +118,7 @@ bool SymbolEditorState_AddImage::processGraphicsSceneLeftMouseButtonPressed(
     const GraphicsSceneMouseEvent& e) noexcept {
   if (mCurrentImage && mCurrentEditCmd && mCurrentGraphicsItem) {
     Point currentPos = e.scenePos;
-    if (!e.modifiers.testFlag(Qt::ShiftModifier)) {
+    if (!e.modifiers.testFlag(EditorToolbox::snapOverrideModifier())) {
       currentPos.mapToGrid(getGridInterval());
     }
     if (mState == State::Positioning) {

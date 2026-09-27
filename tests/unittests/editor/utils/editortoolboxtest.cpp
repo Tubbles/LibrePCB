@@ -17,64 +17,52 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef LIBREPCB_CORE_ENUMS_H
-#define LIBREPCB_CORE_ENUMS_H
-
 /*******************************************************************************
  *  Includes
  ******************************************************************************/
-#include <QMetaType>
+#include <gtest/gtest.h>
+#include <librepcb/editor/utils/editortoolbox.h>
+
+#include <QtCore>
 
 /*******************************************************************************
- *  Namespace / Forward Declarations
+ *  Namespace
  ******************************************************************************/
 namespace librepcb {
+namespace editor {
+namespace tests {
 
 /*******************************************************************************
- *  Various Basic Enums
+ *  Test Class
  ******************************************************************************/
 
-/**
- * @brief Mode for automatic online updates
- */
-enum class AutoUpdateMode : int {
-  // Note: Sorted to make comparison operators working in a meaningful way.
-  Disabled,  ///< Automatic update check disabled
-  Check,  ///< Automatically check for updates, but no notification
-  Notify,  ///< Automatically check for updates, then notify the user
-  Install,  ///< Automatically check for, download, and install updates
+class EditorToolboxTest : public ::testing::Test {
+protected:
+  ~EditorToolboxTest() override {
+    // The style is process wide, do not leak it into other tests.
+    EditorToolbox::setNavigationStyle(NavigationStyle::Default);
+  }
 };
 
-/**
- * @brief Grid style for the 2D graphics views
- */
-enum class GridStyle : int {
-  None,
-  Dots,
-  Lines,
-};
+/*******************************************************************************
+ *  Test Methods
+ ******************************************************************************/
 
-/**
- * @brief Navigation style for the 2D and 3D graphics views
- *
- * The touchpad style adds pan, zoom and rotate gestures made of modifier keys
- * and pointer motion without any mouse button, modelled after FreeCAD's
- * "Touchpad" navigation style. The mouse gestures of the default style keep
- * working in both styles.
- */
-enum class NavigationStyle : int {
-  Default,
-  Touchpad,
-};
+TEST_F(EditorToolboxTest, testSnapOverrideFollowsNavigationStyle) {
+  EditorToolbox::setNavigationStyle(NavigationStyle::Default);
+  EXPECT_EQ(Qt::ShiftModifier, EditorToolbox::snapOverrideModifier());
+  EXPECT_EQ(Qt::Key_Shift, EditorToolbox::snapOverrideKey());
+
+  // The touchpad style pans with Shift, so Alt disables snapping there.
+  EditorToolbox::setNavigationStyle(NavigationStyle::Touchpad);
+  EXPECT_EQ(Qt::AltModifier, EditorToolbox::snapOverrideModifier());
+  EXPECT_EQ(Qt::Key_Alt, EditorToolbox::snapOverrideKey());
+}
 
 /*******************************************************************************
  *  End of File
  ******************************************************************************/
 
+}  // namespace tests
+}  // namespace editor
 }  // namespace librepcb
-
-Q_DECLARE_METATYPE(librepcb::AutoUpdateMode)
-Q_DECLARE_METATYPE(librepcb::GridStyle)
-Q_DECLARE_METATYPE(librepcb::NavigationStyle)
-
-#endif
