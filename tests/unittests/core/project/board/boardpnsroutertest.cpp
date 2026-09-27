@@ -22,25 +22,36 @@
  ******************************************************************************/
 #include <gtest/gtest.h>
 #include <librepcb/core/fileio/transactionalfilesystem.h>
+#include <librepcb/core/geometry/hole.h>
+#include <librepcb/core/geometry/padhole.h>
 #include <librepcb/core/geometry/path.h>
 #include <librepcb/core/geometry/zone.h>
+#include <librepcb/core/library/pkg/footprint.h>
 #include <librepcb/core/project/board/board.h>
 #include <librepcb/core/project/board/boardpnsrouter.h>
+#include <librepcb/core/project/board/boardholedata.h>
+#include <librepcb/core/project/board/boardpaddata.h>
 #include <librepcb/core/project/board/boardzonedata.h>
+#include <librepcb/core/project/board/drc/boarddesignrulechecksettings.h>
 #include <librepcb/core/project/board/items/bi_device.h>
 #include <librepcb/core/project/board/items/bi_hole.h>
 #include <librepcb/core/project/board/items/bi_netline.h>
 #include <librepcb/core/project/board/items/bi_netsegment.h>
 #include <librepcb/core/project/board/items/bi_pad.h>
 #include <librepcb/core/project/board/items/bi_zone.h>
+#include <librepcb/core/project/circuit/circuit.h>
 #include <librepcb/core/project/circuit/netsignal.h>
 #include <librepcb/core/project/project.h>
 #include <librepcb/core/project/projectloader.h>
 #include <librepcb/core/types/layer.h>
 #include <librepcb/core/types/uuid.h>
+#include <librepcb/core/utils/toolbox.h>
+#include <librepcb/core/utils/transform.h>
 
 #include <QtCore>
 
+#include <algorithm>
+#include <functional>
 #include <memory>
 #include <optional>
 
@@ -78,7 +89,7 @@ static BoardPnsRouter::Settings makeSettings(
 
 static bool isNull(const BoardPnsHostRef& ref) noexcept {
   return (!ref.netLine) && (!ref.via) && (!ref.pad) && (!ref.hole) &&
-      (!ref.polygon) && (!ref.zone);
+      (!ref.device) && (!ref.polygon) && (!ref.zone);
 }
 
 /**
@@ -606,6 +617,326 @@ static std::optional<Point> longestSegmentMiddle(
     }
   }
   return middle;
+}
+
+/**
+ * @brief A drill in board coordinates
+ *
+ * The drill's own path with its arcs flattened, so a round drill is one
+ * vertex and a slot is a polyline.
+ */
+struct Drill {
+  Path path;
+  PositiveLength diameter;
+};
+
+/**
+ * @brief One straight piece of copper a route placed
+ */
+struct CopperPiece {
+  Point p1;
+  Point p2;
+  PositiveLength width;
+};
+
+static QVector<CopperPiece> headPieces(const BoardPnsPreview& preview) {
+  QVector<CopperPiece> pieces;
+  foreach (const BoardPnsPreviewItem& item, preview.items) {
+    if (item.style != BoardPnsPreviewStyle::Head) {
+      continue;
+    }
+    for (int i = 1; i < item.path.count(); ++i) {
+      pieces.append(CopperPiece{item.path.at(i - 1), item.path.at(i),
+                                item.width});
+    }
+  }
+  return pieces;
+}
+
+static QVector<CopperPiece> commitPieces(
+    const QVector<BoardPnsNewItem>& items) {
+  QVector<CopperPiece> pieces;
+  foreach (const BoardPnsNewItem& item, items) {
+    if (const BoardPnsNewSegment* segment = item.getSegment()) {
+      pieces.append(
+          CopperPiece{segment->start, segment->end, segment->width});
+    }
+  }
+  return pieces;
+}
+
+static std::optional<CopperPiece> longestPiece(
+    const QVector<CopperPiece>& pieces) noexcept {
+  std::optional<CopperPiece> longest;
+  foreach (const CopperPiece& piece, pieces) {
+    if ((!longest) ||
+        (*(piece.p2 - piece.p1).getLength() >
+         *(longest->p2 - longest->p1).getLength())) {
+      longest = piece;
+    }
+  }
+  return longest;
+}
+
+/**
+ * @brief Twice the signed area of the triangle a, b, c
+ */
+static qreal doubledArea(const Point& a, const Point& b,
+                         const Point& c) noexcept {
+  const qreal abx = (b - a).getX().toNm();
+  const qreal aby = (b - a).getY().toNm();
+  const qreal acx = (c - a).getX().toNm();
+  const qreal acy = (c - a).getY().toNm();
+  return (abx * acy) - (aby * acx);
+}
+
+/**
+ * @brief The distance between two line segments, zero where they cross
+ */
+static Length distanceBetweenSegments(const Point& a1, const Point& a2,
+                                      const Point& b1,
+                                      const Point& b2) noexcept {
+  const bool crosses = (b1 != b2) &&
+      ((doubledArea(b1, b2, a1) * doubledArea(b1, b2, a2)) <= 0) &&
+      ((doubledArea(a1, a2, b1) * doubledArea(a1, a2, b2)) <= 0);
+  if (crosses) {
+    return Length(0);
+  }
+  return std::min(
+      {*Toolbox::shortestDistanceBetweenPointAndLine(b1, a1, a2),
+       *Toolbox::shortestDistanceBetweenPointAndLine(b2, a1, a2),
+       *Toolbox::shortestDistanceBetweenPointAndLine(a1, b1, b2),
+       *Toolbox::shortestDistanceBetweenPointAndLine(a2, b1, b2)});
+}
+
+/**
+ * @brief The gap between one piece of copper and a drill
+ *
+ * What the design rule check's copper to hole check measures
+ * (`BoardDesignRuleCheck::checkCopperHoleClearances`), negative where the
+ * copper reaches into the drill.
+ */
+static Length gapToDrill(const CopperPiece& piece,
+                         const Drill& drill) noexcept {
+  const QVector<Vertex>& vertices = drill.path.getVertices();
+  Length distance = distanceBetweenSegments(
+      piece.p1, piece.p2, vertices.first().getPos(), vertices.first().getPos());
+  for (int i = 1; i < vertices.count(); ++i) {
+    distance = std::min(
+        distance,
+        distanceBetweenSegments(piece.p1, piece.p2,
+                                vertices.at(i - 1).getPos(),
+                                vertices.at(i).getPos()));
+  }
+  return distance - Length(piece.width->toNm() / 2) -
+      Length(drill.diameter->toNm() / 2);
+}
+
+static std::optional<Length> smallestGapToDrill(
+    const QVector<CopperPiece>& pieces, const Drill& drill) noexcept {
+  std::optional<Length> smallest;
+  foreach (const CopperPiece& piece, pieces) {
+    const Length gap = gapToDrill(piece, drill);
+    if ((!smallest) || (gap < *smallest)) {
+      smallest = gap;
+    }
+  }
+  return smallest;
+}
+
+/**
+ * @brief Where on a route a drill has to go to be in its way
+ */
+struct DrillSpot {
+  /// The middle of the longest straight piece of the route.
+  Point at;
+
+  /// Half a millimetre along that piece, to lay a slot out against it.
+  Point along;
+
+  /// The net the route is on.
+  const NetSignal* startNet = nullptr;
+};
+
+/**
+ * @brief A drill put into the way of a route, and who reports it
+ */
+struct PlacedDrill {
+  Drill drill;
+
+  /// Whether a violation names the object the drill belongs to.
+  std::function<bool(const BoardPnsHostRef&)> isDrillHost;
+};
+
+/**
+ * @brief How a test brings its kind of drill into the way of a route
+ *
+ * #place is called with a freshly opened board and the spot on the route the
+ * drill has to go to. The device the drill belongs to, if any, is named up
+ * front by #findDevice so that the route is started from another device.
+ */
+struct DrillPlacer {
+  std::function<BI_Device*(Board& board)> findDevice;
+  std::function<PlacedDrill(Board& board, BI_Device* device,
+                            const DrillSpot& spot)>
+      place;
+};
+
+/**
+ * @brief Put a board hole into the way of a route
+ */
+static PlacedDrill placeBoardHole(Board& board, const Path& path,
+                                  const PositiveLength& diameter) {
+  BI_Hole* hole =
+      new BI_Hole(board,
+                  BoardHoleData(Uuid::createRandom(), diameter,
+                                NonEmptyPath(path), MaskConfig::automatic(),
+                                false));
+  board.addHole(*hole);
+  return PlacedDrill{
+      Drill{path.flattenedArcs(PositiveLength(1000)), diameter},
+      [hole](const BoardPnsHostRef& ref) { return ref.hole == hole; }};
+}
+
+/**
+ * @brief Find a start pad which has nothing to do with a device
+ *
+ * Like ::findStartPad(), but neither on @p device nor on any net of its pads,
+ * so that whatever the device carries is an obstacle to the route.
+ */
+static std::optional<RouteStart> findStartPadOffDevice(
+    const BoardPnsRouter& router, const Board& board,
+    const BI_Device* device) {
+  QSet<const NetSignal*> nets;
+  if (device) {
+    foreach (const BI_Pad* pad, device->getPads()) {
+      nets.insert(pad->getNetSignal());
+    }
+  }
+  foreach (const BI_Device* candidate, board.getDeviceInstances()) {
+    if (candidate == device) {
+      continue;
+    }
+    foreach (const BI_Pad* pad, candidate->getPads()) {
+      if ((!pad->getNetSignal()) || nets.contains(pad->getNetSignal()) ||
+          pad->getGeometries().value(&Layer::topCopper()).isEmpty()) {
+        continue;
+      }
+      const quint64 hostId = router.getSnapshot().getHostId(*pad);
+      if ((hostId != 0) &&
+          (router.isStartingPointRoutable(pad->getPosition(), hostId,
+                                          Layer::topCopper()) ==
+           BoardPnsRouter::StartResult::Ok)) {
+        return RouteStart{pad, hostId, pad->getPosition()};
+      }
+    }
+  }
+  return std::nullopt;
+}
+
+/**
+ * @brief Route across a drill in every mode and check the drill was kept off
+ *
+ * Each mode gets a board of its own: its route is taken first with nothing
+ * in the way, then the drill is put on the middle of its longest piece, which
+ * is the control that the drill is really in the way, and then the route is
+ * taken again. The walkaround and the shove have to keep the copper to hole
+ * clearance the design rule check applies, in the head while routing and in
+ * what they commit. Mark obstacles puts the head across the drill and has to
+ * report the object the drill belongs to.
+ */
+static void checkRoutesKeepOffDrill(const DrillPlacer& placer) {
+  for (BoardPnsRouter::Mode mode :
+       {BoardPnsRouter::Mode::Walkaround, BoardPnsRouter::Mode::Shove,
+        BoardPnsRouter::Mode::MarkObstacles}) {
+    const bool mark = (mode == BoardPnsRouter::Mode::MarkObstacles);
+    SCOPED_TRACE(mark ? "mark obstacles"
+                      : (mode == BoardPnsRouter::Mode::Shove ? "shove"
+                                                             : "walkaround"));
+    std::unique_ptr<Project> project = openGerberTestProject();
+    Board& board = *project->getBoards().first();
+    BI_Device* device = placer.findDevice(board);
+
+    // Twice the copper clearance, so that a router which kept the copper
+    // clearance off a hole instead of this one is caught.
+    BoardDesignRuleCheckSettings drcSettings = board.getDrcSettings();
+    drcSettings.setMinCopperNpthClearance(UnsignedLength(
+        drcSettings.getMinCopperCopperClearance()->toNm() * 2));
+    board.setDrcSettings(drcSettings);
+
+    BoardPnsRouter probeRouter(board, makeSettings());
+    const std::optional<RouteStart> start =
+        findStartPadOffDevice(probeRouter, board, device);
+    ASSERT_TRUE(start.has_value()) << "no routable top layer pad with a net";
+    const std::optional<Point> target = findFreeTarget(board, *start);
+    ASSERT_TRUE(target.has_value()) << "no free space around the start pad";
+
+    std::optional<CopperPiece> piece;
+    if (mark) {
+      BoardPnsRouter probe(board, makeSettings(mode));
+      ASSERT_EQ(
+          probe.startRouting(start->pos, start->hostId, Layer::topCopper()),
+          BoardPnsRouter::StartResult::Ok);
+      probe.moveTo(*target, 0);
+      piece = longestPiece(headPieces(probe.getPreview()));
+    } else {
+      piece = longestPiece(
+          commitPieces(routeOnce(board, *start, *target, mode)));
+    }
+    ASSERT_TRUE(piece.has_value());
+    const Point delta = piece->p2 - piece->p1;
+    const qreal length = delta.getLength()->toNm();
+    const DrillSpot spot{
+        Point(Length((piece->p1.getX().toNm() + piece->p2.getX().toNm()) / 2),
+              Length((piece->p1.getY().toNm() + piece->p2.getY().toNm()) / 2)),
+        Point(Length(qRound64(delta.getX().toNm() * 500000 / length)),
+              Length(qRound64(delta.getY().toNm() * 500000 / length))),
+        start->pad->getNetSignal()};
+    const PlacedDrill placed = placer.place(board, device, spot);
+
+    // The design rule check shrinks the clearance by its own arc tolerance,
+    // 5 um (`BoardDesignRuleCheck::maxArcTolerance()`, which is private),
+    // before it looks for copper, so a gap that far below the rule is not
+    // flagged either.
+    const Length clearance =
+        *board.getDrcSettings().getMinCopperNpthClearance();
+    const Length tolerance(5000);
+    ASSERT_GT(clearance, 0);
+
+    // Placing may have added board objects, which renumbers the host IDs.
+    BoardPnsRouter router(board, makeSettings(mode));
+    const quint64 startId = router.getSnapshot().getHostId(*start->pad);
+    ASSERT_EQ(router.startRouting(start->pos, startId, Layer::topCopper()),
+              BoardPnsRouter::StartResult::Ok);
+    router.moveTo(*target, 0);
+    const std::optional<Length> headGap =
+        smallestGapToDrill(headPieces(router.getPreview()), placed.drill);
+    ASSERT_TRUE(headGap.has_value()) << "the route has no head";
+
+    if (mark) {
+      EXPECT_LT(*headGap, 0) << "the head does not run across the drill";
+      int reported = 0;
+      foreach (const BoardPnsViolation& violation,
+               router.getPreview().violations) {
+        if (placed.isDrillHost(violation.host)) {
+          ++reported;
+        }
+      }
+      EXPECT_GT(reported, 0) << "the drill was not reported";
+      continue;
+    }
+
+    EXPECT_GE(*headGap, clearance - tolerance)
+        << "the head is " << headGap->toNm() << " nm from the drill";
+    if (router.fixRoute(*target, 0, true) ==
+        BoardPnsRouter::FixOutcome::Finished) {
+      const std::optional<Length> commitGap = smallestGapToDrill(
+          commitPieces(router.getCommit().added), placed.drill);
+      ASSERT_TRUE(commitGap.has_value());
+      EXPECT_GE(*commitGap, clearance - tolerance)
+          << "the commit is " << commitGap->toNm() << " nm from the drill";
+    }
+  }
 }
 
 /*******************************************************************************
@@ -1268,6 +1599,106 @@ TEST_F(BoardPnsRouterTest, testAllowDrcViolationsCommitsACollidingRoute) {
   const BoardPnsCommit commit = router.getCommit();
   EXPECT_FALSE(commit.isEmpty());
   EXPECT_FALSE(commit.added.isEmpty());
+}
+
+/*******************************************************************************
+ *  Holes
+ ******************************************************************************/
+
+/**
+ * @brief A board hole is an obstacle with the copper to hole clearance
+ */
+TEST_F(BoardPnsRouterTest, testRoutesKeepOffABoardHole) {
+  DrillPlacer placer;
+  placer.findDevice = [](Board&) { return nullptr; };
+  placer.place = [](Board& board, BI_Device*, const DrillSpot& spot) {
+    return placeBoardHole(board, Path({Vertex(spot.at)}),
+                          PositiveLength(1000000));  // 1 mm.
+  };
+  checkRoutesKeepOffDrill(placer);
+}
+
+/**
+ * @brief A hole of a device's footprint is an obstacle like a board hole
+ *
+ * LibrePCB's non plated holes in a footprint are ::librepcb::Hole objects of
+ * the library footprint rather than pads, and the design rule check checks
+ * them with the same copper to hole clearance as a board hole
+ * (`BoardDesignRuleCheck::checkCopperHoleClearances`). The device is moved
+ * so that its hole lands on the route.
+ */
+TEST_F(BoardPnsRouterTest, testRoutesKeepOffAFootprintHole) {
+  auto findHole = [](const BI_Device& device) -> const Hole* {
+    for (const Hole& hole : device.getLibFootprint().getHoles()) {
+      if (hole.getPath()->getVertices().count() == 1) {
+        return &hole;
+      }
+    }
+    return nullptr;
+  };
+  DrillPlacer placer;
+  placer.findDevice = [findHole](Board& board) -> BI_Device* {
+    foreach (BI_Device* device, board.getDeviceInstances()) {
+      if (findHole(*device)) {
+        return device;
+      }
+    }
+    return nullptr;
+  };
+  placer.place = [findHole](Board&, BI_Device* device, const DrillSpot& spot) {
+    const Hole& hole = *findHole(*device);
+    const Transform transform(device->getPosition(), device->getRotation(),
+                              device->getMirrored());
+    const Point center =
+        transform.map(hole.getPath()->getVertices().first().getPos());
+    device->setPosition(device->getPosition() + (spot.at - center));
+    return PlacedDrill{
+        Drill{Path({Vertex(spot.at)}), hole.getDiameter()},
+        [device](const BoardPnsHostRef& ref) { return ref.device == device; }};
+  };
+  checkRoutesKeepOffDrill(placer);
+}
+
+/**
+ * @brief The drill of a plated pad on another net is kept off too
+ *
+ * The pad's copper surrounds its drill on every layer, so the copper
+ * clearance to the pad covers the drill; this checks that it does. The pad
+ * is a board pad of its own, so that nothing else comes with it.
+ */
+TEST_F(BoardPnsRouterTest, testRoutesKeepOffThePlatedDrillOfAnotherNet) {
+  DrillPlacer placer;
+  placer.findDevice = [](Board&) { return nullptr; };
+  placer.place = [](Board& board, BI_Device*, const DrillSpot& spot) {
+    NetSignal* net = nullptr;
+    foreach (NetSignal* candidate,
+             board.getProject().getCircuit().getNetSignals()) {
+      if (candidate != spot.startNet) {
+        net = candidate;
+        break;
+      }
+    }
+    const PositiveLength drill(800000);  // 0.8 mm.
+    const PositiveLength size(1600000);  // 1.6 mm.
+    const PadHoleList holes{std::make_shared<PadHole>(
+        Uuid::createRandom(), drill, makeNonEmptyPath(Point(0, 0)))};
+    BI_NetSegment* segment =
+        new BI_NetSegment(board, Uuid::createRandom(), net);
+    BI_Pad* pad = new BI_Pad(
+        *segment,
+        BoardPadData(Uuid::createRandom(), spot.at, Angle::deg0(),
+                     Pad::Shape::RoundedRect, size, size,
+                     UnsignedLimitedRatio(Ratio::fromPercent(100)), Path(),
+                     MaskConfig::automatic(), MaskConfig::off(),
+                     UnsignedLength(0), Pad::ComponentSide::Top,
+                     Pad::Function::StandardPad, holes, false));
+    segment->addElements({pad}, {}, {}, {});  // can throw
+    board.addNetSegment(*segment);  // can throw
+    return PlacedDrill{
+        Drill{Path({Vertex(spot.at)}), drill},
+        [pad](const BoardPnsHostRef& ref) { return ref.pad == pad; }};
+  };
+  checkRoutesKeepOffDrill(placer);
 }
 
 /*******************************************************************************

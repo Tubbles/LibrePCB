@@ -33,6 +33,7 @@
  ******************************************************************************/
 namespace librepcb {
 
+class BI_Device;
 class BI_Hole;
 class BI_NetLine;
 class BI_Pad;
@@ -67,12 +68,17 @@ struct PnsSnapshot;
  * (::librepcb::Board::getNetSegments() is const and yields
  * `BI_NetSegment*`), which is why the snapshot can fill these in while only
  * reading the board.
+ *
+ * `device` names a hole of that device's footprint, which is no board object
+ * of its own. It is the only part of a device the router sees apart from its
+ * pads, and several host IDs may name the same device this way.
  */
 struct BoardPnsHostRef final {
   BI_NetLine* netLine = nullptr;
   BI_Via* via = nullptr;
   BI_Pad* pad = nullptr;
   BI_Hole* hole = nullptr;
+  BI_Device* device = nullptr;
   BI_Polygon* polygon = nullptr;
   BI_Zone* zone = nullptr;
 };
@@ -93,10 +99,13 @@ struct BoardPnsHostRef final {
  * again while it is routing.
  *
  * What is synced: traces, vias, pads (one solid per copper layer), board
- * holes, copper polygons, the board outline and keepout zones. What is
- * deliberately not synced: planes, air wires, stroke texts, the zones of a
- * device's footprint and everything on a non copper layer. The router routes
- * through a plane and the caller rebuilds it afterwards.
+ * holes, the holes of each device's footprint, copper polygons, the board
+ * outline and keepout zones. What is deliberately not synced: planes, air
+ * wires, stroke texts, the zones of a device's footprint and everything on a
+ * non copper layer. The router routes through a plane and the caller
+ * rebuilds it afterwards. A footprint hole is a bare hole of its own rather
+ * than part of a pad, so a component drag moves the device's pads but leaves
+ * its holes where they were until the drag is committed.
  *
  * @note This is just a wrapper around its Rust implementation.
  */

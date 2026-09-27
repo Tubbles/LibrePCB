@@ -24,6 +24,7 @@
 #include <librepcb/core/fileio/transactionalfilesystem.h>
 #include <librepcb/core/geometry/path.h>
 #include <librepcb/core/geometry/zone.h>
+#include <librepcb/core/library/pkg/footprint.h>
 #include <librepcb/core/project/board/board.h>
 #include <librepcb/core/project/board/boardpnssnapshot.h>
 #include <librepcb/core/project/board/boardzonedata.h>
@@ -305,6 +306,24 @@ TEST_F(BoardPnsSnapshotTest, testSnapshotOfBoard) {
     EXPECT_EQ(snapshot.getHostRefs().at(id).hole, hole);
   }
 
+  // So does every hole of a device's footprint, named by its device.
+  int footprintHoles = 0;
+  foreach (const BI_Device* device, board.getDeviceInstances()) {
+    const int count = device->getLibFootprint().getHoles().count();
+    int named = 0;
+    foreach (const BoardPnsHostRef& ref, snapshot.getHostRefs()) {
+      if (ref.device == device) {
+        ++named;
+      }
+    }
+    EXPECT_EQ(named, count);
+    footprintHoles += count;
+  }
+  EXPECT_GT(footprintHoles, 0);
+  EXPECT_GE(stats.hole_count,
+            static_cast<std::size_t>(board.getHoles().count() +
+                                     footprintHoles));
+
   // Pads, copper polygons and the board outline are all solids, and every
   // pad contributes at least one.
   EXPECT_GT(stats.solid_count, 0U);
@@ -540,6 +559,7 @@ TEST_F(BoardPnsSnapshotTest, testKeepoutZoneBecomesOneObstaclePerTriangle) {
   EXPECT_EQ(ref.via, nullptr);
   EXPECT_EQ(ref.pad, nullptr);
   EXPECT_EQ(ref.hole, nullptr);
+  EXPECT_EQ(ref.device, nullptr);
   EXPECT_EQ(ref.polygon, nullptr);
 }
 

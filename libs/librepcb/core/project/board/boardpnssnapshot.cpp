@@ -23,12 +23,14 @@
 #include "boardpnssnapshot.h"
 
 #include "../../exceptions.h"
+#include "../../geometry/hole.h"
 #include "../../geometry/pad.h"
 #include "../../geometry/padgeometry.h"
 #include "../../geometry/padhole.h"
 #include "../../geometry/path.h"
 #include "../../geometry/via.h"
 #include "../../geometry/zone.h"
+#include "../../library/pkg/footprint.h"
 #include "../../types/layer.h"
 #include "../../utils/transform.h"
 #include "../circuit/circuit.h"
@@ -697,6 +699,30 @@ void BoardPnsSnapshot::addHoles(const Board& board) {
     check(static_cast<int>(rs::ffi_pnsrouter_snapshot_add_hole(
               *mHandle, &header, &geometry)),
           QString("hole %1").arg(hole->getData().getUuid().toStr()));
+  }
+
+  // The non plated holes of a footprint are library holes rather than pads,
+  // and the design rule check holds copper off them with the same clearance
+  // as off a board hole (BoardDesignRuleCheck::checkCopperHoleClearances()).
+  foreach (BI_Device* device, board.getDeviceInstances()) {
+    const Transform transform(device->getPosition(), device->getRotation(),
+                              device->getMirrored());
+    for (const Hole& hole : device->getLibFootprint().getHoles()) {
+      BoardPnsHostRef ref;
+      ref.device = device;
+      rs::PnsItemHeader header =
+          makeHeader(addHostRef(ref), 0, 0, mCopperLayerCount - 1);
+      header.routable = false;
+
+      const rs::PnsHoleGeometry geometry{
+          drillShape(transform.map(*hole.getPath()), *hole.getDiameter()),
+      };
+      check(static_cast<int>(rs::ffi_pnsrouter_snapshot_add_hole(
+                *mHandle, &header, &geometry)),
+            QString("hole %1 of device %2")
+                .arg(hole.getUuid().toStr(),
+                     device->getComponentInstanceUuid().toStr()));
+    }
   }
 }
 
