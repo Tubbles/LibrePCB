@@ -231,6 +231,8 @@ Board2dTab::Board2dTab(GuiApplication& app, BoardEditor& editor,
           &Board2dTab::requestRepaint);
   connect(&mBoardEditor, &BoardEditor::drcMessageHighlightRequested, this,
           &Board2dTab::highlightDrcMessage);
+  connect(&mBoardEditor, &BoardEditor::drcMessageHighlightAndPanRequested,
+          this, &Board2dTab::highlightAndPanToDrcMessage);
   connect(&mBoardEditor, &BoardEditor::aboutToBeDestroyed, this,
           &Board2dTab::closeEnforced);
 
@@ -2016,6 +2018,15 @@ void Board2dTab::highlightDrcMessage(
     if (zoomTo) {
       mView->zoomToSceneRect(rect, false);
     }
+  }
+}
+
+void Board2dTab::highlightAndPanToDrcMessage(
+    const std::shared_ptr<const RuleCheckMessage>& msg) noexcept {
+  highlightDrcMessage(msg, false);
+  if (msg && (!msg->getLocations().isEmpty()) && mScene) {
+    const QPainterPath path = Path::toQPainterPathPx(msg->getLocations(), true);
+    mView->panToScenePoint(path.boundingRect().center());
   }
 }
 

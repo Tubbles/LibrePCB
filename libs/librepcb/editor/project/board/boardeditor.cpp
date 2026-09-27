@@ -655,6 +655,9 @@ void BoardEditor::setDrcResult(
             &mProjectEditor, &ProjectEditor::setManualModificationsMade);
     connect(mDrcMessages.get(), &RuleCheckMessagesModel::highlightRequested,
             this, &BoardEditor::drcMessageHighlightRequested);
+    connect(mDrcMessages.get(),
+            &RuleCheckMessagesModel::highlightAndPanRequested, this,
+            &BoardEditor::drcMessageHighlightAndPanRequested);
   }
   mDrcMessages->setMessages(result.messages, mBoard.getDrcMessageApprovals());
   mDrcExecutionError = result.errors.join("\n\n");

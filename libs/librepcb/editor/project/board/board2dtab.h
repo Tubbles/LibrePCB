@@ -216,6 +216,8 @@ private:
   void loadDesignRules(const QString& uiKey) noexcept;
   void highlightDrcMessage(const std::shared_ptr<const RuleCheckMessage>& msg,
                            bool zoomTo) noexcept;
+  void highlightAndPanToDrcMessage(
+      const std::shared_ptr<const RuleCheckMessage>& msg) noexcept;
   void clearDrcMarker() noexcept;
   void scheduleUnplacedComponentsUpdate() noexcept;
   void updateUnplacedComponents() noexcept;

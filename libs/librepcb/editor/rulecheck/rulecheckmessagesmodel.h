@@ -81,6 +81,8 @@ signals:
   void approvalChanged(const SExpression& approval, bool approved);
   void highlightRequested(std::shared_ptr<const RuleCheckMessage> msg,
                           bool zoomTo, int windowId);
+  void highlightAndPanRequested(std::shared_ptr<const RuleCheckMessage> msg,
+                                int windowId);
 
 private:
   void sortMessages() noexcept;

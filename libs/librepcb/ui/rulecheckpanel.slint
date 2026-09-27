@@ -146,7 +146,13 @@ export component RuleCheckPanel inherits FocusScope {
         }
         selected-index = index;
         model[index].action-window-id = Data.window-id;
-        if zoom-to-location || force-zoom {
+        if force-zoom {
+            model[index].action = RuleCheckMessageAction.highlight-and-zoom-to;
+        } else if zoom-to-location && (check.type == RuleCheckType.drc) {
+            // Keep the current zoom level to allow the user to control it
+            // manually while going through the messages.
+            model[index].action = RuleCheckMessageAction.highlight-and-pan-to;
+        } else if zoom-to-location {
             model[index].action = RuleCheckMessageAction.highlight-and-zoom-to;
         } else {
             model[index].action = RuleCheckMessageAction.highlight;
@@ -235,7 +241,7 @@ export component RuleCheckPanel inherits FocusScope {
                 width: self.height;
                 icon: @image-url("../../font-awesome/svgs/solid/location-crosshairs.svg");
                 icon-scale: 0.7;
-                tooltip: @tr("Zoom to Location");
+                tooltip: (check.type == RuleCheckType.drc) ? @tr("Pan to Location") : @tr("Zoom to Location");
                 checked: zoom-to-location;
                 enabled: check.state != RuleCheckState.running;
 

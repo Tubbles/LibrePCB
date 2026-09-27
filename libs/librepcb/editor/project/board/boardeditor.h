@@ -110,6 +110,8 @@ signals:
   void planesUpdated();
   void drcMessageHighlightRequested(std::shared_ptr<const RuleCheckMessage> msg,
                                     bool zoomTo);
+  void drcMessageHighlightAndPanRequested(
+      std::shared_ptr<const RuleCheckMessage> msg);
   void aboutToBeDestroyed();
 
 private:
