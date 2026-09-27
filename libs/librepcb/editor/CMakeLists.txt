@@ -515,6 +515,11 @@ add_library(
   project/board/graphicsitems/bgi_via.h
   project/board/graphicsitems/bgi_zone.cpp
   project/board/graphicsitems/bgi_zone.h
+  project/board/tracelengthcomparison.cpp
+  project/board/tracelengthcomparison.h
+  project/board/tracelengthcomparisondialog.cpp
+  project/board/tracelengthcomparisondialog.h
+  project/board/tracelengthcomparisondialog.ui
   project/bomreviewdialog.cpp
   project/bomreviewdialog.h
   project/bomreviewdialog.ui
