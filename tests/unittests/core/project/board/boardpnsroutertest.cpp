@@ -1619,6 +1619,61 @@ TEST_F(BoardPnsRouterTest, testRoutesKeepOffABoardHole) {
 }
 
 /**
+ * @brief A bent board slot is kept off where it bends, not just at its ends
+ *
+ * A V whose tip sits on the route and whose two ends are three millimetres
+ * off to the side, so the straight line between the ends is nowhere near the
+ * route.
+ */
+TEST_F(BoardPnsRouterTest, testRoutesKeepOffABentBoardSlot) {
+  DrillPlacer placer;
+  placer.findDevice = [](Board&) { return nullptr; };
+  placer.place = [](Board& board, BI_Device*, const DrillSpot& spot) {
+    const Point side = spot.along.rotated(Angle::deg90()) * 6;  // 3 mm.
+    const Point half = spot.along * 3;  // 1.5 mm.
+    return placeBoardHole(board,
+                          Path({Vertex(spot.at + side + half), Vertex(spot.at),
+                                Vertex(spot.at + side - half)}),
+                          PositiveLength(600000));  // 0.6 mm.
+  };
+  checkRoutesKeepOffDrill(placer);
+}
+
+/**
+ * @brief A curved board slot is kept off where it bulges
+ *
+ * A half circle whose two ends are one and a half millimetres off to the side
+ * of the route and whose middle sits on it.
+ */
+TEST_F(BoardPnsRouterTest, testRoutesKeepOffACurvedBoardSlot) {
+  DrillPlacer placer;
+  placer.findDevice = [](Board&) { return nullptr; };
+  placer.place = [](Board& board, BI_Device*, const DrillSpot& spot) {
+    const Point side = spot.along.rotated(Angle::deg90()) * 3;  // 1.5 mm.
+    const Point half = spot.along * 3;  // 1.5 mm.
+    // Whichever way round the half circle bulges towards the route.
+    auto reachesRoute = [&spot](const Path& path) {
+      const Path flattened = path.flattenedArcs(PositiveLength(1000));
+      foreach (const Vertex& vertex, flattened.getVertices()) {
+        if (*(vertex.getPos() - spot.at).getLength() < Length(100000)) {
+          return true;
+        }
+      }
+      return false;
+    };
+    Path path({Vertex(spot.at + side + half, Angle::deg180()),
+               Vertex(spot.at + side - half)});
+    if (!reachesRoute(path)) {
+      path = Path({Vertex(spot.at + side + half, -Angle::deg180()),
+                   Vertex(spot.at + side - half)});
+    }
+    EXPECT_TRUE(reachesRoute(path));
+    return placeBoardHole(board, path, PositiveLength(600000));  // 0.6 mm.
+  };
+  checkRoutesKeepOffDrill(placer);
+}
+
+/**
  * @brief A hole of a device's footprint is an obstacle like a board hole
  *
  * LibrePCB's non plated holes in a footprint are ::librepcb::Hole objects of

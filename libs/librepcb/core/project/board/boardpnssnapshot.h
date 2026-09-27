@@ -47,6 +47,7 @@ class NetSignal;
 class Path;
 
 namespace rs {
+struct PnsShape;
 struct PnsSnapshot;
 }
 
@@ -247,6 +248,15 @@ private:  // Methods
    * drill clearance rule.
    */
   void addPad(BI_Pad& pad, int innerLayerCount);
+
+  /**
+   * @brief Add the pieces of one or more drills as holes with no copper
+   *
+   * Each piece spans every copper layer and is not routable, and all of them
+   * carry the one host ID of the object they were drilled for.
+   */
+  void addBareHoles(quint64 hostId, quint32 net,
+                    const QVector<rs::PnsShape>& shapes, const QString& item);
 
   /**
    * @brief Add one board outline or cutout, edge by edge
